@@ -34,6 +34,50 @@ public sealed class QueueService
         get { lock (_lock) return _waiting.Count; }
     }
 
+    public IReadOnlyList<QueueItem> GetAllItems()
+    {
+        lock (_lock)
+        {
+            var list = new List<QueueItem>(_waiting);
+            if (_nowPlaying != null)
+            {
+                list.Insert(0, _nowPlaying);
+            }
+            return list;
+        }
+    }
+
+    public QueueItem? GetItem(long id)
+    {
+        lock (_lock)
+        {
+            if (_nowPlaying?.Id == id)
+            {
+                return _nowPlaying;
+            }
+            return _waiting.FirstOrDefault(x => x.Id == id);
+        }
+    }
+
+    public bool PinToTop(long id)
+    {
+        lock (_lock)
+        {
+            var idx = _waiting.FindIndex(x => x.Id == id);
+            if (idx <= 0)
+            {
+                return idx == 0;
+            }
+
+            var item = _waiting[idx];
+            _waiting.RemoveAt(idx);
+            _waiting.Insert(0, item);
+            ReindexWaiting();
+            NotifyChanged();
+            return true;
+        }
+    }
+
     public QueueItem Add(QueueItem item)
     {
         lock (_lock)

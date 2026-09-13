@@ -1,3 +1,4 @@
+using LiveAssistant.Admin;
 using LiveAssistant.Config;
 using LiveAssistant.Database;
 using LiveAssistant.Models;
@@ -21,8 +22,20 @@ public sealed class LiveAppHost : IDisposable
     private readonly PlaybackEngine _engine;
     private readonly DanmakuService _danmaku;
     private readonly UserRepository _users;
+    private readonly GiftRepository _giftRepo;
+    private readonly BanVoteRepository _banVoteRepo;
+    private readonly SongBlacklistRepository _songBlacklistRepo;
+    private readonly KeywordReplyRepository _keywordReplyRepo;
     private readonly SongRequestPermissionService _permission;
     private readonly SongRequestService _songRequest;
+    private readonly GiftService _gift;
+    private readonly BanVoteService _banVote;
+    private readonly WelcomeService _welcome;
+    private readonly KeywordReplyService _keywordReply;
+    private readonly UserLevelService _userLevel;
+    private readonly AdminCommandService _adminCommands;
+    private readonly AdminSyncService _adminSync;
+    private readonly AdminWebHost _adminWeb;
     private readonly ProcessWatchdogService _watchdog;
     private readonly DateTime _startedAt = DateTime.Now;
     private CancellationTokenSource? _watchCts;
@@ -46,6 +59,11 @@ public sealed class LiveAppHost : IDisposable
         }
 
         _users = new UserRepository(_db);
+        _giftRepo = new GiftRepository(_db);
+        _banVoteRepo = new BanVoteRepository(_db);
+        _songBlacklistRepo = new SongBlacklistRepository(_db);
+        _keywordReplyRepo = new KeywordReplyRepository(_db);
+
         _douyin = new DouyinService(_config.Settings.Douyin, _log);
         _kugou = new KugouService(_config.Settings.Kugou, _log);
         _queue = new QueueService(_db);
@@ -59,16 +77,44 @@ public sealed class LiveAppHost : IDisposable
             _config, _queue, _kugou, _random, _playback, _reply, _system, _log);
         _engine = new PlaybackEngine(_config, _playbackCommands, _system);
         _danmaku = new DanmakuService(_douyin, _log, _system);
-        _permission = new SongRequestPermissionService(_config, _users, _queue);
+
+        var songBlacklist = new SongBlacklistService(_songBlacklistRepo);
+        _permission = new SongRequestPermissionService(_config, _users, _queue, songBlacklist);
         _songRequest = new SongRequestService(_config, _kugou, _queue, _permission, _reply, _replyQueue, _system, _log);
+        _userLevel = new UserLevelService(_config, _users);
+        _gift = new GiftService(_config, _douyin, _giftRepo, _users, _userLevel, _log, _system);
+        _banVote = new BanVoteService(_config, _banVoteRepo, _users, _douyin, _replyQueue, _reply, _system, _log);
+        _welcome = new WelcomeService(_config, _reply, _replyQueue, _system);
+        _keywordReply = new KeywordReplyService(_config, _keywordReplyRepo);
+        _adminCommands = new AdminCommandService(new AdminCommandRepository(_db));
+        _adminSync = new AdminSyncService(_config, _adminCommands, _playbackCommands, _engine, _queue, _log);
         _watchdog = new ProcessWatchdogService(_config, _log, _system);
+
+        _adminWeb = new AdminWebHost(new AdminAppContext
+        {
+            Config = _config,
+            Host = this,
+            Commands = _adminCommands,
+            Users = _users,
+            Gifts = _giftRepo,
+            SongBlacklist = _songBlacklistRepo,
+            KeywordReplies = _keywordReplyRepo,
+            BanVotes = _banVoteRepo
+        });
 
         _danmaku.DanmakuReceived += OnDanmakuReceived;
         _songRequest.RequestHandled += () => _ = _engine.EnsurePlayingAsync();
         _playbackCommands.Playback.StateChanged += () => NotifyStateChanged();
         _queue.QueueChanged += () => NotifyStateChanged();
 
+        _adminWeb.Start();
+        _adminSync.Start();
+
         _log.Info("LiveAssistant 已启动");
+        if (_config.Settings.Admin.Enabled)
+        {
+            _system.Add($"管理后台: http://127.0.0.1:{_config.Settings.Admin.Port}{_config.Settings.Admin.Path}");
+        }
     }
 
     public ConfigManager Config => _config;
@@ -113,6 +159,7 @@ public sealed class LiveAppHost : IDisposable
         }
 
         await _danmaku.StartAsync(webRid, ct);
+        _gift.Start(webRid);
         _system.Add(_reply.Render("systemConnected", new Dictionary<string, string>()));
         await _engine.EnsurePlayingAsync();
         NotifyStateChanged();
@@ -121,6 +168,7 @@ public sealed class LiveAppHost : IDisposable
     public void Stop()
     {
         _danmaku.Stop();
+        _gift.Stop();
         _engine.Stop();
         _system.Add("已停止监控");
         NotifyStateChanged();
@@ -150,6 +198,21 @@ public sealed class LiveAppHost : IDisposable
                 return;
             }
 
+            _users.EnsureUser(item.UserId, item.Nickname);
+
+            if (item.MsgType == "member")
+            {
+                _welcome.HandleMemberJoin(item, webRid);
+                return;
+            }
+
+            if (item.MsgType == "gift")
+            {
+                return;
+            }
+
+            _keywordReply.TryHandle(item, _replyQueue, _reply, webRid);
+            await _banVote.HandleDanmakuAsync(item, webRid);
             await _songRequest.HandleDanmakuAsync(item, webRid);
             NotifyStateChanged();
         }
@@ -215,6 +278,9 @@ public sealed class LiveAppHost : IDisposable
     public void Dispose()
     {
         _watchCts?.Cancel();
+        _adminSync.Dispose();
+        _adminWeb.Dispose();
+        _gift.Dispose();
         _danmaku.Dispose();
         _replyQueue.Dispose();
         _playbackCommands.Dispose();

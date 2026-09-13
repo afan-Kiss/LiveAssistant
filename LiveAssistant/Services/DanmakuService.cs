@@ -80,7 +80,8 @@ public sealed class DanmakuService : IDisposable
                     {
                         foreach (var msg in feed.Items)
                         {
-                            if (string.IsNullOrWhiteSpace(msg.Content))
+                            var msgType = msg.MsgType ?? "chat";
+                            if (string.IsNullOrWhiteSpace(msg.Content) && msgType == "chat")
                             {
                                 continue;
                             }
@@ -90,10 +91,10 @@ public sealed class DanmakuService : IDisposable
                                 var item = new DanmakuItem
                                 {
                                     MsgId = msg.MsgId ?? Guid.NewGuid().ToString("N"),
-                                    Content = msg.Content,
+                                    Content = msg.Content ?? "",
                                     Nickname = msg.User?.Nickname ?? "未知",
                                     UserId = msg.User?.UserId ?? "",
-                                    MsgType = msg.MsgType ?? "chat",
+                                    MsgType = msgType,
                                     Timestamp = DateTime.Now
                                 };
                                 DanmakuReceived?.Invoke(item);

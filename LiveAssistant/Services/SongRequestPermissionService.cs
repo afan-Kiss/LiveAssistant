@@ -12,12 +12,18 @@ public sealed class SongRequestPermissionService
     private readonly ConfigManager _config;
     private readonly UserRepository _users;
     private readonly QueueService _queue;
+    private readonly SongBlacklistService _blacklist;
 
-    public SongRequestPermissionService(ConfigManager config, UserRepository users, QueueService queue)
+    public SongRequestPermissionService(
+        ConfigManager config,
+        UserRepository users,
+        QueueService queue,
+        SongBlacklistService blacklist)
     {
         _config = config;
         _users = users;
         _queue = queue;
+        _blacklist = blacklist;
     }
 
     public SongRequestPermissionResult Evaluate(DanmakuItem item)
@@ -34,13 +40,23 @@ public sealed class SongRequestPermissionService
 
         var user = _users.EnsureUser(item.UserId, item.Nickname);
 
-        if (user.Role == UserRole.Blacklist)
+        if (user.Role == UserRole.Blacklist || user.Status == UserStatus.Banned)
         {
             return SongRequestPermissionResult.Deny(user, "黑名单用户", "songRequestRejected",
                 new Dictionary<string, string>
                 {
                     ["name"] = item.Nickname,
                     ["reason"] = "黑名单用户"
+                });
+        }
+
+        if (user.Status == UserStatus.Muted)
+        {
+            return SongRequestPermissionResult.Deny(user, "已被禁言", "songRequestRejected",
+                new Dictionary<string, string>
+                {
+                    ["name"] = item.Nickname,
+                    ["reason"] = "已被禁言"
                 });
         }
 
@@ -68,6 +84,20 @@ public sealed class SongRequestPermissionService
                 });
         }
 
+        return SongRequestPermissionResult.Permit(user);
+    }
+
+    public SongRequestPermissionResult EvaluateSong(string songName, UserProfile user, DanmakuItem item)
+    {
+        if (_blacklist.IsBlocked(songName))
+        {
+            return SongRequestPermissionResult.Deny(user, "歌曲在黑名单", "songRequestRejected",
+                new Dictionary<string, string>
+                {
+                    ["name"] = item.Nickname,
+                    ["reason"] = "该歌曲不可点"
+                });
+        }
         return SongRequestPermissionResult.Permit(user);
     }
 

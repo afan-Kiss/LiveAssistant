@@ -9,4 +9,5 @@ public sealed class UserProfile
     public int Level { get; set; }
     public int RequestCount { get; set; }
     public DateTime? LastRequestAt { get; set; }
+    public UserStatus Status { get; set; } = UserStatus.Active;
 }

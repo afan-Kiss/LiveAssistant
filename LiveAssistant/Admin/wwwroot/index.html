@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>点歌系统管理后台</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: "Segoe UI", sans-serif; background: #0f1419; color: #e7e9ea; }
+    .login-wrap { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+    .card { background: #1a1f26; border-radius: 12px; padding: 24px; width: 360px; }
+    input, button, select, textarea { width: 100%; padding: 10px; margin: 8px 0; border-radius: 8px; border: 1px solid #38444d; background: #0f1419; color: #e7e9ea; }
+    button { background: #1d9bf0; border: none; cursor: pointer; font-weight: 600; }
+    button:hover { background: #1a8cd8; }
+    .hidden { display: none; }
+    header { padding: 16px 24px; border-bottom: 1px solid #38444d; display: flex; justify-content: space-between; align-items: center; }
+    nav { display: flex; gap: 8px; padding: 12px 24px; border-bottom: 1px solid #38444d; flex-wrap: wrap; }
+    nav button { width: auto; padding: 8px 16px; background: #38444d; }
+    nav button.active { background: #1d9bf0; }
+    main { padding: 24px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+    .stat { background: #1a1f26; padding: 16px; border-radius: 10px; }
+    .stat label { color: #8b98a5; font-size: 12px; }
+    .stat div { font-size: 20px; margin-top: 4px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    th, td { padding: 10px; border-bottom: 1px solid #38444d; text-align: left; font-size: 14px; }
+    .actions button { width: auto; padding: 4px 10px; margin-right: 4px; font-size: 12px; }
+    h2 { margin-bottom: 12px; }
+    textarea { min-height: 200px; font-family: monospace; }
+  </style>
+</head>
+<body>
+  <div id="loginView" class="login-wrap">
+    <div class="card">
+      <h2>点歌系统管理后台</h2>
+      <input id="username" placeholder="用户名" value="admin">
+      <input id="password" type="password" placeholder="密码" value="admin123">
+      <button onclick="login()">登录</button>
+      <p id="loginError" style="color:#f4212e;margin-top:8px"></p>
+    </div>
+  </div>
+
+  <div id="appView" class="hidden">
+    <header>
+      <h1>点歌系统 /diangexitong</h1>
+      <button onclick="logout()" style="width:auto">退出</button>
+    </header>
+    <nav>
+      <button class="active" onclick="showTab('dashboard')">控制台</button>
+      <button onclick="showTab('queue')">点歌队列</button>
+      <button onclick="showTab('templates')">回复模板</button>
+      <button onclick="showTab('random')">随机歌曲</button>
+      <button onclick="showTab('users')">用户管理</button>
+      <button onclick="showTab('blacklist')">歌曲黑名单</button>
+      <button onclick="showTab('gifts')">礼物记录</button>
+    </nav>
+    <main>
+      <section id="tab-dashboard">
+        <div class="grid" id="stats"></div>
+        <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap">
+          <button onclick="api('POST','/api/playback/skip')">下一首</button>
+          <button onclick="api('POST','/api/playback/pause')">暂停</button>
+          <button onclick="api('POST','/api/playback/resume')">恢复</button>
+          <button onclick="toggleRandom()">随机补位开关</button>
+        </div>
+      </section>
+      <section id="tab-queue" class="hidden"><h2>点歌队列</h2><table id="queueTable"></table></section>
+      <section id="tab-templates" class="hidden"><h2>回复模板</h2><p style="color:#8b98a5;margin-bottom:8px">支持占位符: {name} {song} {queue} {gift}</p><textarea id="templatesJson"></textarea><button onclick="saveTemplates()">保存模板</button></section>
+      <section id="tab-random" class="hidden"><h2>随机歌曲</h2><textarea id="randomJson"></textarea><button onclick="saveRandom()">保存随机歌单</button></section>
+      <section id="tab-users" class="hidden"><h2>用户管理</h2><table id="usersTable"></table></section>
+      <section id="tab-blacklist" class="hidden"><h2>歌曲黑名单</h2><input id="blSong" placeholder="歌曲名"><input id="blReason" placeholder="原因"><button onclick="addBlacklist()">添加</button><table id="blacklistTable"></table></section>
+      <section id="tab-gifts" class="hidden"><h2>礼物记录</h2><table id="giftsTable"></table></section>
+    </main>
+  </div>
+
+  <script>
+    const base = location.pathname.replace(/\/index\.html$/, '').replace(/\/$/, '') || '/diangexitong';
+    let token = localStorage.getItem('adminToken') || '';
+    let randomFill = true;
+
+    async function api(method, path, body) {
+      const res = await fetch(base + path, {
+        method,
+        headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+        body: body ? JSON.stringify(body) : undefined
+      });
+      if (res.status === 401) { logout(); throw new Error('unauthorized'); }
+      return res.json().catch(() => ({}));
+    }
+
+    async function login() {
+      const res = await fetch(base + '/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: document.getElementById('username').value, password: document.getElementById('password').value })
+      }).then(r => r.json());
+      if (res.ok) {
+        token = res.token;
+        localStorage.setItem('adminToken', token);
+        document.getElementById('loginView').classList.add('hidden');
+        document.getElementById('appView').classList.remove('hidden');
+        refreshAll();
+        setInterval(refreshDashboard, 3000);
+      } else {
+        document.getElementById('loginError').textContent = res.message || '登录失败';
+      }
+    }
+
+    function logout() {
+      token = '';
+      localStorage.removeItem('adminToken');
+      location.reload();
+    }
+
+    function showTab(name) {
+      document.querySelectorAll('main > section').forEach(s => s.classList.add('hidden'));
+      document.getElementById('tab-' + name).classList.remove('hidden');
+      document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+      event.target.classList.add('active');
+      refreshAll();
+    }
+
+    async function refreshDashboard() {
+      const s = await api('GET', '/api/status');
+      randomFill = s.randomFillEnabled;
+      document.getElementById('stats').innerHTML = `
+        <div class="stat"><label>抖音</label><div>${s.douyinOnline ? '在线' : '离线'} (${s.danmakuConnection})</div></div>
+        <div class="stat"><label>酷狗</label><div>${s.kugouOnline ? '在线' : '离线'}</div></div>
+        <div class="stat"><label>当前歌曲</label><div>${s.currentSong}</div></div>
+        <div class="stat"><label>播放模式</label><div>${s.playbackMode}</div></div>
+        <div class="stat"><label>队列数量</label><div>${s.queueCount}</div></div>
+        <div class="stat"><label>运行时间</label><div>${s.uptime}</div></div>`;
+    }
+
+    async function refreshQueue() {
+      const items = await api('GET', '/api/queue');
+      document.getElementById('queueTable').innerHTML = '<tr><th>ID</th><th>用户</th><th>歌曲</th><th>状态</th><th>操作</th></tr>' +
+        items.map(i => `<tr><td>${i.id}</td><td>${i.nickname}</td><td>${i.songName}</td><td>${i.status}</td>
+        <td class="actions"><button onclick="queueAction(${i.id},'pin')">置顶</button><button onclick="queueAction(${i.id},'play')">立即播放</button><button onclick="queueAction(${i.id},'del')">删除</button></td></tr>`).join('');
+    }
+
+    async function queueAction(id, action) {
+      if (action === 'del') await api('DELETE', '/api/queue/' + id);
+      else if (action === 'pin') await api('POST', '/api/queue/' + id + '/pin');
+      else await api('POST', '/api/queue/' + id + '/play');
+      refreshQueue();
+    }
+
+    async function refreshTemplates() {
+      const t = await api('GET', '/api/templates');
+      document.getElementById('templatesJson').value = JSON.stringify(t, null, 2);
+    }
+
+    async function saveTemplates() {
+      const body = JSON.parse(document.getElementById('templatesJson').value);
+      await api('PUT', '/api/templates', body);
+      alert('已保存');
+    }
+
+    async function refreshRandom() {
+      const r = await api('GET', '/api/random');
+      document.getElementById('randomJson').value = JSON.stringify(r, null, 2);
+    }
+
+    async function saveRandom() {
+      const body = JSON.parse(document.getElementById('randomJson').value);
+      await api('PUT', '/api/random', body);
+      alert('已保存');
+    }
+
+    async function refreshUsers() {
+      const users = await api('GET', '/api/users');
+      document.getElementById('usersTable').innerHTML = '<tr><th>昵称</th><th>积分</th><th>等级</th><th>角色</th><th>状态</th></tr>' +
+        users.map(u => `<tr><td>${u.nickname}</td><td>${u.points}</td><td>${u.level}</td><td>${u.role}</td><td>${u.status}</td></tr>`).join('');
+    }
+
+    async function refreshBlacklist() {
+      const items = await api('GET', '/api/blacklist');
+      document.getElementById('blacklistTable').innerHTML = '<tr><th>歌曲</th><th>原因</th><th>操作</th></tr>' +
+        items.map(i => `<tr><td>${i.songName}</td><td>${i.reason}</td><td><button onclick="api('DELETE','/api/blacklist/${i.id}').then(refreshBlacklist)">删除</button></td></tr>`).join('');
+    }
+
+    async function addBlacklist() {
+      await api('POST', '/api/blacklist', { songName: document.getElementById('blSong').value, reason: document.getElementById('blReason').value });
+      refreshBlacklist();
+    }
+
+    async function refreshGifts() {
+      const items = await api('GET', '/api/gifts');
+      document.getElementById('giftsTable').innerHTML = '<tr><th>用户</th><th>礼物</th><th>数量</th><th>价值</th><th>时间</th></tr>' +
+        items.map(g => `<tr><td>${g.nickname}</td><td>${g.giftName}</td><td>${g.count}</td><td>${g.value}</td><td>${g.createdAt}</td></tr>`).join('');
+    }
+
+    async function toggleRandom() {
+      randomFill = !randomFill;
+      await api('POST', '/api/playback/random', { enabled: randomFill });
+      refreshDashboard();
+    }
+
+    function refreshAll() {
+      refreshDashboard();
+      refreshQueue();
+      refreshTemplates();
+      refreshRandom();
+      refreshUsers();
+      refreshBlacklist();
+      refreshGifts();
+    }
+
+    if (token) {
+      document.getElementById('loginView').classList.add('hidden');
+      document.getElementById('appView').classList.remove('hidden');
+      refreshAll();
+      setInterval(refreshDashboard, 3000);
+    }
+  </script>
+</body>
+</html>

@@ -23,6 +23,7 @@ public sealed class PlaybackCommandQueue : IDisposable
     private readonly CancellationTokenSource _cts = new();
     private readonly Task _worker;
     private int _pendingVolume = -1;
+    private long _pendingPlayNowId;
     private bool _advanceScheduled;
     private readonly object _enqueueLock = new();
     private bool _skipAdvancePending;
@@ -112,6 +113,12 @@ public sealed class PlaybackCommandQueue : IDisposable
     {
         _pendingVolume = volume;
         Enqueue(PlaybackCommandKind.SetVolume);
+    }
+
+    public void EnqueuePlayNow(long queueItemId)
+    {
+        _pendingPlayNowId = queueItemId;
+        Enqueue(PlaybackCommandKind.PlayNow);
     }
 
     private void OnTrackFinished()
@@ -210,6 +217,35 @@ public sealed class PlaybackCommandQueue : IDisposable
                     ReleaseSkipAdvancePending();
                 }
                 return;
+            case PlaybackCommandKind.PlayNow:
+                await PlayNowInternalAsync(ct);
+                return;
+        }
+    }
+
+    private async Task PlayNowInternalAsync(CancellationToken ct)
+    {
+        var id = _pendingPlayNowId;
+        _pendingPlayNowId = 0;
+        if (id <= 0)
+        {
+            return;
+        }
+
+        var item = _queue.GetItem(id);
+        if (item == null)
+        {
+            _log.PlaybackWarn($"立即播放失败: 队列项 {id} 不存在");
+            return;
+        }
+
+        _playback.Stop();
+        _queue.FinishCurrent();
+        _queue.PinToTop(id);
+        var next = _queue.DequeueNext();
+        if (next != null)
+        {
+            await PlayQueueItemAsync(next, isRandomFill: false, ct);
         }
     }
 
@@ -233,7 +269,15 @@ public sealed class PlaybackCommandQueue : IDisposable
                 await PlayRandomAsync(isRandomFill: false, ct);
                 return;
             case PlaybackMode.RequestWithRandomFill:
-                await PlayRandomAsync(isRandomFill: true, ct);
+                if (_config.Settings.Playback.RandomFillEnabled)
+                {
+                    await PlayRandomAsync(isRandomFill: true, ct);
+                }
+                else
+                {
+                    _system.Add("队列已空，等待点歌");
+                    _log.PlaybackInfo("队列已空，随机补位已关闭");
+                }
                 return;
         }
     }

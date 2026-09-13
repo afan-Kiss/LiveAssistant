@@ -57,6 +57,13 @@ public sealed class SongRequestService
                 return;
             }
 
+            var songPermission = _permission.EvaluateSong(songName, permission.User!, item);
+            if (!songPermission.Allowed)
+            {
+                Reject(item, webRid, songName, displayUser, songPermission);
+                return;
+            }
+
             _system.Add($"{item.Nickname} 点歌《{songName}》，正在搜索...");
             var track = await _kugou.ResolveTrackAsync(songName, ct);
             if (track == null)

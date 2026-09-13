@@ -65,6 +65,48 @@ public sealed class DouyinHealthData
     public int CollectSessions { get; set; }
 }
 
+public sealed class DouyinGiftFeedData
+{
+    [JsonPropertyName("items")]
+    public List<DouyinGiftMessage>? Items { get; set; }
+
+    [JsonPropertyName("gift_count")]
+    public int GiftCount { get; set; }
+
+    [JsonPropertyName("running")]
+    public bool Running { get; set; }
+}
+
+public sealed class DouyinGiftMessage
+{
+    [JsonPropertyName("user_id")]
+    public string? UserId { get; set; }
+
+    [JsonPropertyName("nickname")]
+    public string? Nickname { get; set; }
+
+    [JsonPropertyName("user")]
+    public DouyinUser? User { get; set; }
+
+    [JsonPropertyName("gift_id")]
+    public string? GiftId { get; set; }
+
+    [JsonPropertyName("gift_name")]
+    public string? GiftName { get; set; }
+
+    [JsonPropertyName("count")]
+    public int Count { get; set; }
+
+    [JsonPropertyName("value")]
+    public int Value { get; set; }
+}
+
+public sealed class DouyinLookupData
+{
+    [JsonPropertyName("user")]
+    public DouyinUser? User { get; set; }
+}
+
 public sealed class DouyinRoomData
 {
     [JsonPropertyName("web_rid")]

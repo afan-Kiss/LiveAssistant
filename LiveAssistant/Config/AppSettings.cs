@@ -14,6 +14,12 @@ public sealed class AppSettings
     public QueueSettings Queue { get; set; } = new();
     public ReplySettings Reply { get; set; } = new();
     public EmergencySettings Emergency { get; set; } = new();
+    public AdminSettings Admin { get; set; } = new();
+    public WelcomeSettings Welcome { get; set; } = new();
+    public BanVoteSettings BanVote { get; set; } = new();
+    public GiftSettings Gift { get; set; } = new();
+    public UserLevelSettings UserLevel { get; set; } = new();
+    public KeywordReplySettings KeywordReply { get; set; } = new();
 }
 
 public sealed class DouyinSettings
@@ -39,6 +45,7 @@ public sealed class PlaybackSettings
 
     public int Volume { get; set; } = 80;
     public bool AutoSkipOnError { get; set; } = true;
+    public bool RandomFillEnabled { get; set; } = true;
 }
 
 public sealed class RandomPlaylistItem
@@ -80,6 +87,43 @@ public sealed class EmergencySettings
 {
     public bool PauseInteraction { get; set; }
     public bool PauseSongRequest { get; set; }
+}
+
+public sealed class AdminSettings
+{
+    public bool Enabled { get; set; } = true;
+    public int Port { get; set; } = 5088;
+    public string Path { get; set; } = "/diangexitong";
+    public string Username { get; set; } = "admin";
+    public string Password { get; set; } = "admin123";
+}
+
+public sealed class WelcomeSettings
+{
+    public bool Enabled { get; set; } = true;
+}
+
+public sealed class BanVoteSettings
+{
+    public bool Enabled { get; set; } = true;
+    public int RequiredVotes { get; set; } = 5;
+    public int WindowSeconds { get; set; } = 300;
+}
+
+public sealed class GiftSettings
+{
+    public int PointsPerValue { get; set; } = 1;
+    public int PollIntervalMs { get; set; } = 2000;
+}
+
+public sealed class UserLevelSettings
+{
+    public List<int> Thresholds { get; set; } = new() { 0, 100, 500, 2000, 10000 };
+}
+
+public sealed class KeywordReplySettings
+{
+    public bool Enabled { get; set; }
 }
 
 public sealed class ConfigManager
@@ -159,5 +203,11 @@ public sealed class ConfigManager
 
         var tplJson = JsonSerializer.Serialize(ReplyTemplates, JsonOptions);
         File.WriteAllText(Path.Combine(_dataDir, "ReplyTemplates.json"), tplJson);
+    }
+
+    public void SetReplyTemplates(Dictionary<string, string> templates)
+    {
+        ReplyTemplates = templates;
+        Save();
     }
 }

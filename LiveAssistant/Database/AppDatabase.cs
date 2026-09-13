@@ -24,6 +24,7 @@ public sealed class AppDatabase : IDisposable
                 user_id TEXT PRIMARY KEY,
                 nickname TEXT NOT NULL,
                 role TEXT DEFAULT 'normal',
+                status TEXT DEFAULT 'active',
                 points INTEGER DEFAULT 0,
                 level INTEGER DEFAULT 0,
                 request_count INTEGER DEFAULT 0,
@@ -69,6 +70,64 @@ public sealed class AppDatabase : IDisposable
                 key TEXT PRIMARY KEY,
                 value TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS gift_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT,
+                nickname TEXT,
+                gift_id TEXT,
+                gift_name TEXT,
+                count INTEGER DEFAULT 1,
+                value INTEGER DEFAULT 0,
+                created_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS ban_vote_sessions (
+                id TEXT PRIMARY KEY,
+                target_user_id TEXT,
+                target_nickname TEXT,
+                vote_count INTEGER DEFAULT 0,
+                required_votes INTEGER,
+                status TEXT DEFAULT 'active',
+                created_at TEXT,
+                completed_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS ban_votes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT,
+                target_user_id TEXT,
+                target_nickname TEXT,
+                voter_user_id TEXT,
+                voter_nickname TEXT,
+                created_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS song_blacklist (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                song_name TEXT,
+                artist TEXT,
+                song_id TEXT,
+                reason TEXT,
+                created_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS keyword_replies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                keyword TEXT,
+                template_key TEXT,
+                enabled INTEGER DEFAULT 1,
+                created_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS admin_commands (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                command_type TEXT,
+                payload TEXT,
+                status TEXT DEFAULT 'pending',
+                created_at TEXT,
+                processed_at TEXT
+            );
             """;
         cmd.ExecuteNonQuery();
     }
@@ -77,6 +136,7 @@ public sealed class AppDatabase : IDisposable
     {
         using var conn = Open();
         EnsureColumn(conn, "users", "role", "TEXT DEFAULT 'normal'");
+        EnsureColumn(conn, "users", "status", "TEXT DEFAULT 'active'");
         EnsureColumn(conn, "queue_items", "status", "TEXT DEFAULT 'waiting'");
         EnsureColumn(conn, "queue_items", "updated_at", "TEXT");
 
@@ -84,6 +144,8 @@ public sealed class AppDatabase : IDisposable
         roleCmd.CommandText = """
             UPDATE users SET role = 'normal'
             WHERE role IS NULL OR role = '';
+            UPDATE users SET status = 'active'
+            WHERE status IS NULL OR status = '';
             """;
         roleCmd.ExecuteNonQuery();
 
@@ -95,9 +157,6 @@ public sealed class AppDatabase : IDisposable
         legacyCmd.ExecuteNonQuery();
     }
 
-    /// <summary>
-    /// 启动时将 playing 恢复为 waiting，返回受影响行数。
-    /// </summary>
     public int RecoverPlayingQueueItems()
     {
         using var conn = Open();

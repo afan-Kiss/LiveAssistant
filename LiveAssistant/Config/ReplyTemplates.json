@@ -9,5 +9,8 @@
   "systemConnected": "直播间已连接",
   "systemDisconnected": "连接断开，正在重连...",
   "systemKugouDown": "酷狗服务未响应",
-  "systemDouyinDown": "抖音服务未响应"
+  "systemDouyinDown": "抖音服务未响应",
+  "welcome": "欢迎 {name} 来到直播间~",
+  "banVotePassed": "@{name} 已被投票禁言",
+  "giftThanks": "感谢 {name} 送出 {gift}×{count}"
 }

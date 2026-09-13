@@ -70,6 +70,30 @@ public sealed class DouyinService
             return result?.Ok == true;
         }, false);
 
+    public Task<DouyinGiftFeedData?> PollGiftAsync(string webRid, int after, int limit = 50, CancellationToken ct = default)
+        => SafeAsync("poll_gift", async () =>
+        {
+            var result = await HttpJson.PostAsync<DouyinEnvelope<DouyinGiftFeedData>>(_client, "api/live/gift/feed",
+                new { web_rid = webRid, after, limit }, ct);
+            return result?.Ok == true ? result.Data : null;
+        }, null);
+
+    public Task<bool> ModSilenceAsync(string webRid, string userId, string action, CancellationToken ct = default)
+        => SafeAsync("mod_silence", async () =>
+        {
+            var result = await HttpJson.PostAsync<DouyinEnvelope<object>>(_client, "api/live/mod/silence",
+                new { web_rid = webRid, user_id = userId, action }, ct);
+            return result?.Ok == true;
+        }, false);
+
+    public Task<DouyinUser?> LookupUserAsync(string webRid, string keyword, CancellationToken ct = default)
+        => SafeAsync("lookup_user", async () =>
+        {
+            var result = await HttpJson.PostAsync<DouyinEnvelope<DouyinLookupData>>(_client, "api/live/user/lookup",
+                new { web_rid = webRid, keyword }, ct);
+            return result?.Ok == true ? result.Data?.User : null;
+        }, null);
+
     private async Task<T> SafeAsync<T>(string operation, Func<Task<T>> action, T fallback)
     {
         try
