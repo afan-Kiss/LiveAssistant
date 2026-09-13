@@ -137,8 +137,12 @@ public sealed class GiftSettings
 {
     public int PointsPerValue { get; set; } = 1;
     public int PollIntervalMs { get; set; } = 2000;
-    /// <summary>礼物 im/fetch 轮询间隔（毫秒）。</summary>
-    public int ImFetchIntervalMs { get; set; } = 10000;
+    /// <summary>兼容旧配置；优先使用 IdleImFetchIntervalMs。</summary>
+    public int ImFetchIntervalMs { get; set; } = 3000;
+    /// <summary>无礼物时的 im/fetch 间隔（毫秒）。</summary>
+    public int IdleImFetchIntervalMs { get; set; } = 3000;
+    /// <summary>刚收到礼物后的快速拉取间隔（毫秒）。</summary>
+    public int ActiveImFetchIntervalMs { get; set; } = 800;
     /// <summary>连击超时自动结算（秒）。</summary>
     public int ComboTimeoutSeconds { get; set; } = 10;
     /// <summary>断线/Cookie 失效后的重连退避基数（毫秒）。</summary>

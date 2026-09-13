@@ -42,8 +42,8 @@ public static class GiftNormalizer
             GiftId = giftId,
             GiftName = giftName,
             Count = count,
-            // 单价（钻石）；GiftService 积分公式为 Value * PointsPerValue * Count
-            Value = diamond,
+            // 本次礼物总钻石价值（单价 * 数量），GiftService 不再乘 Count
+            Value = diamond > 0 ? diamond * count : 0,
             DiamondCount = diamond,
             RepeatCount = repeatCount > 0 ? repeatCount : count,
             GroupId = groupId,

@@ -91,7 +91,7 @@ public sealed class GiftCollectorTests : IDisposable
         var end = pipeline.ProcessGiftMessage(BuildGift(3, 1, 5, "U", 8, "跑车", 10, 6, 1, 1, totalCount: 6));
         Assert.Single(end);
         Assert.Equal(6, end[0].Count);
-        Assert.Equal(10, end[0].Value);
+        Assert.Equal(60, end[0].Value);
     }
 
     [Fact]
@@ -136,8 +136,7 @@ public sealed class GiftCollectorTests : IDisposable
     {
         var config = new ConfigManager();
         config.Load();
-        config.Settings.Douyin.CookieStorePath = _cookiePath;
-        config.Settings.Gift.ImFetchIntervalMs = 50;
+        config.Settings.Gift.IdleImFetchIntervalMs = 50;
         config.Settings.Gift.ReconnectDelayMs = 50;
 
         var dataDir = Path.Combine(_tempDir, "db");
@@ -145,21 +144,18 @@ public sealed class GiftCollectorTests : IDisposable
         var db = new AppDatabase(dataDir);
         var users = new UserRepository(db);
         var log = new LogService(dataDir);
+        var douyin = new DouyinService(config.Settings.Douyin, log);
         var gifts = new GiftService(
-            config,
-            new DouyinService(config.Settings.Douyin, log),
-            new GiftRepository(db),
-            users,
-            new UserLevelService(config, users),
-            new GiftRuleRepository(db),
-            log,
-            new SystemMessageService(20));
+            config, douyin, new GiftRepository(db), users,
+            new UserLevelService(config, users), new GiftRuleRepository(db),
+            log, new SystemMessageService(20));
 
-        // 故意让 im/fetch 失败，验证 Start/Stop 可重复（断线重连生命周期）。
+        var cookies = new StaticCookieProvider("sessionid=x");
+        var rooms = new StaticRoomResolver("999");
         var im = new GiftImFetchClient(new HttpClient(new ScriptedHandler(_ =>
             new HttpResponseMessage(HttpStatusCode.InternalServerError))));
 
-        using var collector = new GiftCollectorService(config, new DouyinService(config.Settings.Douyin, log), gifts, log, im);
+        using var collector = new GiftCollectorService(config, douyin, gifts, log, im, cookies, rooms);
         collector.StartGiftCollector("123");
         Assert.True(collector.IsRunning);
         collector.StopGiftCollector();
@@ -168,6 +164,20 @@ public sealed class GiftCollectorTests : IDisposable
         collector.StopGiftCollector();
         Assert.False(collector.IsRunning);
         db.Dispose();
+    }
+
+    private sealed class StaticCookieProvider : ICookieProvider
+    {
+        private readonly string _cookie;
+        public StaticCookieProvider(string cookie) => _cookie = cookie;
+        public Task<string> GetActiveCookieAsync(CancellationToken ct = default) => Task.FromResult(_cookie);
+    }
+
+    private sealed class StaticRoomResolver : IGiftRoomResolver
+    {
+        private readonly string _roomId;
+        public StaticRoomResolver(string roomId) => _roomId = roomId;
+        public Task<string> ResolveRoomIdAsync(string webRid, CancellationToken ct = default) => Task.FromResult(_roomId);
     }
 
     public void Dispose()

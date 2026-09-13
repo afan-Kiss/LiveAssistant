@@ -10,7 +10,10 @@ public sealed class GiftEvent
     public string GiftId { get; set; } = "";
     public string GiftName { get; set; } = "";
     public int Count { get; set; }
+
+    /// <summary>本次礼物总钻石价值（DiamondCount * Count）。</summary>
     public int Value { get; set; }
+
     public DateTime Time { get; set; } = DateTime.Now;
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 

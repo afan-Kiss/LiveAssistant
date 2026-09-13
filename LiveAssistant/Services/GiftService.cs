@@ -75,7 +75,11 @@ public sealed class GiftService : IDisposable
 
         var before = _users.GetUser(gift.UserId)?.Points ?? 0;
         var rule = _giftRules.FindByGift(gift.GiftName, gift.GiftId);
-        var points = (rule?.Points ?? (gift.Value * _config.Settings.Gift.PointsPerValue)) * gift.Count;
+        // Value = 本次礼物总钻石价值，禁止再乘 Count。
+        // 有规则时：规则积分按件数计；无规则时：总钻石 * PointsPerValue。
+        var points = rule?.Points is int rulePoints
+            ? rulePoints * Math.Max(1, gift.Count)
+            : gift.Value * _config.Settings.Gift.PointsPerValue;
         var pointsAfter = before + points;
 
         if (!_gifts.TryInsert(gift, points, pointsAfter, out var id))
