@@ -11,7 +11,16 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="LiveAssistant.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="Google.Protobuf" Version="3.28.3" />
+    <PackageReference Include="Grpc.Tools" Version="2.67.0">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.11" />
     <PackageReference Include="NAudio" Version="2.2.1" />
   </ItemGroup>
@@ -26,6 +35,11 @@
     <Content Include="Admin\wwwroot\**">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+  </ItemGroup>
+
+  <!-- Source: https://github.com/opedium/douyin-live-proto (MIT) -->
+  <ItemGroup>
+    <Protobuf Include="GiftProtocol\Proto\douyin_live.proto" GrpcServices="None" Access="Public" />
   </ItemGroup>
 
 </Project>
