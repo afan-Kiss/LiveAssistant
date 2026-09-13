@@ -1,0 +1,10 @@
+bin/
+obj/
+.vs/
+*.user
+*.suo
+data/
+logs/
+*.db
+*.db-journal
+Config/DeployCredentials.local.json

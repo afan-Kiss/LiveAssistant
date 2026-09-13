@@ -1,0 +1,12 @@
+{
+  "songRequestAccepted": "@{name} 已收到你的点歌《{song}》，当前排队前面还有{queue}首",
+  "songRequestRejected": "@{name} 点歌失败：{reason}",
+  "songNotFound": "@{name} 没找到《{song}》，请换个歌名",
+  "queueFull": "@{name} 队列已满，请稍后再试",
+  "nowPlaying": "正在播放《{song}》",
+  "playbackError": "播放失败，已自动跳过《{song}》",
+  "systemConnected": "直播间已连接",
+  "systemDisconnected": "连接断开，正在重连...",
+  "systemKugouDown": "酷狗服务未响应",
+  "systemDouyinDown": "抖音服务未响应"
+}
