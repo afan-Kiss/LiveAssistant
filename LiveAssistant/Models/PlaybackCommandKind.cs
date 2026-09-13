@@ -9,5 +9,8 @@ public enum PlaybackCommandKind
     EnsurePlaying,
     Stop,
     SetVolume,
-    PlayNow
+    PlayNow,
+    Play,
+    Previous,
+    ClearQueue
 }

@@ -23,9 +23,14 @@ public sealed class LiveAppHost : IDisposable
     private readonly DanmakuService _danmaku;
     private readonly UserRepository _users;
     private readonly GiftRepository _giftRepo;
+    private readonly GiftRuleRepository _giftRuleRepo;
     private readonly BanVoteRepository _banVoteRepo;
     private readonly SongBlacklistRepository _songBlacklistRepo;
     private readonly KeywordReplyRepository _keywordReplyRepo;
+    private readonly ReplyTemplateRepository _replyTemplateRepo;
+    private readonly RandomPoolRepository _randomPoolRepo;
+    private readonly LevelPermissionRepository _levelPermRepo;
+    private readonly SettingsStore _settingsStore;
     private readonly SongRequestPermissionService _permission;
     private readonly SongRequestService _songRequest;
     private readonly GiftService _gift;
@@ -33,8 +38,8 @@ public sealed class LiveAppHost : IDisposable
     private readonly WelcomeService _welcome;
     private readonly KeywordReplyService _keywordReply;
     private readonly UserLevelService _userLevel;
-    private readonly AdminCommandService _adminCommands;
-    private readonly AdminSyncService _adminSync;
+    private readonly CommandQueueService _commandQueue;
+    private readonly BackendSyncService _backendSync;
     private readonly AdminWebHost _adminWeb;
     private readonly ProcessWatchdogService _watchdog;
     private readonly DateTime _startedAt = DateTime.Now;
@@ -60,9 +65,19 @@ public sealed class LiveAppHost : IDisposable
 
         _users = new UserRepository(_db);
         _giftRepo = new GiftRepository(_db);
+        _giftRuleRepo = new GiftRuleRepository(_db);
         _banVoteRepo = new BanVoteRepository(_db);
         _songBlacklistRepo = new SongBlacklistRepository(_db);
         _keywordReplyRepo = new KeywordReplyRepository(_db);
+        _replyTemplateRepo = new ReplyTemplateRepository(_db);
+        _randomPoolRepo = new RandomPoolRepository(_db);
+        _levelPermRepo = new LevelPermissionRepository(_db);
+
+        _settingsStore = new SettingsStore(
+            _config, _replyTemplateRepo, _randomPoolRepo, _giftRuleRepo, _levelPermRepo,
+            new SyncCacheRepository(_db));
+        _settingsStore.InitializeFromFilesIfEmpty();
+        _settingsStore.ApplyDbToMemory();
 
         _douyin = new DouyinService(_config.Settings.Douyin, _log);
         _kugou = new KugouService(_config.Settings.Kugou, _log);
@@ -79,27 +94,34 @@ public sealed class LiveAppHost : IDisposable
         _danmaku = new DanmakuService(_douyin, _log, _system);
 
         var songBlacklist = new SongBlacklistService(_songBlacklistRepo);
-        _permission = new SongRequestPermissionService(_config, _users, _queue, songBlacklist);
-        _songRequest = new SongRequestService(_config, _kugou, _queue, _permission, _reply, _replyQueue, _system, _log);
         _userLevel = new UserLevelService(_config, _users);
-        _gift = new GiftService(_config, _douyin, _giftRepo, _users, _userLevel, _log, _system);
+        _permission = new SongRequestPermissionService(
+            _config, _users, _queue, songBlacklist, _levelPermRepo, _userLevel);
+        _songRequest = new SongRequestService(_config, _kugou, _queue, _permission, _reply, _replyQueue, _system, _log);
+        _gift = new GiftService(_config, _douyin, _giftRepo, _users, _userLevel, _giftRuleRepo, _log, _system);
         _banVote = new BanVoteService(_config, _banVoteRepo, _users, _douyin, _replyQueue, _reply, _system, _log);
         _welcome = new WelcomeService(_config, _reply, _replyQueue, _system);
         _keywordReply = new KeywordReplyService(_config, _keywordReplyRepo);
-        _adminCommands = new AdminCommandService(new AdminCommandRepository(_db));
-        _adminSync = new AdminSyncService(_config, _adminCommands, _playbackCommands, _engine, _queue, _log);
+        _commandQueue = new CommandQueueService(new AdminCommandRepository(_db));
+        _backendSync = new BackendSyncService(
+            _config, _commandQueue, _settingsStore, _playbackCommands, _engine, _queue, _reply, _log);
         _watchdog = new ProcessWatchdogService(_config, _log, _system);
 
         _adminWeb = new AdminWebHost(new AdminAppContext
         {
             Config = _config,
             Host = this,
-            Commands = _adminCommands,
+            Commands = _commandQueue,
+            Settings = _settingsStore,
             Users = _users,
             Gifts = _giftRepo,
+            GiftRules = _giftRuleRepo,
+            RandomPool = _randomPoolRepo,
+            ReplyTemplates = _replyTemplateRepo,
             SongBlacklist = _songBlacklistRepo,
             KeywordReplies = _keywordReplyRepo,
-            BanVotes = _banVoteRepo
+            BanVotes = _banVoteRepo,
+            LevelPermissions = _levelPermRepo
         });
 
         _danmaku.DanmakuReceived += OnDanmakuReceived;
@@ -108,7 +130,7 @@ public sealed class LiveAppHost : IDisposable
         _queue.QueueChanged += () => NotifyStateChanged();
 
         _adminWeb.Start();
-        _adminSync.Start();
+        _backendSync.Start();
 
         _log.Info("LiveAssistant 已启动");
         if (_config.Settings.Admin.Enabled)
@@ -124,6 +146,7 @@ public sealed class LiveAppHost : IDisposable
     public PlaybackCommandQueue PlaybackCommands => _playbackCommands;
     public PlaybackEngine Engine => _engine;
     public DanmakuService Danmaku => _danmaku;
+    public SettingsStore SettingsStore => _settingsStore;
     public DateTime StartedAt => _startedAt;
 
     public event Action<DanmakuItem>? DanmakuReceived;
@@ -278,7 +301,7 @@ public sealed class LiveAppHost : IDisposable
     public void Dispose()
     {
         _watchCts?.Cancel();
-        _adminSync.Dispose();
+        _backendSync.Dispose();
         _adminWeb.Dispose();
         _gift.Dispose();
         _danmaku.Dispose();

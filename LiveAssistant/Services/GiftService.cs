@@ -11,6 +11,7 @@ public sealed class GiftService : IDisposable
     private readonly GiftRepository _gifts;
     private readonly UserRepository _users;
     private readonly UserLevelService _levels;
+    private readonly GiftRuleRepository _giftRules;
     private readonly LogService _log;
     private readonly SystemMessageService _system;
     private CancellationTokenSource? _cts;
@@ -24,6 +25,7 @@ public sealed class GiftService : IDisposable
         GiftRepository gifts,
         UserRepository users,
         UserLevelService levels,
+        GiftRuleRepository giftRules,
         LogService log,
         SystemMessageService system)
     {
@@ -32,6 +34,7 @@ public sealed class GiftService : IDisposable
         _gifts = gifts;
         _users = users;
         _levels = levels;
+        _giftRules = giftRules;
         _log = log;
         _system = system;
     }
@@ -53,7 +56,9 @@ public sealed class GiftService : IDisposable
     public void HandleGiftEvent(GiftEvent gift)
     {
         gift.Id = _gifts.Insert(gift);
-        var points = gift.Value * _config.Settings.Gift.PointsPerValue;
+        var rulePoints = _giftRules.GetPointsForGift(gift.GiftName);
+        var points = rulePoints ?? (gift.Value * _config.Settings.Gift.PointsPerValue);
+        points *= gift.Count;
         if (points > 0)
         {
             _users.AddPoints(gift.UserId, gift.Nickname, points);
@@ -113,6 +118,12 @@ public sealed class GiftService : IDisposable
             return null;
         }
 
+        var time = DateTime.Now;
+        if (!string.IsNullOrWhiteSpace(raw.Time) && DateTime.TryParse(raw.Time, out var parsed))
+        {
+            time = parsed;
+        }
+
         return new GiftEvent
         {
             UserId = userId,
@@ -120,7 +131,9 @@ public sealed class GiftService : IDisposable
             GiftId = raw.GiftId ?? "",
             GiftName = raw.GiftName ?? "礼物",
             Count = raw.Count <= 0 ? 1 : raw.Count,
-            Value = raw.Value
+            Value = raw.Value,
+            Time = time,
+            CreatedAt = time
         };
     }
 

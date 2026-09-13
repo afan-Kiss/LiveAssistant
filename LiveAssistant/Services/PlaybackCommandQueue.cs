@@ -27,6 +27,7 @@ public sealed class PlaybackCommandQueue : IDisposable
     private bool _advanceScheduled;
     private readonly object _enqueueLock = new();
     private bool _skipAdvancePending;
+    private readonly Stack<QueueItem> _playbackHistory = new();
 
     public PlaybackCommandQueue(
         ConfigManager config,
@@ -120,6 +121,21 @@ public sealed class PlaybackCommandQueue : IDisposable
         _pendingPlayNowId = queueItemId;
         Enqueue(PlaybackCommandKind.PlayNow);
     }
+
+    public void EnqueuePlay()
+    {
+        if (_playback.State == Models.PlaybackState.Paused)
+        {
+            EnqueueResume();
+        }
+        else
+        {
+            Enqueue(PlaybackCommandKind.Play);
+        }
+    }
+
+    public void EnqueuePrevious() => Enqueue(PlaybackCommandKind.Previous);
+    public void EnqueueClearQueue() => Enqueue(PlaybackCommandKind.ClearQueue);
 
     private void OnTrackFinished()
     {
@@ -220,6 +236,52 @@ public sealed class PlaybackCommandQueue : IDisposable
             case PlaybackCommandKind.PlayNow:
                 await PlayNowInternalAsync(ct);
                 return;
+            case PlaybackCommandKind.Play:
+                if (_playback.State == Models.PlaybackState.Idle)
+                {
+                    await AdvanceInternalAsync(ct);
+                }
+                else
+                {
+                    _playback.Resume();
+                }
+                _log.PlaybackInfo("播放");
+                return;
+            case PlaybackCommandKind.Previous:
+                await PlayPreviousInternalAsync(ct);
+                return;
+            case PlaybackCommandKind.ClearQueue:
+                _queue.ClearWaiting();
+                _log.PlaybackInfo("清空等待队列");
+                return;
+        }
+    }
+
+    private async Task PlayPreviousInternalAsync(CancellationToken ct)
+    {
+        if (_playbackHistory.Count == 0)
+        {
+            _system.Add("没有上一首记录");
+            return;
+        }
+
+        var prev = _playbackHistory.Pop();
+        _playback.Stop();
+        _queue.FinishCurrent();
+        await PlayQueueItemAsync(prev, isRandomFill: prev.IsRandom, ct);
+    }
+
+    private void PushHistory(QueueItem item)
+    {
+        _playbackHistory.Push(item);
+        while (_playbackHistory.Count > 20)
+        {
+            var temp = _playbackHistory.ToArray();
+            _playbackHistory.Clear();
+            for (var i = 1; i < temp.Length; i++)
+            {
+                _playbackHistory.Push(temp[i]);
+            }
         }
     }
 
@@ -332,6 +394,7 @@ public sealed class PlaybackCommandQueue : IDisposable
 
         item.PlayUrl = track.PlayUrl;
         _queue.SetNowPlaying(item);
+        PushHistory(item);
 
         var ok = await _playback.PlayAsync(track, isRandomFill, ct);
         _log.LogPlayback(track.SongName, source, item.Nickname, track.PlayUrl, ok,

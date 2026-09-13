@@ -128,6 +128,38 @@ public sealed class AppDatabase : IDisposable
                 created_at TEXT,
                 processed_at TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS reply_templates (
+                template_key TEXT PRIMARY KEY,
+                content TEXT NOT NULL,
+                updated_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS random_pool_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                song_name TEXT,
+                artist TEXT,
+                song_id TEXT,
+                hash TEXT,
+                keyword TEXT,
+                enabled INTEGER DEFAULT 1,
+                created_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS gift_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                gift_name TEXT,
+                points INTEGER DEFAULT 0,
+                enabled INTEGER DEFAULT 1,
+                created_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS level_permissions (
+                level INTEGER PRIMARY KEY,
+                can_request INTEGER DEFAULT 1,
+                cooldown_seconds INTEGER DEFAULT 30,
+                min_points INTEGER DEFAULT 0
+            );
             """;
         cmd.ExecuteNonQuery();
     }
@@ -139,6 +171,8 @@ public sealed class AppDatabase : IDisposable
         EnsureColumn(conn, "users", "status", "TEXT DEFAULT 'active'");
         EnsureColumn(conn, "queue_items", "status", "TEXT DEFAULT 'waiting'");
         EnsureColumn(conn, "queue_items", "updated_at", "TEXT");
+        EnsureColumn(conn, "ban_vote_sessions", "expires_at", "TEXT");
+        EnsureColumn(conn, "ban_vote_sessions", "result", "TEXT");
 
         using var roleCmd = conn.CreateCommand();
         roleCmd.CommandText = """

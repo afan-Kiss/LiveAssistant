@@ -5,33 +5,49 @@ using LiveAssistant.Models;
 namespace LiveAssistant.Services;
 
 /// <summary>
-/// WinForms 后台连接模块：轮询管理后台 API，获取配置与命令，统一进入 PlaybackCommandQueue。
+/// 客户端后台同步：连接管理后台，同步配置/模板/随机池/规则，消费命令队列。
+/// 后台断开时使用本地 SQLite 缓存。
 /// </summary>
-public sealed class AdminSyncService : IDisposable
+public sealed class BackendSyncService : IDisposable
 {
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() }
+    };
+
     private readonly ConfigManager _config;
-    private readonly AdminCommandService _commands;
+    private readonly CommandQueueService _commands;
+    private readonly SettingsStore _settings;
     private readonly PlaybackCommandQueue _playback;
     private readonly PlaybackEngine _engine;
     private readonly QueueService _queue;
+    private readonly ReplyService _reply;
     private readonly LogService _log;
     private readonly HttpClient _client;
     private CancellationTokenSource? _cts;
-    private string _configHash = "";
+    private string _syncVersion = "";
+    private bool _backendOnline;
 
-    public AdminSyncService(
+    public bool BackendOnline => _backendOnline;
+
+    public BackendSyncService(
         ConfigManager config,
-        AdminCommandService commands,
+        CommandQueueService commands,
+        SettingsStore settings,
         PlaybackCommandQueue playback,
         PlaybackEngine engine,
         QueueService queue,
+        ReplyService reply,
         LogService log)
     {
         _config = config;
         _commands = commands;
+        _settings = settings;
         _playback = playback;
         _engine = engine;
         _queue = queue;
+        _reply = reply;
         _log = log;
         var port = config.Settings.Admin.Port;
         _client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
@@ -44,10 +60,11 @@ public sealed class AdminSyncService : IDisposable
             return;
         }
 
+        _settings.TryLoadCachedBundle();
         Stop();
         _cts = new CancellationTokenSource();
         _ = Task.Run(() => SyncLoopAsync(_cts.Token));
-        _log.Info("后台同步模块已启动");
+        _log.Info("BackendSyncService 已启动");
     }
 
     public void Stop()
@@ -63,8 +80,12 @@ public sealed class AdminSyncService : IDisposable
         {
             try
             {
-                await PullConfigAsync(path, ct);
-                await PullCommandsAsync(path, ct);
+                var online = await PullBundleAsync(path, ct);
+                _backendOnline = online;
+                if (online)
+                {
+                    await PullCommandsAsync(path, ct);
+                }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -72,7 +93,8 @@ public sealed class AdminSyncService : IDisposable
             }
             catch (Exception ex)
             {
-                _log.Error("admin", "后台同步异常", ex);
+                _backendOnline = false;
+                _log.Error("sync", "后台同步异常", ex);
             }
 
             try
@@ -86,25 +108,31 @@ public sealed class AdminSyncService : IDisposable
         }
     }
 
-    private async Task PullConfigAsync(string path, CancellationToken ct)
+    private async Task<bool> PullBundleAsync(string path, CancellationToken ct)
     {
-        var resp = await _client.GetAsync($"{path}/api/sync/config", ct);
+        var resp = await _client.GetAsync($"{path}/api/sync/bundle", ct);
         if (!resp.IsSuccessStatusCode)
         {
-            return;
+            return false;
         }
 
         var json = await resp.Content.ReadAsStringAsync(ct);
-        using var doc = JsonDocument.Parse(json);
-        var hash = doc.RootElement.GetProperty("hash").GetString() ?? "";
-        if (hash == _configHash)
+        var bundle = JsonSerializer.Deserialize<SyncBundle>(json, JsonOptions);
+        if (bundle == null)
         {
-            return;
+            return false;
         }
 
-        _configHash = hash;
-        _config.Load();
-        _log.Info("后台配置已同步");
+        if (bundle.Version == _syncVersion)
+        {
+            return true;
+        }
+
+        _syncVersion = bundle.Version;
+        _settings.ApplyBundle(bundle);
+        _reply.Reload();
+        _log.Info("后台配置包已同步");
+        return true;
     }
 
     private async Task PullCommandsAsync(string path, CancellationToken ct)
@@ -116,18 +144,14 @@ public sealed class AdminSyncService : IDisposable
         }
 
         var json = await resp.Content.ReadAsStringAsync(ct);
-        var items = JsonSerializer.Deserialize<List<AdminCommandDto>>(json, new JsonSerializerOptions
-        {
-            PropertyNameCaseInsensitive = true
-        }) ?? new List<AdminCommandDto>();
-
+        var items = JsonSerializer.Deserialize<List<CommandDto>>(json, JsonOptions) ?? new();
         foreach (var cmd in items)
         {
             ExecuteCommand(cmd);
         }
     }
 
-    private void ExecuteCommand(AdminCommandDto cmd)
+    private void ExecuteCommand(CommandDto cmd)
     {
         switch (cmd.Type?.ToLowerInvariant())
         {
@@ -138,7 +162,14 @@ public sealed class AdminSyncService : IDisposable
                 _playback.EnqueuePause();
                 break;
             case "resume":
-                _playback.EnqueueResume();
+            case "play":
+                _playback.EnqueuePlay();
+                break;
+            case "previous":
+                _playback.EnqueuePrevious();
+                break;
+            case "clearqueue":
+                _queue.ClearWaiting();
                 break;
             case "setrandomfill":
                 if (bool.TryParse(cmd.Payload, out var enabled))
@@ -146,6 +177,12 @@ public sealed class AdminSyncService : IDisposable
                     _config.Settings.Playback.RandomFillEnabled = enabled;
                     _config.Save();
                 }
+                break;
+            case "enablerandommode":
+                _engine.SetMode(PlaybackMode.RandomOnly);
+                break;
+            case "disablerandommode":
+                _engine.SetMode(PlaybackMode.RequestWithRandomFill);
                 break;
             case "setplaybackmode":
                 if (Enum.TryParse<PlaybackMode>(cmd.Payload, true, out var mode))
@@ -172,7 +209,8 @@ public sealed class AdminSyncService : IDisposable
                 }
                 break;
             case "reloadconfig":
-                _config.Load();
+                _settings.ApplyDbToMemory();
+                _reply.Reload();
                 break;
         }
     }
@@ -183,7 +221,7 @@ public sealed class AdminSyncService : IDisposable
         _client.Dispose();
     }
 
-    private sealed class AdminCommandDto
+    private sealed class CommandDto
     {
         public string? Type { get; set; }
         public string? Payload { get; set; }

@@ -20,6 +20,7 @@ public sealed class AppSettings
     public GiftSettings Gift { get; set; } = new();
     public UserLevelSettings UserLevel { get; set; } = new();
     public KeywordReplySettings KeywordReply { get; set; } = new();
+    public SongRequestPolicySettings SongRequestPolicy { get; set; } = new();
 }
 
 public sealed class DouyinSettings
@@ -95,7 +96,21 @@ public sealed class AdminSettings
     public int Port { get; set; } = 5088;
     public string Path { get; set; } = "/diangexitong";
     public string Username { get; set; } = "admin";
-    public string Password { get; set; } = "admin123";
+    public string Password { get; set; } = "";
+    public string? PasswordEnvVar { get; set; } = "LIVEASSISTANT_ADMIN_PASSWORD";
+
+    public string ResolvePassword()
+    {
+        if (!string.IsNullOrWhiteSpace(PasswordEnvVar))
+        {
+            var fromEnv = Environment.GetEnvironmentVariable(PasswordEnvVar);
+            if (!string.IsNullOrWhiteSpace(fromEnv))
+            {
+                return fromEnv;
+            }
+        }
+        return Password;
+    }
 }
 
 public sealed class WelcomeSettings
@@ -209,5 +224,16 @@ public sealed class ConfigManager
     {
         ReplyTemplates = templates;
         Save();
+    }
+
+    public void ApplySettings(AppSettings settings)
+    {
+        Settings = settings;
+        Save();
+    }
+
+    public void ApplyReplyTemplates(Dictionary<string, string> templates)
+    {
+        ReplyTemplates = templates;
     }
 }

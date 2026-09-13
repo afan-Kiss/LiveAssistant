@@ -159,6 +159,32 @@ public sealed class UserRepository
         cmd.ExecuteNonQuery();
     }
 
+    public bool DeductPoints(string userId, int points)
+    {
+        if (string.IsNullOrWhiteSpace(userId) || points <= 0)
+        {
+            return false;
+        }
+
+        var user = GetUser(userId);
+        if (user == null || user.Points < points)
+        {
+            return false;
+        }
+
+        var now = DateTime.Now.ToString("O");
+        using var conn = _db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            UPDATE users SET points = points - $pts, updated_at = $now
+            WHERE user_id = $uid AND points >= $pts
+            """;
+        cmd.Parameters.AddWithValue("$uid", userId);
+        cmd.Parameters.AddWithValue("$pts", points);
+        cmd.Parameters.AddWithValue("$now", now);
+        return cmd.ExecuteNonQuery() > 0;
+    }
+
     public void AddPoints(string userId, string nickname, int points)
     {
         if (string.IsNullOrWhiteSpace(userId) || points <= 0)

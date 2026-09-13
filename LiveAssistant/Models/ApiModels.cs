@@ -99,6 +99,9 @@ public sealed class DouyinGiftMessage
 
     [JsonPropertyName("value")]
     public int Value { get; set; }
+
+    [JsonPropertyName("time")]
+    public string? Time { get; set; }
 }
 
 public sealed class DouyinLookupData

@@ -10,7 +10,9 @@ public sealed class BanVoteSession
     public int VoteCount { get; set; }
     public int RequiredVotes { get; set; }
     public string Status { get; set; } = "active";
+    public string? Result { get; set; }
     public DateTime CreatedAt { get; set; }
+    public DateTime? ExpiresAt { get; set; }
 }
 
 public sealed class BanVoteRepository
@@ -27,7 +29,7 @@ public sealed class BanVoteRepository
         using var conn = _db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT id, target_user_id, target_nickname, vote_count, required_votes, status, created_at
+            SELECT id, target_user_id, target_nickname, vote_count, required_votes, status, created_at, expires_at
             FROM ban_vote_sessions
             WHERE target_user_id = $uid AND status = 'active'
             ORDER BY created_at DESC LIMIT 1
@@ -42,21 +44,23 @@ public sealed class BanVoteRepository
         return ReadSession(reader);
     }
 
-    public BanVoteSession CreateSession(string targetUserId, string targetNickname, int requiredVotes)
+    public BanVoteSession CreateSession(string targetUserId, string targetNickname, int requiredVotes, int windowSeconds)
     {
         var id = Guid.NewGuid().ToString("N");
-        var now = DateTime.Now.ToString("O");
+        var now = DateTime.Now;
+        var expires = windowSeconds > 0 ? now.AddSeconds(windowSeconds) : (DateTime?)null;
         using var conn = _db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO ban_vote_sessions (id, target_user_id, target_nickname, vote_count, required_votes, status, created_at)
-            VALUES ($id, $uid, $nick, 0, $req, 'active', $now)
+            INSERT INTO ban_vote_sessions (id, target_user_id, target_nickname, vote_count, required_votes, status, created_at, expires_at)
+            VALUES ($id, $uid, $nick, 0, $req, 'active', $now, $exp)
             """;
         cmd.Parameters.AddWithValue("$id", id);
         cmd.Parameters.AddWithValue("$uid", targetUserId);
         cmd.Parameters.AddWithValue("$nick", targetNickname);
         cmd.Parameters.AddWithValue("$req", requiredVotes);
-        cmd.Parameters.AddWithValue("$now", now);
+        cmd.Parameters.AddWithValue("$now", now.ToString("O"));
+        cmd.Parameters.AddWithValue("$exp", expires?.ToString("O") ?? "");
         cmd.ExecuteNonQuery();
 
         return new BanVoteSession
@@ -65,7 +69,8 @@ public sealed class BanVoteRepository
             TargetUserId = targetUserId,
             TargetNickname = targetNickname,
             RequiredVotes = requiredVotes,
-            CreatedAt = DateTime.Now
+            CreatedAt = now,
+            ExpiresAt = expires
         };
     }
 
@@ -110,17 +115,36 @@ public sealed class BanVoteRepository
         return Convert.ToInt32(countCmd.ExecuteScalar());
     }
 
-    public void CompleteSession(string sessionId)
+    public void CompleteSession(string sessionId, string result)
     {
         var now = DateTime.Now.ToString("O");
         using var conn = _db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            UPDATE ban_vote_sessions SET status = 'completed', completed_at = $now WHERE id = $sid
+            UPDATE ban_vote_sessions SET status = 'completed', result = $result, completed_at = $now WHERE id = $sid
+            """;
+        cmd.Parameters.AddWithValue("$sid", sessionId);
+        cmd.Parameters.AddWithValue("$result", result);
+        cmd.Parameters.AddWithValue("$now", now);
+        cmd.ExecuteNonQuery();
+    }
+
+    public void ExpireSession(string sessionId)
+    {
+        var now = DateTime.Now.ToString("O");
+        using var conn = _db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            UPDATE ban_vote_sessions SET status = 'expired', result = 'timeout', completed_at = $now WHERE id = $sid
             """;
         cmd.Parameters.AddWithValue("$sid", sessionId);
         cmd.Parameters.AddWithValue("$now", now);
         cmd.ExecuteNonQuery();
+    }
+
+    public bool IsExpired(BanVoteSession session)
+    {
+        return session.ExpiresAt.HasValue && session.ExpiresAt.Value < DateTime.Now;
     }
 
     public List<BanVoteSession> ListActive()
@@ -129,7 +153,7 @@ public sealed class BanVoteRepository
         using var conn = _db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT id, target_user_id, target_nickname, vote_count, required_votes, status, created_at
+            SELECT id, target_user_id, target_nickname, vote_count, required_votes, status, created_at, expires_at
             FROM ban_vote_sessions WHERE status = 'active' ORDER BY created_at DESC
             """;
         using var reader = cmd.ExecuteReader();
@@ -140,14 +164,23 @@ public sealed class BanVoteRepository
         return list;
     }
 
-    private static BanVoteSession ReadSession(SqliteDataReader reader) => new()
+    private static BanVoteSession ReadSession(SqliteDataReader reader)
     {
-        Id = reader.GetString(0),
-        TargetUserId = reader.GetString(1),
-        TargetNickname = reader.GetString(2),
-        VoteCount = reader.GetInt32(3),
-        RequiredVotes = reader.GetInt32(4),
-        Status = reader.GetString(5),
-        CreatedAt = DateTime.TryParse(reader.GetString(6), out var dt) ? dt : DateTime.Now
-    };
+        DateTime? expires = null;
+        if (reader.FieldCount > 7 && !reader.IsDBNull(7) && DateTime.TryParse(reader.GetString(7), out var exp))
+        {
+            expires = exp;
+        }
+        return new BanVoteSession
+        {
+            Id = reader.GetString(0),
+            TargetUserId = reader.GetString(1),
+            TargetNickname = reader.GetString(2),
+            VoteCount = reader.GetInt32(3),
+            RequiredVotes = reader.GetInt32(4),
+            Status = reader.GetString(5),
+            CreatedAt = DateTime.TryParse(reader.GetString(6), out var dt) ? dt : DateTime.Now,
+            ExpiresAt = expires
+        };
+    }
 }

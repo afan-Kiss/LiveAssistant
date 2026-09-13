@@ -9,5 +9,6 @@ public sealed class GiftEvent
     public string GiftName { get; set; } = "";
     public int Count { get; set; }
     public int Value { get; set; }
+    public DateTime Time { get; set; } = DateTime.Now;
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }

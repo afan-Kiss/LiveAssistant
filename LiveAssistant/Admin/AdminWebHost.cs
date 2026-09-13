@@ -16,12 +16,8 @@ public sealed class AdminWebHost : IDisposable
     private readonly AdminAppContext _ctx;
     private readonly Dictionary<string, DateTime> _sessions = new();
     private WebApplication? _app;
-    private Task? _runTask;
 
-    public AdminWebHost(AdminAppContext ctx)
-    {
-        _ctx = ctx;
-    }
+    public AdminWebHost(AdminAppContext ctx) => _ctx = ctx;
 
     public void Start()
     {
@@ -58,7 +54,7 @@ public sealed class AdminWebHost : IDisposable
         }
 
         MapRoutes(_app, pathBase);
-        _runTask = _app.RunAsync();
+        _ = _app.RunAsync();
     }
 
     private void MapRoutes(WebApplication app, string pathBase)
@@ -66,7 +62,12 @@ public sealed class AdminWebHost : IDisposable
         app.MapPost("/api/auth/login", (LoginRequest req) =>
         {
             var admin = _ctx.Config.Settings.Admin;
-            if (req.Username == admin.Username && req.Password == admin.Password)
+            var password = admin.ResolvePassword();
+            if (string.IsNullOrEmpty(password))
+            {
+                return Results.Json(new { ok = false, message = "未配置后台密码，请设置环境变量 LIVEASSISTANT_ADMIN_PASSWORD 或 appsettings admin.password" });
+            }
+            if (req.Username == admin.Username && req.Password == password)
             {
                 var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
                 _sessions[token] = DateTime.Now.AddHours(12);
@@ -78,12 +79,15 @@ public sealed class AdminWebHost : IDisposable
         app.MapGet("/api/status", (HttpContext http) => Auth(http, () =>
         {
             var status = _ctx.Host.GetRuntimeStatus();
+            var nowPlaying = _ctx.Host.Queue.NowPlaying;
             return Results.Json(new
             {
                 douyinOnline = status.DouyinOnline,
                 kugouOnline = status.KugouOnline,
                 danmakuConnection = status.DanmakuConnection,
                 currentSong = status.CurrentSong,
+                nowPlayingUser = nowPlaying?.Nickname,
+                nowPlayingSong = nowPlaying?.SongName,
                 playbackMode = _ctx.Host.Engine.Mode.ToString(),
                 randomFillEnabled = _ctx.Config.Settings.Playback.RandomFillEnabled,
                 queueCount = status.QueueCount,
@@ -91,76 +95,127 @@ public sealed class AdminWebHost : IDisposable
             });
         }));
 
-        app.MapPost("/api/playback/skip", (HttpContext http) => Auth(http, () =>
+        app.MapPost("/api/playback/skip", (HttpContext http) => Auth(http, () => Cmd(AdminCommandType.Skip)));
+        app.MapPost("/api/playback/pause", (HttpContext http) => Auth(http, () => Cmd(AdminCommandType.Pause)));
+        app.MapPost("/api/playback/resume", (HttpContext http) => Auth(http, () => Cmd(AdminCommandType.Resume)));
+        app.MapPost("/api/playback/play", (HttpContext http) => Auth(http, () => Cmd(AdminCommandType.Play)));
+        app.MapPost("/api/playback/previous", (HttpContext http) => Auth(http, () => Cmd(AdminCommandType.Previous)));
+        app.MapPost("/api/playback/random/on", (HttpContext http) => Auth(http, () =>
         {
-            _ctx.Commands.Enqueue(AdminCommandType.Skip);
+            _ctx.Commands.Enqueue(AdminCommandType.EnableRandomMode);
             return Results.Json(new { ok = true });
         }));
-
-        app.MapPost("/api/playback/pause", (HttpContext http) => Auth(http, () =>
+        app.MapPost("/api/playback/random/off", (HttpContext http) => Auth(http, () =>
         {
-            _ctx.Commands.Enqueue(AdminCommandType.Pause);
+            _ctx.Commands.Enqueue(AdminCommandType.DisableRandomMode);
             return Results.Json(new { ok = true });
         }));
-
-        app.MapPost("/api/playback/resume", (HttpContext http) => Auth(http, () =>
-        {
-            _ctx.Commands.Enqueue(AdminCommandType.Resume);
-            return Results.Json(new { ok = true });
-        }));
-
-        app.MapPost("/api/playback/random", (RandomToggleRequest req, HttpContext http) => Auth(http, () =>
+        app.MapPost("/api/playback/random-fill", (RandomToggleRequest req, HttpContext http) => Auth(http, () =>
         {
             _ctx.Config.Settings.Playback.RandomFillEnabled = req.Enabled;
             _ctx.Config.Save();
             _ctx.Commands.Enqueue(AdminCommandType.SetRandomFill, req.Enabled.ToString());
             return Results.Json(new { ok = true });
         }));
+        app.MapPost("/api/playback/clear-queue", (HttpContext http) => Auth(http, () => Cmd(AdminCommandType.ClearQueue)));
 
         app.MapGet("/api/queue", (HttpContext http) => Auth(http, () =>
         {
-            var items = _ctx.Host.Queue.GetAllItems().Select(x => new
+            var now = _ctx.Host.Queue.NowPlaying;
+            var waiting = _ctx.Host.Queue.Waiting.Select((x, i) => new
             {
-                x.Id, x.UserId, x.Nickname, x.SongName, x.Artist, x.Status, x.SortOrder, x.IsRandom
+                x.Id, index = i + 1, x.UserId, x.Nickname, x.SongName, x.Artist,
+                status = x.Status.ToString(), time = x.CreatedAt.ToString("HH:mm:ss")
             });
-            return Results.Json(items);
+            return Results.Json(new
+            {
+                nowPlaying = now == null ? null : new { now.Id, now.Nickname, now.SongName, now.Artist },
+                waiting
+            });
         }));
 
-        app.MapDelete("/api/queue/{id:long}", (long id, HttpContext http) => Auth(http, () =>
-        {
-            _ctx.Commands.Enqueue(AdminCommandType.DeleteQueueItem, id.ToString());
-            return Results.Json(new { ok = true });
-        }));
-
-        app.MapPost("/api/queue/{id:long}/pin", (long id, HttpContext http) => Auth(http, () =>
-        {
-            _ctx.Commands.Enqueue(AdminCommandType.PinQueueItem, id.ToString());
-            return Results.Json(new { ok = true });
-        }));
-
-        app.MapPost("/api/queue/{id:long}/play", (long id, HttpContext http) => Auth(http, () =>
-        {
-            _ctx.Commands.Enqueue(AdminCommandType.PlayNow, id.ToString());
-            return Results.Json(new { ok = true });
-        }));
+        app.MapDelete("/api/queue/{id:long}", (long id, HttpContext http) => Auth(http, () => Cmd(AdminCommandType.DeleteQueueItem, id.ToString())));
+        app.MapPost("/api/queue/{id:long}/pin", (long id, HttpContext http) => Auth(http, () => Cmd(AdminCommandType.PinQueueItem, id.ToString())));
+        app.MapPost("/api/queue/{id:long}/play", (long id, HttpContext http) => Auth(http, () => Cmd(AdminCommandType.PlayNow, id.ToString())));
 
         app.MapGet("/api/templates", (HttpContext http) => Auth(http, () =>
-            Results.Json(_ctx.Config.ReplyTemplates)));
+            Results.Json(_ctx.ReplyTemplates.GetAll())));
 
         app.MapPut("/api/templates", (Dictionary<string, string> body, HttpContext http) => Auth(http, () =>
         {
-            _ctx.Config.SetReplyTemplates(body);
+            _ctx.ReplyTemplates.SaveAll(body);
+            _ctx.Settings.ApplyDbToMemory();
             _ctx.Commands.Enqueue(AdminCommandType.ReloadConfig);
             return Results.Json(new { ok = true });
         }));
 
-        app.MapGet("/api/random", (HttpContext http) => Auth(http, () =>
-            Results.Json(_ctx.Config.Settings.RandomPlaylist)));
+        app.MapGet("/api/random-pool", (HttpContext http) => Auth(http, () =>
+            Results.Json(_ctx.RandomPool.ListAll())));
 
-        app.MapPut("/api/random", (RandomPlaylistSettings body, HttpContext http) => Auth(http, () =>
+        app.MapPost("/api/random-pool", (RandomPoolItem item, HttpContext http) => Auth(http, () =>
         {
-            _ctx.Config.Settings.RandomPlaylist = body;
+            var id = _ctx.RandomPool.Add(item);
+            _ctx.Settings.ApplyDbToMemory();
+            _ctx.Commands.Enqueue(AdminCommandType.ReloadConfig);
+            return Results.Json(new { ok = true, id });
+        }));
+
+        app.MapPut("/api/random-pool/{id:long}", (long id, RandomPoolItem item, HttpContext http) => Auth(http, () =>
+        {
+            item.Id = id;
+            _ctx.RandomPool.Update(item);
+            _ctx.Settings.ApplyDbToMemory();
+            _ctx.Commands.Enqueue(AdminCommandType.ReloadConfig);
+            return Results.Json(new { ok = true });
+        }));
+
+        app.MapDelete("/api/random-pool/{id:long}", (long id, HttpContext http) => Auth(http, () =>
+        {
+            _ctx.RandomPool.Remove(id);
+            _ctx.Settings.ApplyDbToMemory();
+            _ctx.Commands.Enqueue(AdminCommandType.ReloadConfig);
+            return Results.Json(new { ok = true });
+        }));
+
+        app.MapGet("/api/gift-rules", (HttpContext http) => Auth(http, () =>
+            Results.Json(_ctx.GiftRules.ListAll())));
+
+        app.MapPost("/api/gift-rules", (GiftRule rule, HttpContext http) => Auth(http, () =>
+        {
+            var id = _ctx.GiftRules.Add(rule);
+            return Results.Json(new { ok = true, id });
+        }));
+
+        app.MapPut("/api/gift-rules/{id:long}", (long id, GiftRule rule, HttpContext http) => Auth(http, () =>
+        {
+            rule.Id = id;
+            _ctx.GiftRules.Update(rule);
+            return Results.Json(new { ok = true });
+        }));
+
+        app.MapDelete("/api/gift-rules/{id:long}", (long id, HttpContext http) => Auth(http, () =>
+        {
+            _ctx.GiftRules.Remove(id);
+            return Results.Json(new { ok = true });
+        }));
+
+        app.MapGet("/api/song-request-policy", (HttpContext http) => Auth(http, () =>
+            Results.Json(_ctx.Config.Settings.SongRequestPolicy)));
+
+        app.MapPut("/api/song-request-policy", (SongRequestPolicySettings body, HttpContext http) => Auth(http, () =>
+        {
+            _ctx.Config.Settings.SongRequestPolicy = body;
             _ctx.Config.Save();
+            _ctx.Commands.Enqueue(AdminCommandType.ReloadConfig);
+            return Results.Json(new { ok = true });
+        }));
+
+        app.MapGet("/api/level-permissions", (HttpContext http) => Auth(http, () =>
+            Results.Json(_ctx.LevelPermissions.ListAll())));
+
+        app.MapPut("/api/level-permissions", (List<LevelPermission> body, HttpContext http) => Auth(http, () =>
+        {
+            _ctx.LevelPermissions.SaveAll(body);
             _ctx.Commands.Enqueue(AdminCommandType.ReloadConfig);
             return Results.Json(new { ok = true });
         }));
@@ -210,6 +265,9 @@ public sealed class AdminWebHost : IDisposable
         app.MapGet("/api/keywords", (HttpContext http) => Auth(http, () =>
             Results.Json(_ctx.KeywordReplies.ListAll())));
 
+        app.MapGet("/api/sync/bundle", (HttpContext http) =>
+            Results.Json(_ctx.Settings.BuildBundle()));
+
         app.MapGet("/api/sync/commands", (HttpContext http) =>
         {
             var cmds = _ctx.Commands.DequeuePending().Select(c => new { type = c.Type.ToString(), payload = c.Payload });
@@ -218,11 +276,17 @@ public sealed class AdminWebHost : IDisposable
 
         app.MapGet("/api/sync/config", (HttpContext http) =>
         {
-            var hash = ComputeConfigHash();
-            return Results.Json(new { hash, config = _ctx.Config.Settings });
+            var bundle = _ctx.Settings.BuildBundle();
+            return Results.Json(new { hash = bundle.Version, config = bundle.Settings });
         });
 
         app.MapGet("/", () => Results.Redirect($"{pathBase}/index.html"));
+    }
+
+    private IResult Cmd(AdminCommandType type, string? payload = null)
+    {
+        _ctx.Commands.Enqueue(type, payload);
+        return Results.Json(new { ok = true });
     }
 
     private IResult Auth(HttpContext http, Func<IResult> action)
@@ -233,13 +297,6 @@ public sealed class AdminWebHost : IDisposable
             return Results.Unauthorized();
         }
         return action();
-    }
-
-    private string ComputeConfigHash()
-    {
-        var json = JsonSerializer.Serialize(_ctx.Config.Settings);
-        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(json + JsonSerializer.Serialize(_ctx.Config.ReplyTemplates)));
-        return Convert.ToHexString(bytes)[..16];
     }
 
     public void Dispose()
