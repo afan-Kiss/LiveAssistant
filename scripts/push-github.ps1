@@ -47,7 +47,7 @@ try {
 
     git add -A
     git status
-    git commit -m $Message
+    git -c user.email="liveassistant@local" -c user.name="LiveAssistant" commit -m $Message
     git push -u origin main
 
     git remote set-url origin "https://github.com/$ownerRepo.git"
