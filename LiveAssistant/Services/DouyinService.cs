@@ -17,57 +17,83 @@ public sealed class DouyinService
         _client = HttpJson.CreateClient(settings.BaseUrl, settings.ApiToken);
     }
 
-    public async Task<bool> HealthCheckAsync(CancellationToken ct = default)
-    {
-        try
+    public Task<bool> HealthCheckAsync(CancellationToken ct = default)
+        => SafeAsync("health", async () =>
         {
             var result = await HttpJson.GetAsync<DouyinEnvelope<DouyinHealthData>>(_client, "api/health", ct);
             return result?.Ok == true;
+        }, false);
+
+    public Task<DouyinHealthData?> GetHealthAsync(CancellationToken ct = default)
+        => SafeAsync("get_health", async () =>
+        {
+            var result = await HttpJson.GetAsync<DouyinEnvelope<DouyinHealthData>>(_client, "api/health", ct);
+            return result?.Ok == true ? result.Data : null;
+        }, null);
+
+    public Task<DouyinRoomData?> ResolveRoomAsync(string webRid, CancellationToken ct = default)
+        => SafeAsync("resolve_room", async () =>
+        {
+            var result = await HttpJson.PostAsync<DouyinEnvelope<DouyinRoomData>>(_client, "api/live/room/resolve",
+                new { web_rid = webRid }, ct);
+            return result?.Ok == true ? result.Data : null;
+        }, null);
+
+    public Task StartCollectAsync(string webRid, CancellationToken ct = default)
+        => SafeVoidAsync("collect_start", async () =>
+        {
+            await HttpJson.PostAsync<DouyinEnvelope<object>>(_client, "api/live/collect/start",
+                new { web_rid = webRid }, ct);
+        });
+
+    public Task<DouyinDanmakuFeedData?> PollDanmakuAsync(string webRid, int after, int limit = 50, CancellationToken ct = default)
+        => SafeAsync("poll_danmaku", async () =>
+        {
+            var result = await HttpJson.PostAsync<DouyinEnvelope<DouyinDanmakuFeedData>>(_client, "api/live/danmaku/feed",
+                new { web_rid = webRid, after, limit }, ct);
+            return result?.Ok == true ? result.Data : null;
+        }, null);
+
+    public Task<bool> SendMentionAsync(string webRid, string userId, string content, CancellationToken ct = default)
+        => SafeAsync("send_mention", async () =>
+        {
+            var result = await HttpJson.PostAsync<DouyinEnvelope<object>>(_client, "api/live/danmaku/mention",
+                new { web_rid = webRid, user_id = userId, content }, ct);
+            return result?.Ok == true;
+        }, false);
+
+    public Task<bool> ReconnectAsync(string webRid, CancellationToken ct = default)
+        => SafeAsync("reconnect", async () =>
+        {
+            var result = await HttpJson.PostAsync<DouyinEnvelope<object>>(_client, "api/live/room/reconnect",
+                new { web_rid = webRid }, ct);
+            return result?.Ok == true;
+        }, false);
+
+    private async Task<T> SafeAsync<T>(string operation, Func<Task<T>> action, T fallback)
+    {
+        try
+        {
+            return await action();
         }
         catch (Exception ex)
         {
-            _log.Warn($"抖音健康检查失败: {ex.Message}");
-            return false;
+            _log.DouyinWarn($"{operation} 失败: {ex.Message}");
+            _log.Error("douyin", operation, ex);
+            return fallback;
         }
     }
 
-    public async Task<DouyinHealthData?> GetHealthAsync(CancellationToken ct = default)
+    private async Task SafeVoidAsync(string operation, Func<Task> action)
     {
-        var result = await HttpJson.GetAsync<DouyinEnvelope<DouyinHealthData>>(_client, "api/health", ct);
-        return result?.Ok == true ? result.Data : null;
-    }
-
-    public async Task<DouyinRoomData?> ResolveRoomAsync(string webRid, CancellationToken ct = default)
-    {
-        var result = await HttpJson.PostAsync<DouyinEnvelope<DouyinRoomData>>(_client, "api/live/room/resolve",
-            new { web_rid = webRid }, ct);
-        return result?.Ok == true ? result.Data : null;
-    }
-
-    public async Task StartCollectAsync(string webRid, CancellationToken ct = default)
-    {
-        await HttpJson.PostAsync<DouyinEnvelope<object>>(_client, "api/live/collect/start",
-            new { web_rid = webRid }, ct);
-    }
-
-    public async Task<DouyinDanmakuFeedData?> PollDanmakuAsync(string webRid, int after, int limit = 50, CancellationToken ct = default)
-    {
-        var result = await HttpJson.PostAsync<DouyinEnvelope<DouyinDanmakuFeedData>>(_client, "api/live/danmaku/feed",
-            new { web_rid = webRid, after, limit }, ct);
-        return result?.Ok == true ? result.Data : null;
-    }
-
-    public async Task<bool> SendMentionAsync(string webRid, string userId, string content, CancellationToken ct = default)
-    {
-        var result = await HttpJson.PostAsync<DouyinEnvelope<object>>(_client, "api/live/danmaku/mention",
-            new { web_rid = webRid, user_id = userId, content }, ct);
-        return result?.Ok == true;
-    }
-
-    public async Task<bool> ReconnectAsync(string webRid, CancellationToken ct = default)
-    {
-        var result = await HttpJson.PostAsync<DouyinEnvelope<object>>(_client, "api/live/room/reconnect",
-            new { web_rid = webRid }, ct);
-        return result?.Ok == true;
+        try
+        {
+            await action();
+        }
+        catch (Exception ex)
+        {
+            _log.DouyinWarn($"{operation} 失败: {ex.Message}");
+            _log.Error("douyin", operation, ex);
+        }
     }
 }

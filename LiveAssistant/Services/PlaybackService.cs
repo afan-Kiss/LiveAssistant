@@ -3,6 +3,9 @@ using NAudio.Wave;
 
 namespace LiveAssistant.Services;
 
+/// <summary>
+/// 底层播放器，仅允许 PlaybackCommandQueue 调用控制方法。
+/// </summary>
 public sealed class PlaybackService : IDisposable
 {
     private readonly LogService _log;
@@ -77,7 +80,7 @@ public sealed class PlaybackService : IDisposable
 
         if (string.IsNullOrWhiteSpace(track.PlayUrl))
         {
-            _log.Warn($"无播放地址: {track.SongName}");
+            _log.PlaybackWarn($"无播放地址: {track.SongName}");
             return false;
         }
 
@@ -101,12 +104,12 @@ public sealed class PlaybackService : IDisposable
             output.Play();
             StartProgressLoop();
             StateChanged?.Invoke();
-            _log.Info($"开始播放: {track.SongName} - {track.Artist}");
+            _log.PlaybackInfo($"开始播放: {track.SongName} - {track.Artist}");
             return true;
         }
         catch (Exception ex)
         {
-            _log.Error($"播放失败: {track.SongName}", ex);
+            _log.Error("playback", $"播放失败: {track.SongName}", ex);
             StopInternal(fireEvent: true);
             return false;
         }
@@ -114,34 +117,55 @@ public sealed class PlaybackService : IDisposable
 
     public void Pause()
     {
-        lock (_lock)
+        try
         {
-            if (_output?.PlaybackState == NAudio.Wave.PlaybackState.Playing &&
-                (_state == Models.PlaybackState.Playing || _state == Models.PlaybackState.RandomFill))
+            lock (_lock)
             {
-                _output.Pause();
-                _state = Models.PlaybackState.Paused;
-                StateChanged?.Invoke();
+                if (_output?.PlaybackState == NAudio.Wave.PlaybackState.Playing &&
+                    (_state == Models.PlaybackState.Playing || _state == Models.PlaybackState.RandomFill))
+                {
+                    _output.Pause();
+                    _state = Models.PlaybackState.Paused;
+                    StateChanged?.Invoke();
+                }
             }
+        }
+        catch (Exception ex)
+        {
+            _log.Error("playback", "暂停失败", ex);
         }
     }
 
     public void Resume()
     {
-        lock (_lock)
+        try
         {
-            if (_output != null && _state == Models.PlaybackState.Paused)
+            lock (_lock)
             {
-                _output.Play();
-                _state = _isRandomFillActive ? Models.PlaybackState.RandomFill : Models.PlaybackState.Playing;
-                StateChanged?.Invoke();
+                if (_output != null && _state == Models.PlaybackState.Paused)
+                {
+                    _output.Play();
+                    _state = _isRandomFillActive ? Models.PlaybackState.RandomFill : Models.PlaybackState.Playing;
+                    StateChanged?.Invoke();
+                }
             }
+        }
+        catch (Exception ex)
+        {
+            _log.Error("playback", "恢复失败", ex);
         }
     }
 
     public void Stop()
     {
-        StopInternal(fireEvent: true);
+        try
+        {
+            StopInternal(fireEvent: true);
+        }
+        catch (Exception ex)
+        {
+            _log.Error("playback", "停止失败", ex);
+        }
     }
 
     public event Action? TrackFinished;
@@ -150,7 +174,7 @@ public sealed class PlaybackService : IDisposable
     {
         if (e.Exception != null)
         {
-            _log.Error("播放异常结束", e.Exception);
+            _log.Error("playback", "播放异常结束", e.Exception);
         }
 
         var finished = false;
@@ -165,8 +189,15 @@ public sealed class PlaybackService : IDisposable
 
         if (finished)
         {
-            StopInternal(fireEvent: true);
-            TrackFinished?.Invoke();
+            try
+            {
+                StopInternal(fireEvent: true);
+                TrackFinished?.Invoke();
+            }
+            catch (Exception ex)
+            {
+                _log.Error("playback", "TrackFinished 回调异常", ex);
+            }
         }
     }
 
@@ -179,21 +210,33 @@ public sealed class PlaybackService : IDisposable
         {
             while (!token.IsCancellationRequested)
             {
-                lock (_lock)
-                {
-                    if (_reader != null && _output?.PlaybackState == NAudio.Wave.PlaybackState.Playing)
-                    {
-                        _progressSec = (int)_reader.CurrentTime.TotalSeconds;
-                    }
-                }
-                StateChanged?.Invoke();
                 try
                 {
+                    lock (_lock)
+                    {
+                        if (_reader != null && _output?.PlaybackState == NAudio.Wave.PlaybackState.Playing)
+                        {
+                            _progressSec = (int)_reader.CurrentTime.TotalSeconds;
+                        }
+                    }
+                    StateChanged?.Invoke();
                     await Task.Delay(500, token);
                 }
-                catch (TaskCanceledException)
+                catch (OperationCanceledException)
                 {
                     break;
+                }
+                catch (Exception ex)
+                {
+                    _log.Error("playback", "进度循环异常", ex);
+                    try
+                    {
+                        await Task.Delay(1000, token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
                 }
             }
         }, token);
@@ -225,14 +268,29 @@ public sealed class PlaybackService : IDisposable
             {
                 output.Stop();
             }
+            catch (Exception ex)
+            {
+                _log.Error("playback", "输出设备停止异常", ex);
+            }
+
+            try
+            {
+                output.Dispose();
+            }
             catch
             {
-                // ignore
+                // ignore dispose errors
             }
-            output.Dispose();
         }
 
-        reader?.Dispose();
+        try
+        {
+            reader?.Dispose();
+        }
+        catch
+        {
+            // ignore
+        }
 
         if (fireEvent)
         {

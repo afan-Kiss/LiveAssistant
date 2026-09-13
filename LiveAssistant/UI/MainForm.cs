@@ -255,7 +255,7 @@ public sealed class MainForm : Form
             Dock = DockStyle.Fill,
             TextAlign = ContentAlignment.MiddleLeft,
             ForeColor = Color.Gray,
-            Text = "Sidecar: 抖音 http://127.0.0.1:4723 | 酷狗 http://127.0.0.1:17888 | 日志: logs/app.log"
+            Text = "Sidecar: 抖音 http://127.0.0.1:4723 | 酷狗 http://127.0.0.1:17888 | 日志: logs/*.log"
         };
         return lbl;
     }
@@ -265,7 +265,7 @@ public sealed class MainForm : Form
         _host.DanmakuReceived += OnDanmaku;
         _host.SystemMessages.MessageAdded += line => BeginInvoke(() => AppendSystem(line));
         _host.Queue.QueueChanged += () => BeginInvoke(RefreshQueue);
-        _host.Playback.StateChanged += () => BeginInvoke(RefreshPlayback);
+        _host.PlaybackCommands.Playback.StateChanged += () => BeginInvoke(RefreshPlayback);
         _host.StateChanged += () => BeginInvoke(RefreshStatus);
 
         _btnConnect.Click += async (_, _) => await ConnectAsync();
@@ -280,7 +280,7 @@ public sealed class MainForm : Form
         };
         _volumeBar.ValueChanged += (_, _) =>
         {
-            _host.Playback.SetVolume(_volumeBar.Value);
+            _host.PlaybackCommands.EnqueueSetVolume(_volumeBar.Value);
             _host.Config.Settings.Playback.Volume = _volumeBar.Value;
             _host.Config.Save();
         };
@@ -336,14 +336,14 @@ public sealed class MainForm : Form
 
     private void TogglePause()
     {
-        if (_host.Playback.State == PlaybackState.Paused)
+        if (_host.PlaybackCommands.Playback.State == PlaybackState.Paused)
         {
-            _host.Playback.Resume();
+            _host.Engine.Resume();
             _btnPause.Text = "暂停";
         }
-        else if (_host.Playback.State is PlaybackState.Playing or PlaybackState.RandomFill)
+        else if (_host.PlaybackCommands.Playback.State is PlaybackState.Playing or PlaybackState.RandomFill)
         {
-            _host.Playback.Pause();
+            _host.Engine.Pause();
             _btnPause.Text = "恢复";
         }
     }
@@ -420,7 +420,7 @@ public sealed class MainForm : Form
         {
             PlaybackMode.RequestOnly => "点歌优先",
             PlaybackMode.RandomOnly => "随机播放",
-            _ => _host.Playback.IsRandomFillActive ? "点歌+随机补位(补位中)" : "点歌+随机补位"
+            _ => _host.PlaybackCommands.Playback.IsRandomFillActive ? "点歌+随机补位(补位中)" : "点歌+随机补位"
         };
     }
 
@@ -458,7 +458,7 @@ public sealed class MainForm : Form
 
     private void RefreshPlayback()
     {
-        var track = _host.Playback.CurrentTrack;
+        var track = _host.PlaybackCommands.Playback.CurrentTrack;
         if (track == null)
         {
             _lblNowSong.Text = "歌曲: -";
@@ -471,8 +471,8 @@ public sealed class MainForm : Form
         _lblNowSong.Text = $"歌曲: {track.SongName}";
         _lblNowArtist.Text = $"歌手: {track.Artist}";
         _lblNowRequester.Text = track.IsRandom ? "点歌: 随机补位" : $"点歌: {track.Requester}";
-        var duration = Math.Max(1, _host.Playback.DurationSec);
-        var progress = _host.Playback.ProgressSec;
+        var duration = Math.Max(1, _host.PlaybackCommands.Playback.DurationSec);
+        var progress = _host.PlaybackCommands.Playback.ProgressSec;
         _lblProgress.Text = $"进度: {FormatTime(progress)} / {FormatTime(duration)}";
         RefreshStatus();
     }

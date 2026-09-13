@@ -16,6 +16,7 @@ public sealed class LiveAppHost : IDisposable
     private readonly ReplyService _reply;
     private readonly RandomPlaylistService _random;
     private readonly PlaybackService _playback;
+    private readonly PlaybackCommandQueue _playbackCommands;
     private readonly PlaybackEngine _engine;
     private readonly DanmakuService _danmaku;
     private readonly SongRequestService _songRequest;
@@ -39,20 +40,24 @@ public sealed class LiveAppHost : IDisposable
         _playback = new PlaybackService(_log);
         _playback.SetVolume(_config.Settings.Playback.Volume);
 
-        _engine = new PlaybackEngine(_config, _queue, _kugou, _random, _playback, _reply, _system, _log);
+        _playbackCommands = new PlaybackCommandQueue(
+            _config, _queue, _kugou, _random, _playback, _reply, _system, _log);
+        _engine = new PlaybackEngine(_config, _playbackCommands, _system);
         _danmaku = new DanmakuService(_douyin, _log, _system);
         _songRequest = new SongRequestService(_config, _kugou, _douyin, _queue, _reply, _system, _log);
         _watchdog = new ProcessWatchdogService(_config, _log, _system);
 
         _danmaku.DanmakuReceived += OnDanmakuReceived;
         _songRequest.RequestHandled += () => _ = _engine.EnsurePlayingAsync();
+
+        _log.Info("LiveAssistant 已启动");
     }
 
     public ConfigManager Config => _config;
     public LogService Log => _log;
     public SystemMessageService SystemMessages => _system;
     public QueueService Queue => _queue;
-    public PlaybackService Playback => _playback;
+    public PlaybackCommandQueue PlaybackCommands => _playbackCommands;
     public PlaybackEngine Engine => _engine;
     public DanmakuService Danmaku => _danmaku;
 
@@ -80,7 +85,7 @@ public sealed class LiveAppHost : IDisposable
     public void Stop()
     {
         _danmaku.Stop();
-        _playback.Stop();
+        _engine.Stop();
         _system.Add("已停止监控");
         NotifyStateChanged();
     }
@@ -94,21 +99,28 @@ public sealed class LiveAppHost : IDisposable
 
     private async void OnDanmakuReceived(DanmakuItem item)
     {
-        DanmakuReceived?.Invoke(item);
-
-        if (_config.Settings.Emergency.PauseInteraction)
+        try
         {
-            return;
-        }
+            DanmakuReceived?.Invoke(item);
 
-        var webRid = _config.Settings.Douyin.WebRid;
-        if (string.IsNullOrWhiteSpace(webRid))
+            if (_config.Settings.Emergency.PauseInteraction)
+            {
+                return;
+            }
+
+            var webRid = _config.Settings.Douyin.WebRid;
+            if (string.IsNullOrWhiteSpace(webRid))
+            {
+                return;
+            }
+
+            await _songRequest.HandleDanmakuAsync(item, webRid);
+            NotifyStateChanged();
+        }
+        catch (Exception ex)
         {
-            return;
+            _log.Error("app", "处理弹幕异常", ex);
         }
-
-        await _songRequest.HandleDanmakuAsync(item, webRid);
-        NotifyStateChanged();
     }
 
     private async Task WatchSidecarsAsync(CancellationToken ct)
@@ -139,16 +151,20 @@ public sealed class LiveAppHost : IDisposable
             }
             catch (Exception ex)
             {
-                _log.Warn($"Sidecar 守护异常: {ex.Message}");
+                _log.Error("app", "Sidecar 守护循环异常", ex);
             }
 
             try
             {
                 await Task.Delay(TimeSpan.FromSeconds(15), ct);
             }
-            catch (TaskCanceledException)
+            catch (OperationCanceledException)
             {
                 break;
+            }
+            catch (Exception ex)
+            {
+                _log.Error("app", "Sidecar 守护延迟异常", ex);
             }
         }
     }
@@ -159,7 +175,9 @@ public sealed class LiveAppHost : IDisposable
     {
         _watchCts?.Cancel();
         _danmaku.Dispose();
+        _playbackCommands.Dispose();
         _playback.Dispose();
         _db.Dispose();
+        _log.Info("LiveAssistant 已退出");
     }
 }

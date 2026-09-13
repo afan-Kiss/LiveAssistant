@@ -37,8 +37,11 @@ dotnet run --project LiveAssistant
 
 ## 推送 GitHub
 
+1. 复制 `Config/DeployCredentials.example.json` → `Config/DeployCredentials.local.json` 并填写凭证
+2. 执行：
+
 ```powershell
 .\scripts\push-github.ps1 "commit message"
 ```
 
-凭证见 `Config/DeployCredentials.local.json`（本地，不入库）。
+真实凭证仅保存在 `DeployCredentials.local.json`（已在 `.gitignore`）。

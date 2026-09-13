@@ -38,9 +38,35 @@ public sealed class QueueService
     {
         lock (_lock)
         {
+            item.Status = QueueItemStatus.Waiting;
             item.Id = InsertItem(item);
             item.SortOrder = _waiting.Count;
             _waiting.Add(item);
+            NotifyChanged();
+            return item;
+        }
+    }
+
+    public QueueItem BeginPlaying(QueueItem item)
+    {
+        lock (_lock)
+        {
+            if (_nowPlaying != null && _nowPlaying.Id > 0)
+            {
+                UpdateStatus(_nowPlaying.Id, QueueItemStatus.Finished);
+            }
+
+            item.Status = QueueItemStatus.Playing;
+            if (item.Id <= 0)
+            {
+                item.Id = InsertItem(item);
+            }
+            else
+            {
+                UpdateStatus(item.Id, QueueItemStatus.Playing);
+            }
+
+            _nowPlaying = item;
             NotifyChanged();
             return item;
         }
@@ -50,6 +76,14 @@ public sealed class QueueService
     {
         lock (_lock)
         {
+            if (_nowPlaying?.Id == id)
+            {
+                UpdateStatus(id, QueueItemStatus.Deleted);
+                _nowPlaying = null;
+                NotifyChanged();
+                return true;
+            }
+
             var idx = _waiting.FindIndex(x => x.Id == id);
             if (idx < 0)
             {
@@ -57,7 +91,7 @@ public sealed class QueueService
             }
 
             _waiting.RemoveAt(idx);
-            DeleteItem(id);
+            UpdateStatus(id, QueueItemStatus.Deleted);
             ReindexWaiting();
             NotifyChanged();
             return true;
@@ -70,7 +104,7 @@ public sealed class QueueService
         {
             foreach (var item in _waiting)
             {
-                DeleteItem(item.Id);
+                UpdateStatus(item.Id, QueueItemStatus.Deleted);
             }
             _waiting.Clear();
             NotifyChanged();
@@ -83,7 +117,7 @@ public sealed class QueueService
         {
             if (_nowPlaying != null)
             {
-                DeleteItem(_nowPlaying.Id);
+                UpdateStatus(_nowPlaying.Id, QueueItemStatus.Deleted);
                 _nowPlaying = null;
             }
             ClearWaiting();
@@ -102,6 +136,8 @@ public sealed class QueueService
             var next = _waiting[0];
             _waiting.RemoveAt(0);
             ReindexWaiting();
+            next.Status = QueueItemStatus.Playing;
+            UpdateStatus(next.Id, QueueItemStatus.Playing);
             _nowPlaying = next;
             NotifyChanged();
             return next;
@@ -112,6 +148,14 @@ public sealed class QueueService
     {
         lock (_lock)
         {
+            if (item != null)
+            {
+                item.Status = QueueItemStatus.Playing;
+                if (item.Id > 0)
+                {
+                    UpdateStatus(item.Id, QueueItemStatus.Playing);
+                }
+            }
             _nowPlaying = item;
             NotifyChanged();
         }
@@ -123,7 +167,7 @@ public sealed class QueueService
         {
             if (_nowPlaying != null)
             {
-                DeleteItem(_nowPlaying.Id);
+                UpdateStatus(_nowPlaying.Id, QueueItemStatus.Finished);
                 _nowPlaying = null;
             }
             NotifyChanged();
@@ -135,11 +179,14 @@ public sealed class QueueService
         lock (_lock)
         {
             _waiting.Clear();
+            _nowPlaying = null;
+
             using var conn = _db.Open();
             using var cmd = conn.CreateCommand();
             cmd.CommandText = """
-                SELECT id, user_id, nickname, song_name, artist, song_id, hash, is_random, sort_order, created_at
+                SELECT id, user_id, nickname, song_name, artist, song_id, hash, is_random, sort_order, status, created_at, updated_at
                 FROM queue_items
+                WHERE status = 'waiting'
                 ORDER BY sort_order ASC, id ASC
                 """;
             using var reader = cmd.ExecuteReader();
@@ -152,11 +199,12 @@ public sealed class QueueService
 
     private long InsertItem(QueueItem item)
     {
+        var now = DateTime.Now.ToString("O");
         using var conn = _db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO queue_items (user_id, nickname, song_name, artist, song_id, hash, is_random, sort_order, created_at)
-            VALUES ($uid, $nick, $song, $artist, $sid, $hash, $random, $order, $created)
+            INSERT INTO queue_items (user_id, nickname, song_name, artist, song_id, hash, is_random, sort_order, status, created_at, updated_at)
+            VALUES ($uid, $nick, $song, $artist, $sid, $hash, $random, $order, $status, $created, $updated)
             """;
         cmd.Parameters.AddWithValue("$uid", item.UserId);
         cmd.Parameters.AddWithValue("$nick", item.Nickname);
@@ -166,7 +214,9 @@ public sealed class QueueService
         cmd.Parameters.AddWithValue("$hash", item.Hash);
         cmd.Parameters.AddWithValue("$random", item.IsRandom ? 1 : 0);
         cmd.Parameters.AddWithValue("$order", item.SortOrder);
+        cmd.Parameters.AddWithValue("$status", QueueItem.StatusToDb(item.Status));
         cmd.Parameters.AddWithValue("$created", item.CreatedAt.ToString("O"));
+        cmd.Parameters.AddWithValue("$updated", now);
         cmd.ExecuteNonQuery();
 
         using var idCmd = conn.CreateCommand();
@@ -174,11 +224,17 @@ public sealed class QueueService
         return (long)(idCmd.ExecuteScalar() ?? 0L);
     }
 
-    private void DeleteItem(long id)
+    private void UpdateStatus(long id, QueueItemStatus status)
     {
         using var conn = _db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "DELETE FROM queue_items WHERE id = $id";
+        cmd.CommandText = """
+            UPDATE queue_items
+            SET status = $status, updated_at = $updated
+            WHERE id = $id
+            """;
+        cmd.Parameters.AddWithValue("$status", QueueItem.StatusToDb(status));
+        cmd.Parameters.AddWithValue("$updated", DateTime.Now.ToString("O"));
         cmd.Parameters.AddWithValue("$id", id);
         cmd.ExecuteNonQuery();
     }
@@ -190,8 +246,9 @@ public sealed class QueueService
             _waiting[i].SortOrder = i;
             using var conn = _db.Open();
             using var cmd = conn.CreateCommand();
-            cmd.CommandText = "UPDATE queue_items SET sort_order = $order WHERE id = $id";
+            cmd.CommandText = "UPDATE queue_items SET sort_order = $order, updated_at = $updated WHERE id = $id";
             cmd.Parameters.AddWithValue("$order", i);
+            cmd.Parameters.AddWithValue("$updated", DateTime.Now.ToString("O"));
             cmd.Parameters.AddWithValue("$id", _waiting[i].Id);
             cmd.ExecuteNonQuery();
         }
@@ -210,7 +267,9 @@ public sealed class QueueService
             Hash = reader.GetString(6),
             IsRandom = reader.GetInt64(7) == 1,
             SortOrder = (int)reader.GetInt64(8),
-            CreatedAt = DateTime.TryParse(reader.GetString(9), out var dt) ? dt : DateTime.Now
+            Status = QueueItem.StatusFromDb(reader.IsDBNull(9) ? null : reader.GetString(9)),
+            CreatedAt = DateTime.TryParse(reader.GetString(10), out var dt) ? dt : DateTime.Now,
+            UpdatedAt = reader.IsDBNull(11) ? null : DateTime.TryParse(reader.GetString(11), out var u) ? u : null
         };
     }
 

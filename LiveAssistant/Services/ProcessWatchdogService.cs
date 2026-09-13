@@ -21,14 +21,21 @@ public sealed class ProcessWatchdogService
         Func<Task<bool>> kugouHealth,
         CancellationToken ct = default)
     {
-        if (!await douyinHealth())
+        try
         {
-            await TryStartProcessAsync(_config.Settings.Douyin.DouyinExePath, "-api", "抖音", ct);
-        }
+            if (!await douyinHealth())
+            {
+                await TryStartProcessAsync(_config.Settings.Douyin.DouyinExePath, "-api", "抖音", ct);
+            }
 
-        if (!await kugouHealth())
+            if (!await kugouHealth())
+            {
+                await TryStartProcessAsync(_config.Settings.Kugou.KugouExePath, "", "酷狗", ct);
+            }
+        }
+        catch (Exception ex)
         {
-            await TryStartProcessAsync(_config.Settings.Kugou.KugouExePath, "", "酷狗", ct);
+            _log.Error("app", "Sidecar 守护检查异常", ex);
         }
     }
 
@@ -40,44 +47,45 @@ public sealed class ProcessWatchdogService
 
     private async Task TryStartProcessAsync(string exePath, string args, string name, CancellationToken ct, bool force = false)
     {
-        if (string.IsNullOrWhiteSpace(exePath) || !File.Exists(exePath))
+        try
         {
-            _system.Add($"{name}服务未配置或文件不存在: {exePath}");
-            return;
-        }
-
-        var processName = Path.GetFileNameWithoutExtension(exePath);
-        var existing = Process.GetProcessesByName(processName);
-        if (existing.Length > 0 && !force)
-        {
-            foreach (var p in existing)
+            if (string.IsNullOrWhiteSpace(exePath) || !File.Exists(exePath))
             {
-                p.Dispose();
+                _system.Add($"{name}服务未配置或文件不存在: {exePath}");
+                _log.Warn($"{name} exe 不存在: {exePath}");
+                return;
             }
-            return;
-        }
 
-        if (force)
-        {
-            foreach (var p in existing)
+            var processName = Path.GetFileNameWithoutExtension(exePath);
+            var existing = Process.GetProcessesByName(processName);
+            if (existing.Length > 0 && !force)
             {
-                try
-                {
-                    p.Kill(true);
-                }
-                catch
-                {
-                    // ignore
-                }
-                finally
+                foreach (var p in existing)
                 {
                     p.Dispose();
                 }
+                return;
             }
-        }
 
-        try
-        {
+            if (force)
+            {
+                foreach (var p in existing)
+                {
+                    try
+                    {
+                        p.Kill(true);
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.Warn($"结束 {name} 进程失败: {ex.Message}");
+                    }
+                    finally
+                    {
+                        p.Dispose();
+                    }
+                }
+            }
+
             Process.Start(new ProcessStartInfo
             {
                 FileName = exePath,
@@ -90,9 +98,13 @@ public sealed class ProcessWatchdogService
             _log.Info($"启动 {name}: {exePath} {args}");
             await Task.Delay(3000, ct);
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
-            _log.Error($"启动{name}失败", ex);
+            _log.Error("app", $"启动{name}服务失败", ex);
             _system.Add($"启动{name}服务失败: {ex.Message}");
         }
     }

@@ -17,47 +17,40 @@ public sealed class KugouService
         _client = HttpJson.CreateClient(settings.BaseUrl, settings.ApiKey, "X-API-Key");
     }
 
-    public async Task<bool> HealthCheckAsync(CancellationToken ct = default)
-    {
-        try
+    public Task<bool> HealthCheckAsync(CancellationToken ct = default)
+        => SafeAsync("health", async () =>
         {
             var result = await HttpJson.GetAsync<KugouResponse<object>>(_client, "health", ct);
             return result?.Code == 0;
-        }
-        catch (Exception ex)
+        }, false);
+
+    public Task<KugouSongItem?> SearchFirstAsync(string keyword, CancellationToken ct = default)
+        => SafeAsync("search", async () =>
         {
-            _log.Warn($"酷狗健康检查失败: {ex.Message}");
-            return false;
-        }
-    }
+            var result = await HttpJson.PostAsync<KugouResponse<KugouSearchData>>(_client, "api/v1/search",
+                new { keyword, page = 1, pagesize = 10 }, ct);
+            if (result?.Code != 0 || result.Data?.Songs == null || result.Data.Songs.Count == 0)
+            {
+                return null;
+            }
+            return result.Data.Songs[0];
+        }, null);
 
-    public async Task<KugouSongItem?> SearchFirstAsync(string keyword, CancellationToken ct = default)
-    {
-        var result = await HttpJson.PostAsync<KugouResponse<KugouSearchData>>(_client, "api/v1/search",
-            new { keyword, page = 1, pagesize = 10 }, ct);
-        if (result?.Code != 0 || result.Data?.Songs == null || result.Data.Songs.Count == 0)
+    public Task<KugouUrlData?> GetPlayUrlAsync(string? hash, string? keyword, CancellationToken ct = default)
+        => SafeAsync("song_url", async () =>
         {
-            return null;
-        }
+            object body = !string.IsNullOrWhiteSpace(hash)
+                ? new { hash, mode = "auto", quality = "auto" }
+                : new { keyword, mode = "auto", quality = "auto" };
 
-        return result.Data.Songs[0];
-    }
-
-    public async Task<KugouUrlData?> GetPlayUrlAsync(string? hash, string? keyword, CancellationToken ct = default)
-    {
-        object body = !string.IsNullOrWhiteSpace(hash)
-            ? new { hash, mode = "auto", quality = "auto" }
-            : new { keyword, mode = "auto", quality = "auto" };
-
-        var result = await HttpJson.PostAsync<KugouResponse<KugouUrlData>>(_client, "api/v1/song/url", body, ct);
-        if (result?.Code != 0 || string.IsNullOrWhiteSpace(result.Data?.Url))
-        {
-            _log.Warn($"取链失败: {result?.Msg ?? "无响应"}");
-            return null;
-        }
-
-        return result.Data;
-    }
+            var result = await HttpJson.PostAsync<KugouResponse<KugouUrlData>>(_client, "api/v1/song/url", body, ct);
+            if (result?.Code != 0 || string.IsNullOrWhiteSpace(result.Data?.Url))
+            {
+                _log.KugouWarn($"取链失败: {result?.Msg ?? "无响应"}");
+                return null;
+            }
+            return result.Data;
+        }, null);
 
     public async Task<TrackInfo?> ResolveTrackAsync(string keyword, CancellationToken ct = default)
     {
@@ -87,34 +80,57 @@ public sealed class KugouService
 
     public async Task<TrackInfo?> ResolveTrackFromItemAsync(RandomPlaylistItem item, CancellationToken ct = default)
     {
-        if (!string.IsNullOrWhiteSpace(item.Hash))
+        try
         {
-            var urlData = await GetPlayUrlAsync(item.Hash, item.Keyword, ct);
-            if (urlData != null)
+            if (!string.IsNullOrWhiteSpace(item.Hash))
             {
-                return new TrackInfo
+                var urlData = await GetPlayUrlAsync(item.Hash, item.Keyword, ct);
+                if (urlData != null)
                 {
-                    SongName = urlData.SongName ?? item.Title ?? item.Keyword,
-                    Artist = urlData.Artist ?? item.Artist ?? "",
-                    SongId = urlData.SongId ?? urlData.Id ?? item.SongId ?? "",
-                    Hash = item.Hash,
-                    PlayUrl = urlData.Url,
-                    IsRandom = true
-                };
+                    return new TrackInfo
+                    {
+                        SongName = urlData.SongName ?? item.Title ?? item.Keyword,
+                        Artist = urlData.Artist ?? item.Artist ?? "",
+                        SongId = urlData.SongId ?? urlData.Id ?? item.SongId ?? "",
+                        Hash = item.Hash,
+                        PlayUrl = urlData.Url,
+                        IsRandom = true
+                    };
+                }
             }
-        }
 
-        var keyword = !string.IsNullOrWhiteSpace(item.Keyword) ? item.Keyword : item.Title ?? "";
-        if (string.IsNullOrWhiteSpace(keyword))
+            var keyword = !string.IsNullOrWhiteSpace(item.Keyword) ? item.Keyword : item.Title ?? "";
+            if (string.IsNullOrWhiteSpace(keyword))
+            {
+                return null;
+            }
+
+            var track = await ResolveTrackAsync(keyword, ct);
+            if (track != null)
+            {
+                track.IsRandom = true;
+            }
+            return track;
+        }
+        catch (Exception ex)
         {
+            _log.KugouWarn($"解析曲目失败: {ex.Message}");
+            _log.Error("kugou", "resolve_track_from_item", ex);
             return null;
         }
+    }
 
-        var track = await ResolveTrackAsync(keyword, ct);
-        if (track != null)
+    private async Task<T> SafeAsync<T>(string operation, Func<Task<T>> action, T fallback)
+    {
+        try
         {
-            track.IsRandom = true;
+            return await action();
         }
-        return track;
+        catch (Exception ex)
+        {
+            _log.KugouWarn($"{operation} 失败: {ex.Message}");
+            _log.Error("kugou", operation, ex);
+            return fallback;
+        }
     }
 }

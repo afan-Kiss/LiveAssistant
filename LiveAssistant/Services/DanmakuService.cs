@@ -48,6 +48,7 @@ public sealed class DanmakuService : IDisposable
         IsRunning = true;
         ConnectionStatus = "已连接";
         _system.Add("直播间监控已启动");
+        _log.DouyinInfo($"弹幕监控启动 web_rid={_webRid}");
 
         _ = Task.Run(() => PollLoopAsync(_cts.Token));
     }
@@ -58,6 +59,7 @@ public sealed class DanmakuService : IDisposable
         _cts = null;
         IsRunning = false;
         ConnectionStatus = "已停止";
+        _log.DouyinInfo("弹幕监控已停止");
     }
 
     private async Task PollLoopAsync(CancellationToken ct)
@@ -83,28 +85,36 @@ public sealed class DanmakuService : IDisposable
                                 continue;
                             }
 
-                            var item = new DanmakuItem
+                            try
                             {
-                                MsgId = msg.MsgId ?? Guid.NewGuid().ToString("N"),
-                                Content = msg.Content,
-                                Nickname = msg.User?.Nickname ?? "未知",
-                                UserId = msg.User?.UserId ?? "",
-                                MsgType = msg.MsgType ?? "chat",
-                                Timestamp = DateTime.Now
-                            };
-                            DanmakuReceived?.Invoke(item);
+                                var item = new DanmakuItem
+                                {
+                                    MsgId = msg.MsgId ?? Guid.NewGuid().ToString("N"),
+                                    Content = msg.Content,
+                                    Nickname = msg.User?.Nickname ?? "未知",
+                                    UserId = msg.User?.UserId ?? "",
+                                    MsgType = msg.MsgType ?? "chat",
+                                    Timestamp = DateTime.Now
+                                };
+                                DanmakuReceived?.Invoke(item);
+                            }
+                            catch (Exception ex)
+                            {
+                                _log.Error("douyin", "处理弹幕项异常", ex);
+                            }
                         }
                     }
                 }
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
                 break;
             }
             catch (Exception ex)
             {
                 failCount++;
-                _log.Warn($"弹幕轮询失败({failCount}): {ex.Message}");
+                _log.DouyinWarn($"弹幕轮询失败({failCount}): {ex.Message}");
+                _log.Error("douyin", "poll_loop", ex);
                 ConnectionStatus = "连接异常";
                 if (failCount >= 3)
                 {
@@ -114,11 +124,12 @@ public sealed class DanmakuService : IDisposable
                         await _douyin.ReconnectAsync(_webRid, ct);
                         await _douyin.StartCollectAsync(_webRid, ct);
                         _system.Add("重连成功");
+                        _log.DouyinInfo("弹幕重连成功");
                         failCount = 0;
                     }
                     catch (Exception rex)
                     {
-                        _log.Warn($"重连失败: {rex.Message}");
+                        _log.Error("douyin", "reconnect", rex);
                     }
                 }
             }
@@ -130,6 +141,10 @@ public sealed class DanmakuService : IDisposable
             catch (TaskCanceledException)
             {
                 break;
+            }
+            catch (Exception ex)
+            {
+                _log.Error("douyin", "poll_delay", ex);
             }
         }
     }
