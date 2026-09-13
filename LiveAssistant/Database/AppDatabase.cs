@@ -23,6 +23,7 @@ public sealed class AppDatabase : IDisposable
             CREATE TABLE IF NOT EXISTS users (
                 user_id TEXT PRIMARY KEY,
                 nickname TEXT NOT NULL,
+                role TEXT DEFAULT 'normal',
                 points INTEGER DEFAULT 0,
                 level INTEGER DEFAULT 0,
                 request_count INTEGER DEFAULT 0,
@@ -75,15 +76,16 @@ public sealed class AppDatabase : IDisposable
     private void Migrate()
     {
         using var conn = Open();
+        EnsureColumn(conn, "users", "role", "TEXT DEFAULT 'normal'");
         EnsureColumn(conn, "queue_items", "status", "TEXT DEFAULT 'waiting'");
         EnsureColumn(conn, "queue_items", "updated_at", "TEXT");
 
-        using var resetCmd = conn.CreateCommand();
-        resetCmd.CommandText = """
-            UPDATE queue_items SET status = 'waiting'
-            WHERE status = 'playing' OR status IS NULL OR status = '';
+        using var roleCmd = conn.CreateCommand();
+        roleCmd.CommandText = """
+            UPDATE users SET role = 'normal'
+            WHERE role IS NULL OR role = '';
             """;
-        resetCmd.ExecuteNonQuery();
+        roleCmd.ExecuteNonQuery();
 
         using var legacyCmd = conn.CreateCommand();
         legacyCmd.CommandText = """
@@ -91,6 +93,31 @@ public sealed class AppDatabase : IDisposable
             WHERE status NOT IN ('waiting', 'playing', 'finished', 'deleted');
             """;
         legacyCmd.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// 启动时将 playing 恢复为 waiting，返回受影响行数。
+    /// </summary>
+    public int RecoverPlayingQueueItems()
+    {
+        using var conn = Open();
+        using var countCmd = conn.CreateCommand();
+        countCmd.CommandText = "SELECT COUNT(1) FROM queue_items WHERE status = 'playing'";
+        var count = Convert.ToInt32(countCmd.ExecuteScalar());
+        if (count <= 0)
+        {
+            return 0;
+        }
+
+        using var resetCmd = conn.CreateCommand();
+        resetCmd.CommandText = """
+            UPDATE queue_items
+            SET status = 'waiting', updated_at = $updated
+            WHERE status = 'playing'
+            """;
+        resetCmd.Parameters.AddWithValue("$updated", DateTime.Now.ToString("O"));
+        resetCmd.ExecuteNonQuery();
+        return count;
     }
 
     private static void EnsureColumn(SqliteConnection conn, string table, string column, string definition)

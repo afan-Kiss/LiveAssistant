@@ -62,6 +62,18 @@ public sealed class LogService
         }
     }
 
+    public void LogSongRequest(string user, string song, bool success, string? reason = null)
+    {
+        var result = success ? "SUCCESS" : "FAILED";
+        var reasonPart = string.IsNullOrWhiteSpace(reason) ? "" : $" reason={reason}";
+        var line = $"user={user} song={song} result={result}{reasonPart}";
+        Write("song_request", success ? "INFO" : "WARN", line);
+        if (!success)
+        {
+            Write("error", "WARN", $"[song_request] {line}");
+        }
+    }
+
     private void Write(string fileKey, string level, string message)
     {
         var line = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} [{level}] {message}";

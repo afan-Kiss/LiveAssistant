@@ -65,6 +65,7 @@ public sealed class UiSettings
 public sealed class QueueSettings
 {
     public int MaxSize { get; set; } = 50;
+    public int RequestCooldownSeconds { get; set; } = 30;
 }
 
 public sealed class EmergencySettings

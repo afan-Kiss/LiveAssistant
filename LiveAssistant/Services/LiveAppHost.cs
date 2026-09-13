@@ -19,6 +19,7 @@ public sealed class LiveAppHost : IDisposable
     private readonly PlaybackCommandQueue _playbackCommands;
     private readonly PlaybackEngine _engine;
     private readonly DanmakuService _danmaku;
+    private readonly UserRepository _users;
     private readonly SongRequestService _songRequest;
     private readonly ProcessWatchdogService _watchdog;
     private CancellationTokenSource? _watchCts;
@@ -32,6 +33,14 @@ public sealed class LiveAppHost : IDisposable
         _system = new SystemMessageService(_config.Settings.Ui.MaxSystemMessageLines);
         _db = new AppDatabase(_config.DataDirectory);
 
+        var recovered = _db.RecoverPlayingQueueItems();
+        if (recovered > 0)
+        {
+            _log.Info($"播放恢复保护: 已将 {recovered} 条 playing 队列项恢复为 waiting");
+            _system.Add($"启动恢复: {recovered} 条未完成播放已重置为等待");
+        }
+
+        _users = new UserRepository(_db);
         _douyin = new DouyinService(_config.Settings.Douyin, _log);
         _kugou = new KugouService(_config.Settings.Kugou, _log);
         _queue = new QueueService(_db);
@@ -44,7 +53,7 @@ public sealed class LiveAppHost : IDisposable
             _config, _queue, _kugou, _random, _playback, _reply, _system, _log);
         _engine = new PlaybackEngine(_config, _playbackCommands, _system);
         _danmaku = new DanmakuService(_douyin, _log, _system);
-        _songRequest = new SongRequestService(_config, _kugou, _douyin, _queue, _reply, _system, _log);
+        _songRequest = new SongRequestService(_config, _kugou, _douyin, _queue, _users, _reply, _system, _log);
         _watchdog = new ProcessWatchdogService(_config, _log, _system);
 
         _danmaku.DanmakuReceived += OnDanmakuReceived;

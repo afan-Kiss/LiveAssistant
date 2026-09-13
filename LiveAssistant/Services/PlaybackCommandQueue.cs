@@ -24,6 +24,8 @@ public sealed class PlaybackCommandQueue : IDisposable
     private readonly Task _worker;
     private int _pendingVolume = -1;
     private bool _advanceScheduled;
+    private readonly object _enqueueLock = new();
+    private bool _skipAdvancePending;
 
     public PlaybackCommandQueue(
         ConfigManager config,
@@ -52,9 +54,40 @@ public sealed class PlaybackCommandQueue : IDisposable
 
     public void Enqueue(PlaybackCommandKind kind)
     {
+        if (IsSkipOrAdvance(kind))
+        {
+            lock (_enqueueLock)
+            {
+                if (_skipAdvancePending)
+                {
+                    _log.PlaybackInfo($"合并重复命令: {kind}");
+                    return;
+                }
+                _skipAdvancePending = true;
+            }
+        }
+
         if (!_channel.Writer.TryWrite(kind))
         {
+            if (IsSkipOrAdvance(kind))
+            {
+                lock (_enqueueLock)
+                {
+                    _skipAdvancePending = false;
+                }
+            }
             _log.PlaybackWarn($"播放命令入队失败: {kind}");
+        }
+    }
+
+    private static bool IsSkipOrAdvance(PlaybackCommandKind kind) =>
+        kind is PlaybackCommandKind.Skip or PlaybackCommandKind.Advance;
+
+    private void ReleaseSkipAdvancePending()
+    {
+        lock (_enqueueLock)
+        {
+            _skipAdvancePending = false;
         }
     }
 
@@ -146,10 +179,17 @@ public sealed class PlaybackCommandQueue : IDisposable
                 _log.PlaybackInfo("停止播放");
                 return;
             case PlaybackCommandKind.Skip:
-                _playback.Stop();
-                _queue.FinishCurrent();
-                _advanceScheduled = false;
-                await AdvanceInternalAsync(ct);
+                try
+                {
+                    _playback.Stop();
+                    _queue.FinishCurrent();
+                    _advanceScheduled = false;
+                    await AdvanceInternalAsync(ct);
+                }
+                finally
+                {
+                    ReleaseSkipAdvancePending();
+                }
                 return;
             case PlaybackCommandKind.EnsurePlaying:
                 if (_playback.State != Models.PlaybackState.Idle)
@@ -159,9 +199,16 @@ public sealed class PlaybackCommandQueue : IDisposable
                 await AdvanceInternalAsync(ct);
                 return;
             case PlaybackCommandKind.Advance:
-                _advanceScheduled = false;
-                _queue.FinishCurrent();
-                await AdvanceInternalAsync(ct);
+                try
+                {
+                    _advanceScheduled = false;
+                    _queue.FinishCurrent();
+                    await AdvanceInternalAsync(ct);
+                }
+                finally
+                {
+                    ReleaseSkipAdvancePending();
+                }
                 return;
         }
     }
