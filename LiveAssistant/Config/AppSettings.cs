@@ -12,6 +12,7 @@ public sealed class AppSettings
     public RandomPlaylistSettings RandomPlaylist { get; set; } = new();
     public UiSettings Ui { get; set; } = new();
     public QueueSettings Queue { get; set; } = new();
+    public ReplySettings Reply { get; set; } = new();
     public EmergencySettings Emergency { get; set; } = new();
 }
 
@@ -66,6 +67,13 @@ public sealed class QueueSettings
 {
     public int MaxSize { get; set; } = 50;
     public int RequestCooldownSeconds { get; set; } = 30;
+}
+
+public sealed class ReplySettings
+{
+    public int MaxPerSecond { get; set; } = 2;
+    public int MaxRetries { get; set; } = 3;
+    public int RetryDelayMs { get; set; } = 1500;
 }
 
 public sealed class EmergencySettings

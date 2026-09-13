@@ -74,6 +74,15 @@ public sealed class LogService
         }
     }
 
+    public void LogPlaybackError(string song, string user, string source, string? url, string? errorReason)
+    {
+        var urlPart = string.IsNullOrWhiteSpace(url) ? "-" : url;
+        var err = string.IsNullOrWhiteSpace(errorReason) ? "unknown" : errorReason;
+        var line = $"song={song} user={user} source={source} url={urlPart} error={err}";
+        Write("playback_error", "ERROR", line);
+        Write("error", "ERROR", $"[playback_error] {line}");
+    }
+
     private void Write(string fileKey, string level, string message)
     {
         var line = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} [{level}] {message}";

@@ -14,15 +14,20 @@ public sealed class LiveAppHost : IDisposable
     private readonly KugouService _kugou;
     private readonly QueueService _queue;
     private readonly ReplyService _reply;
+    private readonly ReplyQueue _replyQueue;
     private readonly RandomPlaylistService _random;
     private readonly PlaybackService _playback;
     private readonly PlaybackCommandQueue _playbackCommands;
     private readonly PlaybackEngine _engine;
     private readonly DanmakuService _danmaku;
     private readonly UserRepository _users;
+    private readonly SongRequestPermissionService _permission;
     private readonly SongRequestService _songRequest;
     private readonly ProcessWatchdogService _watchdog;
+    private readonly DateTime _startedAt = DateTime.Now;
     private CancellationTokenSource? _watchCts;
+    private volatile bool _douyinSidecarOk;
+    private volatile bool _kugouSidecarOk;
 
     public LiveAppHost()
     {
@@ -45,6 +50,7 @@ public sealed class LiveAppHost : IDisposable
         _kugou = new KugouService(_config.Settings.Kugou, _log);
         _queue = new QueueService(_db);
         _reply = new ReplyService(_config);
+        _replyQueue = new ReplyQueue(_douyin, _log, _config.Settings.Reply);
         _random = new RandomPlaylistService(_config, _db);
         _playback = new PlaybackService(_log);
         _playback.SetVolume(_config.Settings.Playback.Volume);
@@ -53,11 +59,14 @@ public sealed class LiveAppHost : IDisposable
             _config, _queue, _kugou, _random, _playback, _reply, _system, _log);
         _engine = new PlaybackEngine(_config, _playbackCommands, _system);
         _danmaku = new DanmakuService(_douyin, _log, _system);
-        _songRequest = new SongRequestService(_config, _kugou, _douyin, _queue, _users, _reply, _system, _log);
+        _permission = new SongRequestPermissionService(_config, _users, _queue);
+        _songRequest = new SongRequestService(_config, _kugou, _queue, _permission, _reply, _replyQueue, _system, _log);
         _watchdog = new ProcessWatchdogService(_config, _log, _system);
 
         _danmaku.DanmakuReceived += OnDanmakuReceived;
         _songRequest.RequestHandled += () => _ = _engine.EnsurePlayingAsync();
+        _playbackCommands.Playback.StateChanged += () => NotifyStateChanged();
+        _queue.QueueChanged += () => NotifyStateChanged();
 
         _log.Info("LiveAssistant 已启动");
     }
@@ -69,9 +78,27 @@ public sealed class LiveAppHost : IDisposable
     public PlaybackCommandQueue PlaybackCommands => _playbackCommands;
     public PlaybackEngine Engine => _engine;
     public DanmakuService Danmaku => _danmaku;
+    public DateTime StartedAt => _startedAt;
 
     public event Action<DanmakuItem>? DanmakuReceived;
     public event Action? StateChanged;
+
+    public RuntimeStatus GetRuntimeStatus()
+    {
+        var track = _playbackCommands.Playback.CurrentTrack;
+        var queueCount = _queue.WaitingCount + (_queue.NowPlaying != null ? 1 : 0);
+        return new RuntimeStatus
+        {
+            DouyinOnline = _douyinSidecarOk,
+            KugouOnline = _kugouSidecarOk,
+            DouyinStatus = _douyinSidecarOk ? "在线" : "离线",
+            KugouStatus = _kugouSidecarOk ? "在线" : "离线",
+            DanmakuConnection = _danmaku.ConnectionStatus,
+            CurrentSong = track == null ? "-" : $"{track.SongName} - {track.Artist}",
+            QueueCount = queueCount,
+            Uptime = DateTime.Now - _startedAt
+        };
+    }
 
     public async Task StartAsync(CancellationToken ct = default)
     {
@@ -145,6 +172,9 @@ public sealed class LiveAppHost : IDisposable
 
                 var dyOk = await _douyin.HealthCheckAsync(ct);
                 var kgOk = await _kugou.HealthCheckAsync(ct);
+                _douyinSidecarOk = dyOk;
+                _kugouSidecarOk = kgOk;
+
                 if (!dyOk)
                 {
                     _system.Add(_reply.Render("systemDouyinDown", new Dictionary<string, string>()));
@@ -153,6 +183,8 @@ public sealed class LiveAppHost : IDisposable
                 {
                     _system.Add(_reply.Render("systemKugouDown", new Dictionary<string, string>()));
                 }
+
+                NotifyStateChanged();
             }
             catch (OperationCanceledException)
             {
@@ -184,6 +216,7 @@ public sealed class LiveAppHost : IDisposable
     {
         _watchCts?.Cancel();
         _danmaku.Dispose();
+        _replyQueue.Dispose();
         _playbackCommands.Dispose();
         _playback.Dispose();
         _db.Dispose();

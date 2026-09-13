@@ -11,6 +11,11 @@ public sealed class MainForm : Form
     private readonly Label _lblRoom = new();
     private readonly Label _lblConnection = new();
     private readonly Label _lblMode = new();
+    private readonly Label _lblDouyinSidecar = new();
+    private readonly Label _lblKugouSidecar = new();
+    private readonly Label _lblRuntimeSong = new();
+    private readonly Label _lblRuntimeQueue = new();
+    private readonly Label _lblUptime = new();
 
     private readonly ListBox _lstDanmaku = new();
     private readonly ListBox _lstSystem = new();
@@ -57,19 +62,49 @@ public sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 4,
+            RowCount = 5,
             Padding = new Padding(8)
         };
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 130));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
         Controls.Add(root);
 
         root.Controls.Add(BuildStatusPanel(), 0, 0);
-        root.Controls.Add(BuildMainPanel(), 0, 1);
-        root.Controls.Add(BuildPlaybackPanel(), 0, 2);
-        root.Controls.Add(BuildBottomPanel(), 0, 3);
+        root.Controls.Add(BuildRuntimeStatusPanel(), 0, 1);
+        root.Controls.Add(BuildMainPanel(), 0, 2);
+        root.Controls.Add(BuildPlaybackPanel(), 0, 3);
+        root.Controls.Add(BuildBottomPanel(), 0, 4);
+    }
+
+    private Control BuildRuntimeStatusPanel()
+    {
+        var panel = new GroupBox
+        {
+            Text = "运行状态",
+            Dock = DockStyle.Fill
+        };
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 5,
+            RowCount = 1,
+            Padding = new Padding(8, 4, 8, 4)
+        };
+        for (var i = 0; i < 5; i++)
+        {
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20));
+        }
+
+        layout.Controls.Add(MakeStatusCell("抖音", _lblDouyinSidecar), 0, 0);
+        layout.Controls.Add(MakeStatusCell("酷狗", _lblKugouSidecar), 1, 0);
+        layout.Controls.Add(MakeStatusCell("当前歌曲", _lblRuntimeSong), 2, 0);
+        layout.Controls.Add(MakeStatusCell("队列数量", _lblRuntimeQueue), 3, 0);
+        layout.Controls.Add(MakeStatusCell("运行时间", _lblUptime), 4, 0);
+        panel.Controls.Add(layout);
+        return panel;
     }
 
     private Control BuildStatusPanel()
@@ -266,7 +301,7 @@ public sealed class MainForm : Form
         _host.SystemMessages.MessageAdded += line => BeginInvoke(() => AppendSystem(line));
         _host.Queue.QueueChanged += () => BeginInvoke(RefreshQueue);
         _host.PlaybackCommands.Playback.StateChanged += () => BeginInvoke(RefreshPlayback);
-        _host.StateChanged += () => BeginInvoke(RefreshStatus);
+        _host.StateChanged += () => BeginInvoke(RefreshAll);
 
         _btnConnect.Click += async (_, _) => await ConnectAsync();
         _btnPause.Click += (_, _) => TogglePause();
@@ -422,6 +457,28 @@ public sealed class MainForm : Form
             PlaybackMode.RandomOnly => "随机播放",
             _ => _host.PlaybackCommands.Playback.IsRandomFillActive ? "点歌+随机补位(补位中)" : "点歌+随机补位"
         };
+        RefreshRuntimeStatus();
+    }
+
+    private void RefreshRuntimeStatus()
+    {
+        var status = _host.GetRuntimeStatus();
+        _lblDouyinSidecar.Text = $"{status.DouyinStatus} ({status.DanmakuConnection})";
+        _lblDouyinSidecar.ForeColor = status.DouyinOnline ? Color.DarkGreen : Color.DarkRed;
+        _lblKugouSidecar.Text = status.KugouStatus;
+        _lblKugouSidecar.ForeColor = status.KugouOnline ? Color.DarkGreen : Color.DarkRed;
+        _lblRuntimeSong.Text = status.CurrentSong;
+        _lblRuntimeQueue.Text = status.QueueCount.ToString();
+        _lblUptime.Text = FormatUptime(status.Uptime);
+    }
+
+    private static string FormatUptime(TimeSpan uptime)
+    {
+        if (uptime.TotalHours >= 1)
+        {
+            return $"{(int)uptime.TotalHours:D2}:{uptime.Minutes:D2}:{uptime.Seconds:D2}";
+        }
+        return $"{uptime.Minutes:D2}:{uptime.Seconds:D2}";
     }
 
     private void RefreshQueue()

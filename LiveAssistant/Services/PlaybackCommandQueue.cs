@@ -277,6 +277,7 @@ public sealed class PlaybackCommandQueue : IDisposable
         if (track == null)
         {
             _log.LogPlayback(item.SongName, source, item.Nickname, item.PlayUrl, false, "解析曲目失败");
+            _log.LogPlaybackError(item.SongName, item.Nickname, source, item.PlayUrl, "解析曲目失败");
             await HandlePlayFailureAsync(item.SongName);
             if (_config.Settings.Playback.AutoSkipOnError)
             {
@@ -294,6 +295,7 @@ public sealed class PlaybackCommandQueue : IDisposable
 
         if (!ok)
         {
+            _log.LogPlaybackError(track.SongName, item.Nickname, source, track.PlayUrl, "播放器启动失败");
             await HandlePlayFailureAsync(track.SongName);
             if (_config.Settings.Playback.AutoSkipOnError)
             {
@@ -326,7 +328,9 @@ public sealed class PlaybackCommandQueue : IDisposable
         var track = await _kugou.ResolveTrackFromItemAsync(pick, ct);
         if (track == null)
         {
-            _log.LogPlayback(pick.Keyword ?? pick.Title ?? "?", "random", "随机", null, false, "随机曲目解析失败");
+            var songLabel = pick.Keyword ?? pick.Title ?? "?";
+            _log.LogPlayback(songLabel, "random", "随机", null, false, "随机曲目解析失败");
+            _log.LogPlaybackError(songLabel, "随机", "random", null, "随机曲目解析失败");
             _system.Add($"随机歌曲解析失败: {pick.Keyword ?? pick.Title}");
             if (_config.Settings.Playback.AutoSkipOnError)
             {
@@ -354,6 +358,7 @@ public sealed class PlaybackCommandQueue : IDisposable
 
         if (!ok)
         {
+            _log.LogPlaybackError(track.SongName, "随机", "random", track.PlayUrl, "播放器启动失败");
             await HandlePlayFailureAsync(track.SongName);
             if (_config.Settings.Playback.AutoSkipOnError)
             {
