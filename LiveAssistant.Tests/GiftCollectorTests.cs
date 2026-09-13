@@ -155,7 +155,9 @@ public sealed class GiftCollectorTests : IDisposable
         var im = new GiftImFetchClient(new HttpClient(new ScriptedHandler(_ =>
             new HttpResponseMessage(HttpStatusCode.InternalServerError))));
 
-        using var collector = new GiftCollectorService(config, douyin, gifts, log, im, cookies, rooms);
+        using var collector = new GiftCollectorService(
+            config, douyin, gifts, log, im, cookies, rooms,
+            cursorStore: new GiftCursorStore(dataDir));
         collector.StartGiftCollector("123");
         Assert.True(collector.IsRunning);
         collector.StopGiftCollector();

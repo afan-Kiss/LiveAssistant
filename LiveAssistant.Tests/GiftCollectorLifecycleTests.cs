@@ -78,7 +78,8 @@ public sealed class GiftCollectorLifecycleTests : IDisposable
         })));
 
         using var collector = new GiftCollectorService(
-            ctx.Config, ctx.Douyin, ctx.Gifts, ctx.Log, im, cookies, rooms, new GiftEventDeduplicator());
+            ctx.Config, ctx.Douyin, ctx.Gifts, ctx.Log, im, cookies, rooms, new GiftEventDeduplicator(),
+            new GiftCursorStore(_tempDir));
 
         collector.StartGiftCollector("roomA");
         Assert.True(collector.IsRunning);
@@ -114,7 +115,8 @@ public sealed class GiftCollectorLifecycleTests : IDisposable
         })));
 
         using var collector = new GiftCollectorService(
-            ctx.Config, ctx.Douyin, ctx.Gifts, ctx.Log, im, cookies, rooms);
+            ctx.Config, ctx.Douyin, ctx.Gifts, ctx.Log, im, cookies, rooms,
+            cursorStore: new GiftCursorStore(_tempDir));
         collector.StartGiftCollector("r1");
         Assert.True(await WaitUntil(() => Volatile.Read(ref n) >= 2, TimeSpan.FromSeconds(5)),
             $"fetch calls={n}");
@@ -134,7 +136,8 @@ public sealed class GiftCollectorLifecycleTests : IDisposable
         var im = new GiftImFetchClient(new HttpClient(new ScriptedHandler(_ => OkEmpty())));
 
         using var collector = new GiftCollectorService(
-            ctx.Config, ctx.Douyin, ctx.Gifts, ctx.Log, im, cookies, rooms);
+            ctx.Config, ctx.Douyin, ctx.Gifts, ctx.Log, im, cookies, rooms,
+            cursorStore: new GiftCursorStore(_tempDir));
         collector.StartGiftCollector("r1");
         Assert.True(await WaitUntil(() => Volatile.Read(ref cookies.Calls) >= 3, TimeSpan.FromSeconds(5)),
             $"cookie calls={cookies.Calls}");
@@ -157,7 +160,8 @@ public sealed class GiftCollectorLifecycleTests : IDisposable
 
         var deduper = new GiftEventDeduplicator();
         using var collector = new GiftCollectorService(
-            ctx.Config, ctx.Douyin, ctx.Gifts, ctx.Log, im, cookies, rooms, deduper);
+            ctx.Config, ctx.Douyin, ctx.Gifts, ctx.Log, im, cookies, rooms, deduper,
+            new GiftCursorStore(_tempDir));
         collector.StartGiftCollector("r1");
         Assert.True(await WaitUntil(() => (ctx.Users.GetUser("7")?.Points ?? 0) >= 1, TimeSpan.FromSeconds(3)));
         collector.StopGiftCollector();

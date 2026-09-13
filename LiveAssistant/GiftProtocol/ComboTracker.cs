@@ -114,6 +114,15 @@ public sealed class ComboTracker
         }
     }
 
+    /// <summary>清空连击状态（切换直播间时调用）。</summary>
+    public void Clear()
+    {
+        lock (_gate)
+        {
+            _states.Clear();
+        }
+    }
+
     public static string BuildKey(string userId, string giftId, string groupId)
         => $"{userId}|{giftId}|{groupId}";
 

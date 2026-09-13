@@ -3,17 +3,20 @@ using LiveAssistant.Models;
 namespace LiveAssistant.Services;
 
 /// <summary>
-/// 进程内 GiftEvent.EventId 去重，防止 reconnect / cursor 恢复 / 重试导致重复积分。
+/// GiftEvent.EventId 去重。
+/// 内存 TTL + 可选持久层（如 SQLite gift_events），支持进程重启后恢复去重。
 /// </summary>
 public sealed class GiftEventDeduplicator
 {
     private readonly TimeSpan _ttl;
+    private readonly Func<string, bool>? _existsInStore;
     private readonly object _gate = new();
     private readonly Dictionary<string, DateTime> _seen = new(StringComparer.Ordinal);
 
-    public GiftEventDeduplicator(TimeSpan? ttl = null)
+    public GiftEventDeduplicator(TimeSpan? ttl = null, Func<string, bool>? existsInStore = null)
     {
         _ttl = ttl ?? TimeSpan.FromMinutes(30);
+        _existsInStore = existsInStore;
     }
 
     public int Count
@@ -28,7 +31,7 @@ public sealed class GiftEventDeduplicator
     }
 
     /// <summary>
-    /// 若 event_id 在 TTL 内已见过，返回 false；否则登记并返回 true。
+    /// 若 event_id 在 TTL 内存或持久层已见过，返回 false；否则登记并返回 true。
     /// </summary>
     public bool TryAdmit(GiftEvent gift, DateTime? utcNow = null)
     {
@@ -48,6 +51,12 @@ public sealed class GiftEventDeduplicator
                 return false;
             }
 
+            if (_existsInStore != null && _existsInStore(id))
+            {
+                _seen[id] = now;
+                return false;
+            }
+
             _seen[id] = now;
             return true;
         }
@@ -60,21 +69,29 @@ public sealed class GiftEventDeduplicator
             return false;
         }
 
+        var id = eventId.Trim();
         var now = utcNow ?? DateTime.UtcNow;
         lock (_gate)
         {
             PruneExpiredLocked(now);
-            return _seen.TryGetValue(eventId.Trim(), out var seenAt) && now - seenAt < _ttl;
+            if (_seen.TryGetValue(id, out var seenAt) && now - seenAt < _ttl)
+            {
+                return true;
+            }
         }
+
+        return _existsInStore?.Invoke(id) == true;
     }
 
-    public void Clear()
+    public void ClearMemory()
     {
         lock (_gate)
         {
             _seen.Clear();
         }
     }
+
+    public void Clear() => ClearMemory();
 
     private void PruneExpiredLocked(DateTime now)
     {

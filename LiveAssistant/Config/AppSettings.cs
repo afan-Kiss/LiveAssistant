@@ -147,6 +147,12 @@ public sealed class GiftSettings
     public int ComboTimeoutSeconds { get; set; } = 10;
     /// <summary>断线/Cookie 失效后的重连退避基数（毫秒）。</summary>
     public int ReconnectDelayMs { get; set; } = 3000;
+    /// <summary>单次礼物最大件数（异常保护）。</summary>
+    public int MaxGiftCount { get; set; } = 10000;
+    /// <summary>单次礼物最大总钻石价值（异常保护）。</summary>
+    public int MaxGiftValue { get; set; } = 5_000_000;
+    /// <summary>单次礼物最大积分增量（异常保护）。</summary>
+    public int MaxPointsDelta { get; set; } = 5_000_000;
 }
 
 public sealed class UserLevelSettings

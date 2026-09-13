@@ -46,4 +46,7 @@ public sealed class GiftProtocolPipeline
 
     public IReadOnlyList<GiftEvent> FlushAll()
         => _combo.FlushAll();
+
+    public void Reset()
+        => _combo.Clear();
 }

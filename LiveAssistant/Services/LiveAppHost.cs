@@ -107,7 +107,7 @@ public sealed class LiveAppHost : IDisposable
             _config, _users, _queue, songBlacklist, _levelPermRepo, _userLevel);
         _songRequest = new SongRequestService(_config, _kugou, _queue, _permission, _reply, _replyQueue, _system, _log);
         _gift = new GiftService(_config, _douyin, _giftRepo, _users, _userLevel, _giftRuleRepo, _log, _system);
-        _giftCollector = new GiftCollectorService(_config, _douyin, _gift, _log);
+        _giftCollector = new GiftCollectorService(_config, _douyin, _gift, _log, giftRepo: _giftRepo);
         _banVote = new BanVoteService(_config, _banVoteRepo, _users, _douyin, _replyQueue, _reply, _system, _log);
         _welcome = new WelcomeService(_config, _reply, _replyQueue, _system, _welcomeCooldownRepo);
         _keywordReply = new KeywordReplyService(_config, _keywordReplyRepo, new NullAIReplyService());

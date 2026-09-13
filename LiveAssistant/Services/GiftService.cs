@@ -30,7 +30,7 @@ public sealed class GiftService : IDisposable
         LogService log,
         SystemMessageService system)
     {
-        _ = douyin; // 保留构造签名，避免大规模 DI 改动
+        _ = douyin;
         _config = config;
         _gifts = gifts;
         _users = users;
@@ -40,13 +40,11 @@ public sealed class GiftService : IDisposable
         _system = system;
     }
 
-    /// <summary>绑定当前直播间短号（供 EventId 兜底）。</summary>
     public void BindRoom(string webRid)
     {
         _webRid = webRid?.Trim() ?? "";
     }
 
-    /// <summary>兼容旧调用：仅绑定房间，不再轮询 Sidecar gift/feed。</summary>
     public void Start(string webRid)
     {
         BindRoom(webRid);
@@ -55,11 +53,19 @@ public sealed class GiftService : IDisposable
 
     public void Stop()
     {
-        // 采集停止由 GiftCollectorService 负责
     }
+
+    public bool ExistsByEventId(string eventId)
+        => _gifts.ExistsByEventId(eventId);
 
     public bool HandleGiftEvent(GiftEvent gift)
     {
+        if (string.IsNullOrWhiteSpace(gift.UserId))
+        {
+            _log.GiftWarn("[guard] 拒绝：缺少 UserId");
+            return false;
+        }
+
         if (string.IsNullOrWhiteSpace(gift.EventId))
         {
             gift.EventId = GiftEvent.BuildEventId(
@@ -67,19 +73,39 @@ public sealed class GiftService : IDisposable
                 gift.Time.ToString("O"));
         }
 
+        if (!TryValidateAmounts(gift, out var guardReason))
+        {
+            _log.GiftWarn($"[guard] 拒绝异常金额 eventId={gift.EventId} reason={guardReason} " +
+                          $"count={gift.Count} value={gift.Value} diamond={gift.DiamondCount}");
+            return false;
+        }
+
         if (_gifts.ExistsByEventId(gift.EventId))
         {
-            _log.LogGiftDuplicate(gift.Nickname, gift.GiftName, gift.EventId, "事件已存在");
+            _log.LogGiftDuplicate(gift.Nickname, gift.GiftName, gift.EventId, "事件已存在(DB)");
             return false;
         }
 
         var before = _users.GetUser(gift.UserId)?.Points ?? 0;
         var rule = _giftRules.FindByGift(gift.GiftName, gift.GiftId);
         // Value = 本次礼物总钻石价值，禁止再乘 Count。
-        // 有规则时：规则积分按件数计；无规则时：总钻石 * PointsPerValue。
         var points = rule?.Points is int rulePoints
             ? rulePoints * Math.Max(1, gift.Count)
             : gift.Value * _config.Settings.Gift.PointsPerValue;
+
+        if (points < 0)
+        {
+            _log.GiftWarn($"[guard] 拒绝负积分 eventId={gift.EventId} points={points}");
+            return false;
+        }
+
+        var maxPoints = Math.Max(0, _config.Settings.Gift.MaxPointsDelta);
+        if (maxPoints > 0 && points > maxPoints)
+        {
+            _log.GiftWarn($"[guard] 拒绝超限积分 eventId={gift.EventId} points={points} max={maxPoints}");
+            return false;
+        }
+
         var pointsAfter = before + points;
 
         if (!_gifts.TryInsert(gift, points, pointsAfter, out var id))
@@ -98,9 +124,60 @@ public sealed class GiftService : IDisposable
         ApplySongPermission(gift, rule);
 
         var after = _users.GetUser(gift.UserId)?.Points ?? pointsAfter;
+        _log.GiftInfo(
+            $"[points] eventId={gift.EventId} user={gift.UserId}/{gift.Nickname} " +
+            $"gift={gift.GiftName} count={gift.Count} value={gift.Value} " +
+            $"pointsDelta={points} pointsAfter={after} rule={(rule?.GiftName ?? "-")}");
         _log.LogGift(gift.UserId, gift.Nickname, gift.GiftName, gift.Count, points, after);
         _system.Add($"礼物: {gift.Nickname} 送出 {gift.GiftName}×{gift.Count} (+{points}积分)");
         GiftReceived?.Invoke(gift);
+        return true;
+    }
+
+    private bool TryValidateAmounts(GiftEvent gift, out string reason)
+    {
+        reason = "";
+        var maxCount = Math.Max(1, _config.Settings.Gift.MaxGiftCount);
+        var maxValue = Math.Max(1, _config.Settings.Gift.MaxGiftValue);
+
+        if (gift.Count <= 0)
+        {
+            reason = "count<=0";
+            return false;
+        }
+
+        if (gift.Count > maxCount)
+        {
+            reason = $"count>{maxCount}";
+            return false;
+        }
+
+        if (gift.Value < 0 || gift.DiamondCount < 0)
+        {
+            reason = "negative value/diamond";
+            return false;
+        }
+
+        if (gift.Value > maxValue)
+        {
+            reason = $"value>{maxValue}";
+            return false;
+        }
+
+        // Value 应为总钻石；若 DiamondCount 有值则校验一致性（允许 Value=0 的免费礼物）
+        if (gift.DiamondCount > 0 && gift.Value > 0)
+        {
+            var expected = gift.DiamondCount * gift.Count;
+            if (gift.Value != expected)
+            {
+                // 纠正为唯一口径，避免下游重复计算
+                _log.GiftWarn(
+                    $"[value] 校正 eventId={gift.EventId} from={gift.Value} to={expected} " +
+                    $"(diamond={gift.DiamondCount} * count={gift.Count})");
+                gift.Value = expected;
+            }
+        }
+
         return true;
     }
 
