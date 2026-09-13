@@ -24,6 +24,7 @@ public sealed class SettingsStore
     private readonly RandomPoolRepository _randomPool;
     private readonly GiftRuleRepository _giftRules;
     private readonly LevelPermissionRepository _levelPerms;
+    private readonly KeywordReplyRepository _keywordReplies;
     private readonly SyncCacheRepository _cache;
 
     public SettingsStore(
@@ -32,6 +33,7 @@ public sealed class SettingsStore
         RandomPoolRepository randomPool,
         GiftRuleRepository giftRules,
         LevelPermissionRepository levelPerms,
+        KeywordReplyRepository keywordReplies,
         SyncCacheRepository cache)
     {
         _config = config;
@@ -39,6 +41,7 @@ public sealed class SettingsStore
         _randomPool = randomPool;
         _giftRules = giftRules;
         _levelPerms = levelPerms;
+        _keywordReplies = keywordReplies;
         _cache = cache;
     }
 
@@ -78,7 +81,7 @@ public sealed class SettingsStore
 
         foreach (var (name, pts) in new[] { ("小心心", 1), ("玫瑰", 5), ("嘉年华", 5000) })
         {
-            _giftRules.Add(new GiftRule { GiftName = name, Points = pts, Enabled = true });
+            _giftRules.Add(new GiftRule { GiftName = name, Points = pts, Enabled = true, AllowSongRequest = true });
         }
     }
 
@@ -91,26 +94,19 @@ public sealed class SettingsStore
 
         _levelPerms.SaveAll(new[]
         {
-            new LevelPermission { Level = 0, CanRequest = true, CooldownSeconds = 30 },
-            new LevelPermission { Level = 1, CanRequest = true, CooldownSeconds = 20 },
-            new LevelPermission { Level = 2, CanRequest = true, CooldownSeconds = 10 },
-            new LevelPermission { Level = 3, CanRequest = true, CooldownSeconds = 0 }
+            new LevelPermission { Level = 0, CanRequest = true, CooldownSeconds = 30, QueuePriority = 0 },
+            new LevelPermission { Level = 1, CanRequest = true, CooldownSeconds = 20, QueuePriority = 5 },
+            new LevelPermission { Level = 2, CanRequest = true, CooldownSeconds = 10, QueuePriority = 10 },
+            new LevelPermission { Level = 3, CanRequest = true, CooldownSeconds = 0, QueuePriority = 20 }
         });
     }
 
     public SyncBundle BuildBundle()
     {
         ApplyDbToMemory();
-        return new SyncBundle
-        {
-            Version = ComputeVersion(),
-            Settings = _config.Settings,
-            ReplyTemplates = _templates.GetAll(),
-            RandomPool = _randomPool.ListAll(),
-            GiftRules = _giftRules.ListAll(),
-            SongRequestPolicy = _config.Settings.SongRequestPolicy,
-            LevelPermissions = _levelPerms.ListAll()
-        };
+        var bundle = CreateBundleSnapshot();
+        bundle.Version = ComputeVersion();
+        return bundle;
     }
 
     public void ApplyBundle(SyncBundle bundle, bool persistCache = true)
@@ -119,10 +115,15 @@ public sealed class SettingsStore
         _config.ApplyReplyTemplates(bundle.ReplyTemplates);
         _templates.SaveAll(bundle.ReplyTemplates);
         _config.Settings.SongRequestPolicy = bundle.SongRequestPolicy;
+        _config.Settings.Welcome = bundle.Welcome;
+        _config.Settings.BanVote = bundle.BanVote;
+        _config.Settings.Cleanup = bundle.Cleanup;
+        _config.Settings.KeywordReply.Enabled = bundle.Settings.KeywordReply.Enabled;
 
         PersistRandomPool(bundle.RandomPool);
         PersistGiftRules(bundle.GiftRules);
         _levelPerms.SaveAll(bundle.LevelPermissions);
+        PersistKeywordReplies(bundle.KeywordReplies);
         SyncRandomPoolToConfig();
         _config.Save();
 
@@ -165,18 +166,24 @@ public sealed class SettingsStore
 
     public string ComputeVersion()
     {
-        var bundle = new SyncBundle
-        {
-            Settings = _config.Settings,
-            ReplyTemplates = _templates.GetAll(),
-            RandomPool = _randomPool.ListAll(),
-            GiftRules = _giftRules.ListAll(),
-            SongRequestPolicy = _config.Settings.SongRequestPolicy,
-            LevelPermissions = _levelPerms.ListAll()
-        };
-        var json = JsonSerializer.Serialize(bundle, JsonOptions);
+        var json = JsonSerializer.Serialize(CreateBundleSnapshot(), JsonOptions);
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json)))[..16];
     }
+
+    private SyncBundle CreateBundleSnapshot() => new()
+    {
+        Version = "",
+        Settings = _config.Settings,
+        ReplyTemplates = _templates.GetAll(),
+        RandomPool = _randomPool.ListAll(),
+        GiftRules = _giftRules.ListAll(),
+        SongRequestPolicy = _config.Settings.SongRequestPolicy,
+        LevelPermissions = _levelPerms.ListAll(),
+        KeywordReplies = _keywordReplies.ListAll(),
+        Welcome = _config.Settings.Welcome,
+        BanVote = _config.Settings.BanVote,
+        Cleanup = _config.Settings.Cleanup
+    };
 
     private void SyncRandomPoolToConfig()
     {
@@ -193,15 +200,14 @@ public sealed class SettingsStore
 
     private void PersistRandomPool(List<RandomPoolItem> items)
     {
-        var repo = _randomPool;
-        var existing = repo.ListAll();
+        var existing = _randomPool.ListAll();
         foreach (var e in existing)
         {
-            repo.Remove(e.Id);
+            _randomPool.Remove(e.Id);
         }
         foreach (var item in items)
         {
-            repo.Add(item);
+            _randomPool.Add(item);
         }
     }
 
@@ -215,6 +221,19 @@ public sealed class SettingsStore
         foreach (var rule in rules)
         {
             _giftRules.Add(rule);
+        }
+    }
+
+    private void PersistKeywordReplies(List<KeywordReplyRule> rules)
+    {
+        var existing = _keywordReplies.ListAll();
+        foreach (var e in existing)
+        {
+            _keywordReplies.Remove(e.Id);
+        }
+        foreach (var rule in rules)
+        {
+            _keywordReplies.Add(rule);
         }
     }
 }

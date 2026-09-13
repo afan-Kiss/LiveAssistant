@@ -4,6 +4,9 @@ using LiveAssistant.Models;
 
 namespace LiveAssistant.Services;
 
+/// <summary>
+/// 礼物由管理员账号登录的抖音 Sidecar 采集，不限制主播身份。
+/// </summary>
 public sealed class GiftService : IDisposable
 {
     private readonly ConfigManager _config;
@@ -45,6 +48,7 @@ public sealed class GiftService : IDisposable
         _after = 0;
         _cts = new CancellationTokenSource();
         _ = Task.Run(() => PollLoopAsync(webRid, _cts.Token));
+        _log.GiftInfo("礼物轮询已启动（管理员账号 Sidecar 采集）");
     }
 
     public void Stop()
@@ -55,18 +59,20 @@ public sealed class GiftService : IDisposable
 
     public void HandleGiftEvent(GiftEvent gift)
     {
-        gift.Id = _gifts.Insert(gift);
-        var rulePoints = _giftRules.GetPointsForGift(gift.GiftName);
-        var points = rulePoints ?? (gift.Value * _config.Settings.Gift.PointsPerValue);
-        points *= gift.Count;
+        var before = _users.GetUser(gift.UserId)?.Points ?? 0;
+        var rule = _giftRules.FindByGift(gift.GiftName, gift.GiftId);
+        var points = (rule?.Points ?? (gift.Value * _config.Settings.Gift.PointsPerValue)) * gift.Count;
+
+        gift.Id = _gifts.Insert(gift, points, before + points);
         if (points > 0)
         {
             _users.AddPoints(gift.UserId, gift.Nickname, points);
             _levels.RefreshUserLevel(gift.UserId);
         }
 
-        _system.Add($"礼物: {gift.Nickname} 送出 {gift.GiftName}×{gift.Count}");
-        _log.Info($"礼物 user={gift.Nickname} gift={gift.GiftName} count={gift.Count} value={gift.Value}");
+        var after = _users.GetUser(gift.UserId)?.Points ?? before + points;
+        _log.LogGift(gift.UserId, gift.Nickname, gift.GiftName, gift.Count, points, after);
+        _system.Add($"礼物: {gift.Nickname} 送出 {gift.GiftName}×{gift.Count} (+{points}积分)");
         GiftReceived?.Invoke(gift);
     }
 
@@ -96,6 +102,7 @@ public sealed class GiftService : IDisposable
             }
             catch (Exception ex)
             {
+                _log.GiftWarn($"礼物轮询异常: {ex.Message}");
                 _log.Error("gift", "礼物轮询异常", ex);
             }
 

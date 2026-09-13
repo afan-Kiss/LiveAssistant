@@ -79,7 +79,8 @@ public sealed class SongRequestService
                 return;
             }
 
-            _queue.Add(new QueueItem
+            var priority = _permission.GetQueuePriority(permission.User!);
+            _queue.AddWithPriority(new QueueItem
             {
                 UserId = item.UserId,
                 Nickname = item.Nickname,
@@ -89,7 +90,7 @@ public sealed class SongRequestService
                 Hash = track.Hash,
                 PlayUrl = track.PlayUrl,
                 IsRandom = false
-            });
+            }, priority);
 
             _permission.RecordSuccessfulRequest(item);
 

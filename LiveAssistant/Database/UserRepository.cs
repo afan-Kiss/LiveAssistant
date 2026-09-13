@@ -220,6 +220,25 @@ public sealed class UserRepository
         cmd.ExecuteNonQuery();
     }
 
+    public void AdjustPoints(string userId, int delta)
+    {
+        if (string.IsNullOrWhiteSpace(userId) || delta == 0)
+        {
+            return;
+        }
+
+        var now = DateTime.Now.ToString("O");
+        using var conn = _db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            UPDATE users SET points = MAX(0, points + $delta), updated_at = $now WHERE user_id = $uid
+            """;
+        cmd.Parameters.AddWithValue("$uid", userId);
+        cmd.Parameters.AddWithValue("$delta", delta);
+        cmd.Parameters.AddWithValue("$now", now);
+        cmd.ExecuteNonQuery();
+    }
+
     public void SetLevel(string userId, int level)
     {
         var now = DateTime.Now.ToString("O");

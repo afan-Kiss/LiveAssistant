@@ -83,6 +83,25 @@ public sealed class LogService
         Write("error", "ERROR", $"[playback_error] {line}");
     }
 
+    public void GiftInfo(string message) => Write("gift", "INFO", message);
+    public void GiftWarn(string message) => Write("gift", "WARN", message);
+    public void AdminInfo(string message) => Write("admin", "INFO", message);
+    public void SyncInfo(string message) => Write("sync", "INFO", message);
+    public void SyncWarn(string message) => Write("sync", "WARN", message);
+    public void BanInfo(string message) => Write("ban", "INFO", message);
+    public void BanWarn(string message) => Write("ban", "WARN", message);
+
+    public void LogGift(string userId, string nickname, string giftName, int count, int pointsDelta, int pointsAfter)
+    {
+        var line = $"userId={userId} user={nickname} gift={giftName} count={count} pointsDelta={pointsDelta} pointsAfter={pointsAfter}";
+        Write("gift", "INFO", line);
+    }
+
+    public void SetLastError(string source, string message) => _lastError = $"[{source}] {message}";
+
+    private volatile string _lastError = "";
+    public string LastError => _lastError;
+
     private void Write(string fileKey, string level, string message)
     {
         var line = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} [{level}] {message}";

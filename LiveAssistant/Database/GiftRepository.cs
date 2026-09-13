@@ -7,19 +7,16 @@ public sealed class GiftRepository
 {
     private readonly AppDatabase _db;
 
-    public GiftRepository(AppDatabase db)
-    {
-        _db = db;
-    }
+    public GiftRepository(AppDatabase db) => _db = db;
 
-    public long Insert(GiftEvent gift)
+    public long Insert(GiftEvent gift, int pointsDelta = 0, int pointsAfter = 0)
     {
-        var now = DateTime.Now.ToString("O");
+        var now = gift.Time.ToString("O");
         using var conn = _db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO gift_events (user_id, nickname, gift_id, gift_name, count, value, created_at)
-            VALUES ($uid, $nick, $gid, $gname, $cnt, $val, $now)
+            INSERT INTO gift_events (user_id, nickname, gift_id, gift_name, count, value, points_delta, points_after, created_at)
+            VALUES ($uid, $nick, $gid, $gname, $cnt, $val, $pd, $pa, $now)
             """;
         cmd.Parameters.AddWithValue("$uid", gift.UserId);
         cmd.Parameters.AddWithValue("$nick", gift.Nickname);
@@ -27,6 +24,8 @@ public sealed class GiftRepository
         cmd.Parameters.AddWithValue("$gname", gift.GiftName);
         cmd.Parameters.AddWithValue("$cnt", gift.Count);
         cmd.Parameters.AddWithValue("$val", gift.Value);
+        cmd.Parameters.AddWithValue("$pd", pointsDelta);
+        cmd.Parameters.AddWithValue("$pa", pointsAfter);
         cmd.Parameters.AddWithValue("$now", now);
         cmd.ExecuteNonQuery();
 
@@ -57,7 +56,8 @@ public sealed class GiftRepository
                 GiftName = reader.GetString(4),
                 Count = reader.GetInt32(5),
                 Value = reader.GetInt32(6),
-                CreatedAt = DateTime.TryParse(reader.GetString(7), out var dt) ? dt : DateTime.Now
+                Time = DateTime.TryParse(reader.GetString(7), out var dt) ? dt : DateTime.Now,
+                CreatedAt = DateTime.TryParse(reader.GetString(7), out var c) ? c : DateTime.Now
             });
         }
         return list;

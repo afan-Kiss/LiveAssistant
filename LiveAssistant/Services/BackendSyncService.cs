@@ -64,7 +64,7 @@ public sealed class BackendSyncService : IDisposable
         Stop();
         _cts = new CancellationTokenSource();
         _ = Task.Run(() => SyncLoopAsync(_cts.Token));
-        _log.Info("BackendSyncService 已启动");
+        _log.SyncInfo("BackendSyncService 已启动");
     }
 
     public void Stop()
@@ -81,6 +81,10 @@ public sealed class BackendSyncService : IDisposable
             try
             {
                 var online = await PullBundleAsync(path, ct);
+                if (online != _backendOnline)
+                {
+                    _log.SyncInfo(online ? "后台已连接" : "后台断开，使用本地缓存");
+                }
                 _backendOnline = online;
                 if (online)
                 {
@@ -94,7 +98,8 @@ public sealed class BackendSyncService : IDisposable
             catch (Exception ex)
             {
                 _backendOnline = false;
-                _log.Error("sync", "后台同步异常", ex);
+                _log.SyncWarn($"后台同步异常: {ex.Message}");
+                _log.SetLastError("sync", ex.Message);
             }
 
             try
@@ -131,7 +136,7 @@ public sealed class BackendSyncService : IDisposable
         _syncVersion = bundle.Version;
         _settings.ApplyBundle(bundle);
         _reply.Reload();
-        _log.Info("后台配置包已同步");
+        _log.SyncInfo($"配置包已同步 version={bundle.Version}");
         return true;
     }
 

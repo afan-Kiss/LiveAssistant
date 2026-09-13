@@ -78,14 +78,26 @@ public sealed class QueueService
         }
     }
 
-    public QueueItem Add(QueueItem item)
+    public QueueItem Add(QueueItem item) => AddWithPriority(item, 0);
+
+    public QueueItem AddWithPriority(QueueItem item, int queuePriority)
     {
         lock (_lock)
         {
             item.Status = QueueItemStatus.Waiting;
             item.Id = InsertItem(item);
-            item.SortOrder = _waiting.Count;
-            _waiting.Add(item);
+            if (queuePriority <= 0 || _waiting.Count == 0)
+            {
+                item.SortOrder = _waiting.Count;
+                _waiting.Add(item);
+            }
+            else
+            {
+                var insertIndex = Math.Max(0, _waiting.Count - (queuePriority / 5 + 1));
+                insertIndex = Math.Min(insertIndex, _waiting.Count);
+                _waiting.Insert(insertIndex, item);
+                ReindexWaiting();
+            }
             NotifyChanged();
             return item;
         }

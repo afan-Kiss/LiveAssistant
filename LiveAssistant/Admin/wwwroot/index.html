@@ -12,8 +12,9 @@
     input, button, select, textarea { width: 100%; padding: 10px; margin: 8px 0; border-radius: 8px; border: 1px solid #38444d; background: #0f1419; color: #e7e9ea; }
     button { background: #1d9bf0; border: none; cursor: pointer; font-weight: 600; }
     button.sec { background: #38444d; }
+    button.sm { width: auto; padding: 6px 10px; font-size: 12px; margin: 2px; }
     .hidden { display: none; }
-    header { padding: 16px 24px; border-bottom: 1px solid #38444d; display: flex; justify-content: space-between; }
+    header { padding: 16px 24px; border-bottom: 1px solid #38444d; display: flex; justify-content: space-between; align-items: center; }
     nav { display: flex; gap: 8px; padding: 12px 24px; border-bottom: 1px solid #38444d; flex-wrap: wrap; }
     nav button { width: auto; padding: 8px 14px; background: #38444d; }
     nav button.active { background: #1d9bf0; }
@@ -21,14 +22,17 @@
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
     .stat { background: #1a1f26; padding: 14px; border-radius: 10px; }
     .stat label { color: #8b98a5; font-size: 12px; }
-    .stat div { font-size: 18px; margin-top: 4px; }
+    .stat div { font-size: 16px; margin-top: 4px; word-break: break-all; }
     table { width: 100%; border-collapse: collapse; margin-top: 12px; }
     th, td { padding: 8px; border-bottom: 1px solid #38444d; text-align: left; font-size: 13px; }
-    .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
-    .row button { width: auto; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; align-items: center; }
+    .row input, .row select { width: auto; min-width: 100px; margin: 4px 0; }
     h2 { margin-bottom: 10px; }
-    textarea { min-height: 220px; font-family: monospace; font-size: 12px; }
+    textarea { min-height: 280px; font-family: monospace; font-size: 12px; }
     .hint { color: #8b98a5; font-size: 12px; margin-bottom: 8px; }
+    .tpl-grid { display: grid; gap: 12px; }
+    .tpl-item label { display: block; font-size: 12px; color: #8b98a5; margin-bottom: 4px; }
+    .tpl-item textarea { min-height: 60px; }
   </style>
 </head>
 <body>
@@ -59,9 +63,23 @@
       { id: 'templates', label: '回复模板' },
       { id: 'random', label: '随机歌曲' },
       { id: 'gifts', label: '礼物规则' },
-      { id: 'policy', label: '点歌权限' },
+      { id: 'policy', label: '点歌策略' },
+      { id: 'levels', label: '等级权限' },
+      { id: 'keywords', label: '关键词回复' },
+      { id: 'welcome', label: '欢迎消息' },
+      { id: 'banvote', label: '禁言投票' },
       { id: 'blacklist', label: '歌曲黑名单' },
-      { id: 'features', label: '直播小功能' }
+      { id: 'cleanup', label: '数据清理' }
+    ];
+    const tplKeys = [
+      { key: 'songRequestSuccess', label: '点歌成功' },
+      { key: 'songRequestRejected', label: '点歌失败' },
+      { key: 'songRequestQueued', label: '排队提示' },
+      { key: 'giftThanks', label: '礼物感谢' },
+      { key: 'welcome', label: '欢迎消息' },
+      { key: 'banVotePassed', label: '禁言结果' },
+      { key: 'songRequestCooldown', label: '冷却提示' },
+      { key: 'queueFull', label: '队列已满' }
     ];
     let currentTab = 'dashboard';
 
@@ -98,50 +116,51 @@
     function showTab(id) { currentTab = id; renderNav(); renderTab(); }
 
     async function renderTab() {
-      const m = document.getElementById('main');
-      if (currentTab === 'dashboard') await renderDashboard();
-      else if (currentTab === 'queue') await renderQueue();
-      else if (currentTab === 'users') await renderUsers();
-      else if (currentTab === 'templates') await renderTemplates();
-      else if (currentTab === 'random') await renderRandom();
-      else if (currentTab === 'gifts') await renderGiftRules();
-      else if (currentTab === 'policy') await renderPolicy();
-      else if (currentTab === 'blacklist') await renderBlacklist();
-      else if (currentTab === 'features') await renderFeatures();
+      const m = { dashboard: renderDashboard, queue: renderQueue, users: renderUsers, templates: renderTemplates,
+        random: renderRandom, gifts: renderGiftRules, policy: renderPolicy, levels: renderLevels,
+        keywords: renderKeywords, welcome: renderWelcome, banvote: renderBanVote, blacklist: renderBlacklist, cleanup: renderCleanup };
+      await (m[currentTab] || renderDashboard)();
     }
 
     async function renderDashboard() {
       const s = await api('GET', '/api/status');
       document.getElementById('main').innerHTML = `
+        <h2>直播状态</h2>
         <div class="grid">
-          <div class="stat"><label>抖音</label><div>${s.douyinOnline ? '在线' : '离线'} ${s.danmakuConnection || ''}</div></div>
-          <div class="stat"><label>酷狗</label><div>${s.kugouOnline ? '在线' : '离线'}</div></div>
+          <div class="stat"><label>抖音连接</label><div>${s.douyinOnline ? '在线' : '离线'} ${s.danmakuConnection || ''}</div></div>
+          <div class="stat"><label>酷狗连接</label><div>${s.kugouOnline ? '在线' : '离线'}</div></div>
+          <div class="stat"><label>管理员账号</label><div>${s.adminAccountStatus || '-'} (${s.adminNickname || '-'})</div></div>
           <div class="stat"><label>当前歌曲</label><div>${s.currentSong}</div></div>
           <div class="stat"><label>播放模式</label><div>${s.playbackMode}</div></div>
-          <div class="stat"><label>队列</label><div>${s.queueCount}</div></div>
+          <div class="stat"><label>队列数量</label><div>${s.queueCount}</div></div>
           <div class="stat"><label>运行时间</label><div>${s.uptime}</div></div>
+          <div class="stat"><label>当前任务</label><div>${s.currentTask || '空闲'}</div></div>
+          <div class="stat"><label>最后错误</label><div>${s.lastError || '无'}</div></div>
         </div>
+        <h2 style="margin-top:20px">播放控制</h2>
+        <p class="hint">所有操作经 CommandQueue → PlaybackCommandQueue</p>
         <div class="row">
           <button onclick="api('POST','/api/playback/play')">播放</button>
           <button onclick="api('POST','/api/playback/pause')">暂停</button>
+          <button onclick="api('POST','/api/playback/resume')">恢复</button>
           <button onclick="api('POST','/api/playback/skip')">下一首</button>
           <button onclick="api('POST','/api/playback/previous')">上一首</button>
-          <button onclick="api('POST','/api/playback/random/on')">开启随机</button>
-          <button onclick="api('POST','/api/playback/random/off')">关闭随机</button>
+          <button onclick="api('POST','/api/playback/random/on')">开启随机播放</button>
+          <button onclick="api('POST','/api/playback/random/off')">关闭随机播放</button>
           <button onclick="api('POST','/api/playback/clear-queue')">清空队列</button>
         </div>`;
     }
 
     async function renderQueue() {
       const q = await api('GET', '/api/queue');
-      const now = q.nowPlaying ? `<p>正在播放: <b>${q.nowPlaying.nickname}</b> - ${q.nowPlaying.songName}</p>` : '<p>无播放</p>';
+      const now = q.nowPlaying ? `<p>正在播放: <b>${q.nowPlaying.nickname}</b> - ${q.nowPlaying.songName} (${q.nowPlaying.artist || ''})</p>` : '<p>无播放</p>';
       const rows = (q.waiting || []).map(i => `<tr>
-        <td>${i.index}</td><td>${i.nickname}</td><td>${i.songName}</td><td>${i.time}</td>
-        <td><button onclick="queueAct(${i.id},'pin')">置顶</button>
-        <button onclick="queueAct(${i.id},'play')">立即播放</button>
-        <button onclick="queueAct(${i.id},'del')">删除</button></td></tr>`).join('');
+        <td>${i.index}</td><td>${i.nickname}</td><td>${i.songName}</td><td>${i.artist || ''}</td><td>${i.time}</td>
+        <td><button class="sm" onclick="queueAct(${i.id},'pin')">置顶</button>
+        <button class="sm" onclick="queueAct(${i.id},'play')">立即播放</button>
+        <button class="sm" onclick="queueAct(${i.id},'del')">删除</button></td></tr>`).join('');
       document.getElementById('main').innerHTML = `<h2>点歌队列</h2>${now}
-        <table><tr><th>序号</th><th>用户</th><th>歌曲</th><th>时间</th><th>操作</th></tr>${rows}</table>
+        <table><tr><th>序号</th><th>用户</th><th>歌曲</th><th>歌手</th><th>时间</th><th>操作</th></tr>${rows}</table>
         <div class="row"><button onclick="api('POST','/api/playback/skip')">跳过当前</button></div>`;
     }
 
@@ -155,47 +174,79 @@
     async function renderUsers() {
       const users = await api('GET', '/api/users');
       document.getElementById('main').innerHTML = `<h2>用户管理</h2><table>
-        <tr><th>昵称</th><th>积分</th><th>等级</th><th>角色</th><th>操作</th></tr>
-        ${users.map(u => `<tr><td>${u.nickname}</td><td>${u.points}</td><td>${u.level}</td><td>${u.role}</td>
-        <td><button onclick="editUser('${u.userId}',${u.points},${u.level},'${u.role}')">编辑</button></td></tr>`).join('')}
+        <tr><th>用户ID</th><th>昵称</th><th>积分</th><th>等级</th><th>角色</th><th>状态</th><th>操作</th></tr>
+        ${users.map(u => `<tr>
+          <td style="font-size:11px">${u.userId}</td><td>${u.nickname}</td><td>${u.points}</td><td>${u.level}</td>
+          <td>${u.role}</td><td>${u.status}</td>
+          <td><button class="sm" onclick="editUser('${u.userId}',${u.points},${u.level},'${u.role}')">编辑</button>
+          <button class="sm" onclick="blacklistUser('${u.userId}')">拉黑</button>
+          <button class="sm" onclick="unblacklistUser('${u.userId}')">解除</button></td></tr>`).join('')}
       </table>`;
     }
 
     async function editUser(id, pts, lvl, role) {
-      const points = prompt('积分', pts); if (points === null) return;
-      const level = prompt('等级', lvl); if (level === null) return;
-      const newRole = prompt('角色 normal/admin/manager/blacklist', role); if (newRole === null) return;
-      await api('PUT', '/api/users/' + id, { points: +points, level: +level, role: newRole });
+      const action = prompt('操作: set=设置积分 | add=增加 | deduct=扣除', 'set');
+      if (!action) return;
+      const val = prompt('数值', pts);
+      if (val === null) return;
+      const level = prompt('等级', lvl);
+      if (level === null) return;
+      const newRole = prompt('角色 normal/admin/manager/blacklist', role);
+      if (newRole === null) return;
+      const body = { level: +level, role: newRole };
+      if (action === 'add') body.pointsDelta = +val;
+      else if (action === 'deduct') body.pointsDelta = -Math.abs(+val);
+      else body.points = +val;
+      await api('PUT', '/api/users/' + encodeURIComponent(id), body);
+      renderUsers();
+    }
+
+    async function blacklistUser(id) {
+      await api('PUT', '/api/users/' + encodeURIComponent(id), { role: 'blacklist', status: 'banned' });
+      renderUsers();
+    }
+
+    async function unblacklistUser(id) {
+      await api('PUT', '/api/users/' + encodeURIComponent(id), { role: 'normal', status: 'active' });
       renderUsers();
     }
 
     async function renderTemplates() {
       const t = await api('GET', '/api/templates');
       document.getElementById('main').innerHTML = `<h2>回复模板</h2>
-        <p class="hint">变量: {name} {song} {queue} {gift} — 保存到数据库，客户端自动同步</p>
-        <textarea id="tplJson">${JSON.stringify(t, null, 2)}</textarea>
-        <button onclick="saveTpl()">保存</button>`;
+        <p class="hint">变量: {name} {song} {queue} {gift} {score} — 保存到数据库，客户端自动同步</p>
+        <div class="tpl-grid" id="tplGrid"></div>
+        <button onclick="saveTpl()">保存全部</button>`;
+      const grid = document.getElementById('tplGrid');
+      tplKeys.forEach(({ key, label }) => {
+        const div = document.createElement('div');
+        div.className = 'tpl-item';
+        div.innerHTML = `<label>${label} (${key})</label><textarea id="tpl_${key}">${t[key] || ''}</textarea>`;
+        grid.appendChild(div);
+      });
     }
 
     async function saveTpl() {
-      await api('PUT', '/api/templates', JSON.parse(document.getElementById('tplJson').value));
+      const body = {};
+      tplKeys.forEach(({ key }) => { body[key] = document.getElementById('tpl_' + key).value; });
+      await api('PUT', '/api/templates', body);
       alert('已保存');
     }
 
     async function renderRandom() {
       const items = await api('GET', '/api/random-pool');
-      document.getElementById('main').innerHTML = `<h2>随机歌曲池</h2>
+      document.getElementById('main').innerHTML = `<h2>随机播放池</h2>
         <div class="row">
           <input id="rSong" placeholder="歌曲名" style="width:140px">
           <input id="rArtist" placeholder="歌手" style="width:120px">
           <input id="rSid" placeholder="酷狗ID" style="width:100px">
           <button onclick="addRandom()">添加</button>
         </div>
-        <table><tr><th>歌曲</th><th>歌手</th><th>ID</th><th>状态</th><th>操作</th></tr>
+        <table><tr><th>歌曲</th><th>歌手</th><th>酷狗ID</th><th>状态</th><th>操作</th></tr>
         ${items.map(i => `<tr><td>${i.songName}</td><td>${i.artist}</td><td>${i.songId}</td>
         <td>${i.enabled ? '启用' : '禁用'}</td>
-        <td><button onclick="toggleRandom(${i.id},${!i.enabled})">${i.enabled?'禁用':'启用'}</button>
-        <button onclick="api('DELETE','/api/random-pool/${i.id}').then(renderRandom)">删除</button></td></tr>`).join('')}
+        <td><button class="sm" onclick="toggleRandom(${i.id},${!i.enabled})">${i.enabled?'禁用':'启用'}</button>
+        <button class="sm" onclick="api('DELETE','/api/random-pool/${i.id}').then(renderRandom)">删除</button></td></tr>`).join('')}
         </table>`;
     }
 
@@ -220,27 +271,41 @@
     async function renderGiftRules() {
       const rules = await api('GET', '/api/gift-rules');
       document.getElementById('main').innerHTML = `<h2>礼物积分规则</h2>
-        <div class="row"><input id="gName" placeholder="礼物名" style="width:120px">
-        <input id="gPts" placeholder="积分" style="width:80px" type="number">
-        <button onclick="addGiftRule()">添加</button></div>
-        <table><tr><th>礼物</th><th>积分</th><th>状态</th><th>操作</th></tr>
-        ${rules.map(r => `<tr><td>${r.giftName}</td><td>${r.points}</td><td>${r.enabled?'启用':'禁用'}</td>
-        <td><button onclick="api('DELETE','/api/gift-rules/${r.id}').then(renderGiftRules)">删除</button></td></tr>`).join('')}
+        <p class="hint">礼物由管理员账号 Sidecar 采集统计</p>
+        <div class="row">
+          <input id="gId" placeholder="礼物ID" style="width:100px">
+          <input id="gName" placeholder="礼物名" style="width:120px">
+          <input id="gPts" placeholder="积分" style="width:80px" type="number">
+          <label><input type="checkbox" id="gAllow" checked> 允许点歌</label>
+          <button onclick="addGiftRule()">添加</button>
+        </div>
+        <table><tr><th>ID</th><th>礼物</th><th>积分</th><th>允许点歌</th><th>状态</th><th>操作</th></tr>
+        ${rules.map(r => `<tr><td>${r.giftId || '-'}</td><td>${r.giftName}</td><td>${r.points}</td>
+        <td>${r.allowSongRequest ? '是' : '否'}</td><td>${r.enabled?'启用':'禁用'}</td>
+        <td><button class="sm" onclick="api('DELETE','/api/gift-rules/${r.id}').then(renderGiftRules)">删除</button></td></tr>`).join('')}
         </table>`;
     }
 
     async function addGiftRule() {
-      await api('POST', '/api/gift-rules', { giftName: document.getElementById('gName').value, points: +document.getElementById('gPts').value, enabled: true });
+      await api('POST', '/api/gift-rules', {
+        giftId: document.getElementById('gId').value,
+        giftName: document.getElementById('gName').value,
+        points: +document.getElementById('gPts').value,
+        allowSongRequest: document.getElementById('gAllow').checked,
+        enabled: true
+      });
       renderGiftRules();
     }
 
     async function renderPolicy() {
       const p = await api('GET', '/api/song-request-policy');
-      document.getElementById('main').innerHTML = `<h2>点歌权限策略</h2>
-        <p class="hint">模式: Free=免费 | Points=积分点歌 | GiftUnlock=礼物解锁</p>
+      document.getElementById('main').innerHTML = `<h2>点歌策略</h2>
+        <p class="hint">Free=免费 | Points=积分点歌 | GiftUnlock=礼物解锁</p>
         <select id="pMode"><option>Free</option><option>Points</option><option>GiftUnlock</option></select>
-        <input id="pCost" placeholder="积分消耗" type="number" value="${p.pointsCost||10}">
+        <input id="pCost" placeholder="消耗积分" type="number" value="${p.pointsCost||10}">
         <input id="pUnlock" placeholder="礼物解锁最低积分" type="number" value="${p.giftUnlockMinPoints||100}">
+        <input id="pMinLevel" placeholder="最低等级" type="number" value="${p.minLevel||0}">
+        <input id="pGift" placeholder="需要礼物名称" value="${p.requiredGiftName||''}">
         <button onclick="savePolicy()">保存</button>`;
       document.getElementById('pMode').value = p.mode || 'Free';
     }
@@ -249,7 +314,112 @@
       await api('PUT', '/api/song-request-policy', {
         mode: document.getElementById('pMode').value,
         pointsCost: +document.getElementById('pCost').value,
-        giftUnlockMinPoints: +document.getElementById('pUnlock').value
+        giftUnlockMinPoints: +document.getElementById('pUnlock').value,
+        minLevel: +document.getElementById('pMinLevel').value,
+        requiredGiftName: document.getElementById('pGift').value
+      });
+      alert('已保存');
+    }
+
+    async function renderLevels() {
+      const levels = await api('GET', '/api/level-permissions');
+      document.getElementById('main').innerHTML = `<h2>等级权限</h2>
+        <p class="hint">影响点歌冷却、费用、插队优先级</p>
+        <textarea id="lvlJson">${JSON.stringify(levels, null, 2)}</textarea>
+        <button onclick="saveLevels()">保存</button>`;
+    }
+
+    async function saveLevels() {
+      await api('PUT', '/api/level-permissions', JSON.parse(document.getElementById('lvlJson').value));
+      alert('已保存');
+    }
+
+    async function renderKeywords() {
+      const [rules, enabled] = await Promise.all([
+        api('GET', '/api/keywords'),
+        api('GET', '/api/song-request-policy').then(() => null)
+      ]);
+      const kwEnabled = (await fetch(base + '/api/sync/config').then(r => r.json()).catch(() => ({}))).config?.keywordReply?.enabled;
+      document.getElementById('main').innerHTML = `<h2>关键词回复</h2>
+        <div class="row">
+          <label>总开关</label>
+          <button class="sm" onclick="toggleKw(true)">开启</button>
+          <button class="sm" onclick="toggleKw(false)">关闭</button>
+          <span class="hint">当前: ${kwEnabled ? '开启' : '关闭'}</span>
+        </div>
+        <div class="row">
+          <input id="kwWord" placeholder="关键词" style="width:120px">
+          <input id="kwReply" placeholder="回复内容 (支持 {name}{score})" style="width:300px">
+          <button onclick="addKeyword()">添加</button>
+        </div>
+        <table><tr><th>关键词</th><th>回复</th><th>状态</th><th>操作</th></tr>
+        ${rules.map(r => `<tr><td>${r.keyword}</td><td>${r.replyContent || r.templateKey}</td>
+        <td>${r.enabled?'开启':'关闭'}</td>
+        <td><button class="sm" onclick="toggleKeyword(${r.id},${!r.enabled})">${r.enabled?'关闭':'开启'}</button>
+        <button class="sm" onclick="api('DELETE','/api/keywords/${r.id}').then(renderKeywords)">删除</button></td></tr>`).join('')}
+        </table>`;
+    }
+
+    async function toggleKw(en) {
+      await api('PUT', '/api/keyword-reply-enabled', { enabled: en });
+      renderKeywords();
+    }
+
+    async function addKeyword() {
+      await api('POST', '/api/keywords', {
+        keyword: document.getElementById('kwWord').value,
+        replyContent: document.getElementById('kwReply').value,
+        enabled: true
+      });
+      renderKeywords();
+    }
+
+    async function toggleKeyword(id, en) {
+      const rules = await api('GET', '/api/keywords');
+      const rule = rules.find(x => x.id === id);
+      if (rule) { rule.enabled = en; await api('PUT', '/api/keywords/' + id, rule); }
+      renderKeywords();
+    }
+
+    async function renderWelcome() {
+      const w = await api('GET', '/api/welcome');
+      document.getElementById('main').innerHTML = `<h2>欢迎消息</h2>
+        <label><input type="checkbox" id="wEn" ${w.enabled?'checked':''}> 开启欢迎</label>
+        <input id="wTpl" placeholder="模板" value="${w.template || '欢迎{name}来到直播间 ❤️'}">
+        <input id="wCd" type="number" placeholder="冷却秒数" value="${w.cooldownSeconds||300}">
+        <button onclick="saveWelcome()">保存</button>`;
+    }
+
+    async function saveWelcome() {
+      await api('PUT', '/api/welcome', {
+        enabled: document.getElementById('wEn').checked,
+        template: document.getElementById('wTpl').value,
+        cooldownSeconds: +document.getElementById('wCd').value
+      });
+      alert('已保存');
+    }
+
+    async function renderBanVote() {
+      const b = await api('GET', '/api/ban-vote-settings');
+      const sessions = await api('GET', '/api/ban-votes');
+      document.getElementById('main').innerHTML = `<h2>禁言投票设置</h2>
+        <label><input type="checkbox" id="bEn" ${b.enabled?'checked':''}> 启用</label>
+        <input id="bVotes" type="number" placeholder="需要票数" value="${b.requiredVotes||5}">
+        <input id="bWindow" type="number" placeholder="投票时间(秒)" value="${b.windowSeconds||60}">
+        <input id="bBan" type="number" placeholder="禁言时间(秒)" value="${b.banDurationSeconds||600}">
+        <button onclick="saveBanVote()">保存</button>
+        <h3 style="margin-top:16px">进行中的投票</h3>
+        <table><tr><th>目标</th><th>票数</th><th>需要</th><th>发起人</th></tr>
+        ${(sessions||[]).map(s => `<tr><td>${s.targetNickname}</td><td>${s.voteCount}</td><td>${s.requiredVotes}</td><td>${s.initiatorNickname||'-'}</td></tr>`).join('')}
+        </table>`;
+    }
+
+    async function saveBanVote() {
+      await api('PUT', '/api/ban-vote-settings', {
+        enabled: document.getElementById('bEn').checked,
+        requiredVotes: +document.getElementById('bVotes').value,
+        windowSeconds: +document.getElementById('bWindow').value,
+        banDurationSeconds: +document.getElementById('bBan').value
       });
       alert('已保存');
     }
@@ -261,16 +431,28 @@
         <button onclick="api('POST','/api/blacklist',{songName:document.getElementById('blSong').value,reason:document.getElementById('blReason').value}).then(renderBlacklist)">添加</button>
         <table><tr><th>歌曲</th><th>原因</th><th></th></tr>
         ${items.map(i => `<tr><td>${i.songName}</td><td>${i.reason}</td>
-        <td><button onclick="api('DELETE','/api/blacklist/${i.id}').then(renderBlacklist)">删除</button></td></tr>`).join('')}
+        <td><button class="sm" onclick="api('DELETE','/api/blacklist/${i.id}').then(renderBlacklist)">删除</button></td></tr>`).join('')}
         </table>`;
     }
 
-    async function renderFeatures() {
-      document.getElementById('main').innerHTML = `<h2>直播小功能</h2>
-        <p class="hint">欢迎消息、关键词回复、等级权限等通过配置文件 appsettings.json 与后台同步包管理。</p>
-        <p>欢迎新人: welcome.enabled</p>
-        <p>关键词回复: keywordReply.enabled + keyword_replies 表</p>
-        <p>用户等级权限: /api/level-permissions</p>`;
+    async function renderCleanup() {
+      const c = await api('GET', '/api/cleanup');
+      document.getElementById('main').innerHTML = `<h2>数据清理</h2>
+        <label><input type="checkbox" id="cEn" ${c.enabled?'checked':''}> 启用定时清理</label>
+        <input id="cInterval" type="number" placeholder="间隔(小时)" value="${c.intervalHours||24}">
+        <input id="cQueue" type="number" placeholder="队列保留(天)" value="${c.queueRetentionDays||7}">
+        <input id="cGift" type="number" placeholder="礼物保留(天)" value="${c.giftRetentionDays||30}">
+        <button onclick="saveCleanup()">保存</button>`;
+    }
+
+    async function saveCleanup() {
+      await api('PUT', '/api/cleanup', {
+        enabled: document.getElementById('cEn').checked,
+        intervalHours: +document.getElementById('cInterval').value,
+        queueRetentionDays: +document.getElementById('cQueue').value,
+        giftRetentionDays: +document.getElementById('cGift').value
+      });
+      alert('已保存');
     }
 
     if (token) {

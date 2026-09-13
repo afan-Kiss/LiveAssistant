@@ -19,4 +19,5 @@ public sealed class AdminAppContext
     public required KeywordReplyRepository KeywordReplies { get; init; }
     public required BanVoteRepository BanVotes { get; init; }
     public required LevelPermissionRepository LevelPermissions { get; init; }
+    public required LogService Log { get; init; }
 }

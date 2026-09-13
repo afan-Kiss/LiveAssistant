@@ -11,4 +11,8 @@ public sealed class SyncBundle
     public List<GiftRule> GiftRules { get; set; } = new();
     public SongRequestPolicySettings SongRequestPolicy { get; set; } = new();
     public List<LevelPermission> LevelPermissions { get; set; } = new();
+    public List<KeywordReplyRule> KeywordReplies { get; set; } = new();
+    public WelcomeSettings Welcome { get; set; } = new();
+    public BanVoteSettings BanVote { get; set; } = new();
+    public CleanupSettings Cleanup { get; set; } = new();
 }

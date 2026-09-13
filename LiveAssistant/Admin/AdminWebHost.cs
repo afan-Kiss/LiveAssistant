@@ -85,19 +85,25 @@ public sealed class AdminWebHost : IDisposable
                 douyinOnline = status.DouyinOnline,
                 kugouOnline = status.KugouOnline,
                 danmakuConnection = status.DanmakuConnection,
+                adminAccountStatus = status.AdminAccountStatus,
+                adminNickname = status.AdminNickname,
                 currentSong = status.CurrentSong,
                 nowPlayingUser = nowPlaying?.Nickname,
                 nowPlayingSong = nowPlaying?.SongName,
-                playbackMode = _ctx.Host.Engine.Mode.ToString(),
+                playbackMode = status.PlaybackMode,
                 randomFillEnabled = _ctx.Config.Settings.Playback.RandomFillEnabled,
                 queueCount = status.QueueCount,
-                uptime = status.Uptime.ToString()
+                uptime = status.Uptime.ToString(),
+                startedAt = status.StartedAt.ToString("O"),
+                currentTask = status.CurrentTask,
+                lastError = status.LastError
             });
         }));
 
         app.MapPost("/api/playback/skip", (HttpContext http) => Auth(http, () => Cmd(AdminCommandType.Skip)));
         app.MapPost("/api/playback/pause", (HttpContext http) => Auth(http, () => Cmd(AdminCommandType.Pause)));
         app.MapPost("/api/playback/resume", (HttpContext http) => Auth(http, () => Cmd(AdminCommandType.Resume)));
+        app.MapPost("/api/playback/resume-play", (HttpContext http) => Auth(http, () => Cmd(AdminCommandType.Resume)));
         app.MapPost("/api/playback/play", (HttpContext http) => Auth(http, () => Cmd(AdminCommandType.Play)));
         app.MapPost("/api/playback/previous", (HttpContext http) => Auth(http, () => Cmd(AdminCommandType.Previous)));
         app.MapPost("/api/playback/random/on", (HttpContext http) => Auth(http, () =>
@@ -233,11 +239,20 @@ public sealed class AdminWebHost : IDisposable
         app.MapPut("/api/users/{userId}", (string userId, UserUpdateRequest req, HttpContext http) => Auth(http, () =>
         {
             if (req.Points.HasValue) _ctx.Users.SetPoints(userId, req.Points.Value);
+            if (req.PointsDelta.HasValue) _ctx.Users.AdjustPoints(userId, req.PointsDelta.Value);
             if (req.Level.HasValue) _ctx.Users.SetLevel(userId, req.Level.Value);
             if (!string.IsNullOrWhiteSpace(req.Role) && Enum.TryParse<UserRole>(req.Role, true, out var role))
+            {
                 _ctx.Users.SetRole(userId, role);
+                if (role == UserRole.Blacklist)
+                {
+                    _ctx.Users.SetStatus(userId, UserStatus.Banned);
+                }
+            }
             if (!string.IsNullOrWhiteSpace(req.Status) && Enum.TryParse<UserStatus>(req.Status, true, out var status))
                 _ctx.Users.SetStatus(userId, status);
+            _ctx.Log.AdminInfo($"用户更新 userId={userId} role={req.Role} points={req.Points} delta={req.PointsDelta}");
+            _ctx.Commands.Enqueue(AdminCommandType.ReloadConfig);
             return Results.Json(new { ok = true });
         }));
 
@@ -265,6 +280,72 @@ public sealed class AdminWebHost : IDisposable
         app.MapGet("/api/keywords", (HttpContext http) => Auth(http, () =>
             Results.Json(_ctx.KeywordReplies.ListAll())));
 
+        app.MapPost("/api/keywords", (KeywordReplyRule rule, HttpContext http) => Auth(http, () =>
+        {
+            var id = _ctx.KeywordReplies.Add(rule);
+            _ctx.Commands.Enqueue(AdminCommandType.ReloadConfig);
+            _ctx.Log.AdminInfo($"添加关键词回复 keyword={rule.Keyword}");
+            return Results.Json(new { ok = true, id });
+        }));
+
+        app.MapPut("/api/keywords/{id:long}", (long id, KeywordReplyRule rule, HttpContext http) => Auth(http, () =>
+        {
+            rule.Id = id;
+            _ctx.KeywordReplies.Update(rule);
+            _ctx.Commands.Enqueue(AdminCommandType.ReloadConfig);
+            return Results.Json(new { ok = true });
+        }));
+
+        app.MapDelete("/api/keywords/{id:long}", (long id, HttpContext http) => Auth(http, () =>
+        {
+            _ctx.KeywordReplies.Remove(id);
+            _ctx.Commands.Enqueue(AdminCommandType.ReloadConfig);
+            return Results.Json(new { ok = true });
+        }));
+
+        app.MapGet("/api/welcome", (HttpContext http) => Auth(http, () =>
+            Results.Json(_ctx.Config.Settings.Welcome)));
+
+        app.MapPut("/api/welcome", (WelcomeSettings body, HttpContext http) => Auth(http, () =>
+        {
+            _ctx.Config.Settings.Welcome = body;
+            _ctx.Config.Save();
+            _ctx.Commands.Enqueue(AdminCommandType.ReloadConfig);
+            _ctx.Log.AdminInfo($"欢迎设置更新 enabled={body.Enabled} cooldown={body.CooldownSeconds}");
+            return Results.Json(new { ok = true });
+        }));
+
+        app.MapGet("/api/ban-vote-settings", (HttpContext http) => Auth(http, () =>
+            Results.Json(_ctx.Config.Settings.BanVote)));
+
+        app.MapPut("/api/ban-vote-settings", (BanVoteSettings body, HttpContext http) => Auth(http, () =>
+        {
+            _ctx.Config.Settings.BanVote = body;
+            _ctx.Config.Save();
+            _ctx.Commands.Enqueue(AdminCommandType.ReloadConfig);
+            _ctx.Log.AdminInfo($"禁言投票设置 votes={body.RequiredVotes} window={body.WindowSeconds} ban={body.BanDurationSeconds}");
+            return Results.Json(new { ok = true });
+        }));
+
+        app.MapGet("/api/cleanup", (HttpContext http) => Auth(http, () =>
+            Results.Json(_ctx.Config.Settings.Cleanup)));
+
+        app.MapPut("/api/cleanup", (CleanupSettings body, HttpContext http) => Auth(http, () =>
+        {
+            _ctx.Config.Settings.Cleanup = body;
+            _ctx.Config.Save();
+            _ctx.Commands.Enqueue(AdminCommandType.ReloadConfig);
+            return Results.Json(new { ok = true });
+        }));
+
+        app.MapPut("/api/keyword-reply-enabled", (EnabledRequest req, HttpContext http) => Auth(http, () =>
+        {
+            _ctx.Config.Settings.KeywordReply.Enabled = req.Enabled;
+            _ctx.Config.Save();
+            _ctx.Commands.Enqueue(AdminCommandType.ReloadConfig);
+            return Results.Json(new { ok = true });
+        }));
+
         app.MapGet("/api/sync/bundle", (HttpContext http) =>
             Results.Json(_ctx.Settings.BuildBundle()));
 
@@ -286,6 +367,7 @@ public sealed class AdminWebHost : IDisposable
     private IResult Cmd(AdminCommandType type, string? payload = null)
     {
         _ctx.Commands.Enqueue(type, payload);
+        _ctx.Log.AdminInfo($"后台命令 {type} payload={payload ?? ""}");
         return Results.Json(new { ok = true });
     }
 
@@ -309,5 +391,6 @@ public sealed class AdminWebHost : IDisposable
 
     private sealed record LoginRequest(string Username, string Password);
     private sealed record RandomToggleRequest(bool Enabled);
-    private sealed record UserUpdateRequest(int? Points, int? Level, string? Role, string? Status);
+    private sealed record UserUpdateRequest(int? Points, int? PointsDelta, int? Level, string? Role, string? Status);
+    private sealed record EnabledRequest(bool Enabled);
 }

@@ -21,6 +21,7 @@ public sealed class AppSettings
     public UserLevelSettings UserLevel { get; set; } = new();
     public KeywordReplySettings KeywordReply { get; set; } = new();
     public SongRequestPolicySettings SongRequestPolicy { get; set; } = new();
+    public CleanupSettings Cleanup { get; set; } = new();
 }
 
 public sealed class DouyinSettings
@@ -116,13 +117,16 @@ public sealed class AdminSettings
 public sealed class WelcomeSettings
 {
     public bool Enabled { get; set; } = true;
+    public int CooldownSeconds { get; set; } = 300;
+    public string Template { get; set; } = "欢迎{name}来到直播间 ❤️";
 }
 
 public sealed class BanVoteSettings
 {
     public bool Enabled { get; set; } = true;
     public int RequiredVotes { get; set; } = 5;
-    public int WindowSeconds { get; set; } = 300;
+    public int WindowSeconds { get; set; } = 60;
+    public int BanDurationSeconds { get; set; } = 600;
 }
 
 public sealed class GiftSettings
@@ -139,6 +143,14 @@ public sealed class UserLevelSettings
 public sealed class KeywordReplySettings
 {
     public bool Enabled { get; set; }
+}
+
+public sealed class CleanupSettings
+{
+    public bool Enabled { get; set; } = true;
+    public int IntervalHours { get; set; } = 24;
+    public int QueueRetentionDays { get; set; } = 7;
+    public int GiftRetentionDays { get; set; } = 30;
 }
 
 public sealed class ConfigManager

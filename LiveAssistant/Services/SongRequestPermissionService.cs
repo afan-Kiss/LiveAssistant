@@ -4,9 +4,6 @@ using LiveAssistant.Models;
 
 namespace LiveAssistant.Services;
 
-/// <summary>
-/// 统一点歌权限判断：角色、等级、积分策略、冷却、队列容量、歌曲黑名单。
-/// </summary>
 public sealed class SongRequestPermissionService
 {
     private readonly ConfigManager _config;
@@ -53,7 +50,19 @@ public sealed class SongRequestPermissionService
             return Deny(user, item.Nickname, "已被禁言", "已被禁言");
         }
 
+        if (IsPrivileged(user.Role))
+        {
+            return SongRequestPermissionResult.Permit(user);
+        }
+
         var levelPerm = _levelPerms.GetForLevel(user.Level);
+        var policy = _config.Settings.SongRequestPolicy;
+
+        if (user.Level < policy.MinLevel)
+        {
+            return Deny(user, item.Nickname, "等级不足", $"需要等级 {policy.MinLevel}");
+        }
+
         if (levelPerm != null && !levelPerm.CanRequest)
         {
             return Deny(user, item.Nickname, "等级不足", $"等级 {user.Level} 不可点歌");
@@ -64,19 +73,25 @@ public sealed class SongRequestPermissionService
             return Deny(user, item.Nickname, "积分不足", $"需要至少 {levelPerm.MinPoints} 积分");
         }
 
-        var policy = _config.Settings.SongRequestPolicy;
         switch (policy.Mode)
         {
             case SongRequestPolicyMode.Points:
-                if (user.Role == UserRole.Normal && user.Points < policy.PointsCost)
+                var cost = levelPerm?.PointsCostOverride >= 0
+                    ? levelPerm.PointsCostOverride
+                    : policy.PointsCost;
+                if (user.Points < cost)
                 {
-                    return Deny(user, item.Nickname, "积分不足", $"点歌需要 {policy.PointsCost} 积分");
+                    return Deny(user, item.Nickname, "积分不足", $"点歌需要 {cost} 积分");
                 }
                 break;
             case SongRequestPolicyMode.GiftUnlock:
-                if (user.Role == UserRole.Normal && user.Points < policy.GiftUnlockMinPoints)
+                if (user.Points < policy.GiftUnlockMinPoints)
                 {
                     return Deny(user, item.Nickname, "未解锁点歌", $"需送礼物累计 {policy.GiftUnlockMinPoints} 积分");
+                }
+                if (!string.IsNullOrWhiteSpace(policy.RequiredGiftName))
+                {
+                    return Deny(user, item.Nickname, "需要指定礼物", $"需送出 {policy.RequiredGiftName}");
                 }
                 break;
         }
@@ -105,6 +120,15 @@ public sealed class SongRequestPermissionService
         return SongRequestPermissionResult.Permit(user);
     }
 
+    public int GetQueuePriority(UserProfile user)
+    {
+        if (IsPrivileged(user.Role))
+        {
+            return 100;
+        }
+        return _levelPerms.GetForLevel(user.Level)?.QueuePriority ?? 0;
+    }
+
     public SongRequestPermissionResult EvaluateSong(string songName, UserProfile user, DanmakuItem item)
     {
         if (_blacklist.IsBlocked(songName))
@@ -117,15 +141,25 @@ public sealed class SongRequestPermissionService
     public void RecordSuccessfulRequest(DanmakuItem item)
     {
         var user = _users.GetUser(item.UserId);
-        var policy = _config.Settings.SongRequestPolicy;
-        if (policy.Mode == SongRequestPolicyMode.Points && user?.Role == UserRole.Normal)
+        if (user != null && !IsPrivileged(user.Role))
         {
-            _users.DeductPoints(item.UserId, policy.PointsCost);
+            var policy = _config.Settings.SongRequestPolicy;
+            if (policy.Mode == SongRequestPolicyMode.Points)
+            {
+                var levelPerm = _levelPerms.GetForLevel(user.Level);
+                var cost = levelPerm?.PointsCostOverride >= 0
+                    ? levelPerm.PointsCostOverride
+                    : policy.PointsCost;
+                _users.DeductPoints(item.UserId, cost);
+            }
         }
 
         _users.RecordSuccessfulRequest(item.UserId, item.Nickname);
         _levels.RefreshUserLevel(item.UserId);
     }
+
+    private static bool IsPrivileged(UserRole role) =>
+        role is UserRole.Admin or UserRole.Manager;
 
     private static bool ShouldApplyCooldown(UserProfile user) =>
         user.Role is UserRole.Normal;

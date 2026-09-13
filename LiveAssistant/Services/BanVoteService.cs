@@ -76,43 +76,68 @@ public sealed class BanVoteService
         if (session != null && _votes.IsExpired(session))
         {
             _votes.ExpireSession(session.Id);
+            _log.BanInfo($"投票过期 session={session.Id} target={target.Nickname}");
             session = null;
         }
 
+        var isNew = session == null;
         if (session == null)
         {
             session = _votes.CreateSession(
                 target.UserId,
                 target.Nickname,
                 _config.Settings.BanVote.RequiredVotes,
-                _config.Settings.BanVote.WindowSeconds);
-            _system.Add($"禁言投票已创建: {target.Nickname} (需要 {_config.Settings.BanVote.RequiredVotes} 票，{_config.Settings.BanVote.WindowSeconds}秒内有效)");
+                _config.Settings.BanVote.WindowSeconds,
+                item.UserId,
+                item.Nickname);
+            _system.Add($"禁言投票已创建: {target.Nickname} (发起人 {item.Nickname})");
+            _log.BanInfo($"投票创建 initiator={item.Nickname} target={target.Nickname}");
         }
 
-        if (_votes.HasVoted(session.Id, item.UserId))
+        if (!isNew && _votes.HasVoted(session.Id, item.UserId))
         {
             return;
         }
 
         var count = _votes.AddVote(session.Id, target.UserId, target.Nickname, item.UserId, item.Nickname);
         _system.Add($"禁言投票: {item.Nickname} 投票禁言 {target.Nickname} ({count}/{session.RequiredVotes})");
+        _log.BanInfo($"投票 user={item.Nickname} target={target.Nickname} count={count}/{session.RequiredVotes}");
 
         if (count >= session.RequiredVotes)
         {
-            await ExecuteBanAsync(target, webRid, session.Id, ct);
+            await ExecuteBanAsync(target, webRid, session, ct);
         }
     }
 
-    private async Task ExecuteBanAsync(UserProfile target, string webRid, string sessionId, CancellationToken ct)
+    private async Task ExecuteBanAsync(UserProfile target, string webRid, BanVoteSession session, CancellationToken ct)
     {
         var ok = await _douyin.ModSilenceAsync(webRid, target.UserId, "silence", ct);
         _users.SetStatus(target.UserId, UserStatus.Muted);
+        var duration = _config.Settings.BanVote.BanDurationSeconds;
         var msg = ok
-            ? $"禁言投票通过，已禁言 {target.Nickname}"
-            : $"禁言投票通过，但平台禁言 API 调用失败: {target.Nickname}";
+            ? $"禁言投票通过，已禁言 {target.Nickname} {duration}秒 (发起人 {session.InitiatorNickname})"
+            : $"禁言投票通过，但平台禁言 API 失败: {target.Nickname}";
         _system.Add(msg);
-        _log.Info(msg);
-        _votes.CompleteSession(sessionId, ok ? "banned" : "api_failed");
+        _log.BanInfo(msg);
+        _votes.CompleteSession(session.Id, ok ? "banned" : "api_failed");
+
+        if (ok && duration > 0)
+        {
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(duration), ct);
+                    await _douyin.ModSilenceAsync(webRid, target.UserId, "unsilence", ct);
+                    _users.SetStatus(target.UserId, UserStatus.Active);
+                    _log.BanInfo($"自动解除禁言 target={target.Nickname} duration={duration}s");
+                }
+                catch (Exception ex)
+                {
+                    _log.BanWarn($"自动解除禁言失败: {ex.Message}");
+                }
+            });
+        }
 
         var reply = _reply.Render("banVotePassed", new Dictionary<string, string>
         {

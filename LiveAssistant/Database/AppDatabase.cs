@@ -158,7 +158,14 @@ public sealed class AppDatabase : IDisposable
                 level INTEGER PRIMARY KEY,
                 can_request INTEGER DEFAULT 1,
                 cooldown_seconds INTEGER DEFAULT 30,
-                min_points INTEGER DEFAULT 0
+                min_points INTEGER DEFAULT 0,
+                queue_priority INTEGER DEFAULT 0,
+                points_cost_override INTEGER DEFAULT -1
+            );
+
+            CREATE TABLE IF NOT EXISTS welcome_records (
+                user_id TEXT PRIMARY KEY,
+                welcomed_at TEXT
             );
             """;
         cmd.ExecuteNonQuery();
@@ -173,6 +180,15 @@ public sealed class AppDatabase : IDisposable
         EnsureColumn(conn, "queue_items", "updated_at", "TEXT");
         EnsureColumn(conn, "ban_vote_sessions", "expires_at", "TEXT");
         EnsureColumn(conn, "ban_vote_sessions", "result", "TEXT");
+        EnsureColumn(conn, "ban_vote_sessions", "initiator_user_id", "TEXT");
+        EnsureColumn(conn, "ban_vote_sessions", "initiator_nickname", "TEXT");
+        EnsureColumn(conn, "gift_events", "points_delta", "INTEGER DEFAULT 0");
+        EnsureColumn(conn, "gift_events", "points_after", "INTEGER DEFAULT 0");
+        EnsureColumn(conn, "gift_rules", "gift_id", "TEXT");
+        EnsureColumn(conn, "gift_rules", "allow_song_request", "INTEGER DEFAULT 0");
+        EnsureColumn(conn, "keyword_replies", "reply_content", "TEXT");
+        EnsureColumn(conn, "level_permissions", "queue_priority", "INTEGER DEFAULT 0");
+        EnsureColumn(conn, "level_permissions", "points_cost_override", "INTEGER DEFAULT -1");
 
         using var roleCmd = conn.CreateCommand();
         roleCmd.CommandText = """

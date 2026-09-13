@@ -30,6 +30,7 @@ public sealed class LiveAppHost : IDisposable
     private readonly ReplyTemplateRepository _replyTemplateRepo;
     private readonly RandomPoolRepository _randomPoolRepo;
     private readonly LevelPermissionRepository _levelPermRepo;
+    private readonly WelcomeCooldownRepository _welcomeCooldownRepo;
     private readonly SettingsStore _settingsStore;
     private readonly SongRequestPermissionService _permission;
     private readonly SongRequestService _songRequest;
@@ -40,12 +41,17 @@ public sealed class LiveAppHost : IDisposable
     private readonly UserLevelService _userLevel;
     private readonly CommandQueueService _commandQueue;
     private readonly BackendSyncService _backendSync;
+    private readonly DataCleanupService _dataCleanup;
     private readonly AdminWebHost _adminWeb;
     private readonly ProcessWatchdogService _watchdog;
     private readonly DateTime _startedAt = DateTime.Now;
     private CancellationTokenSource? _watchCts;
     private volatile bool _douyinSidecarOk;
     private volatile bool _kugouSidecarOk;
+    private volatile string _adminAccountStatus = "未检测";
+    private volatile string _adminNickname = "-";
+    private volatile string _currentTask = "空闲";
+    private volatile bool _isRunning;
 
     public LiveAppHost()
     {
@@ -72,10 +78,11 @@ public sealed class LiveAppHost : IDisposable
         _replyTemplateRepo = new ReplyTemplateRepository(_db);
         _randomPoolRepo = new RandomPoolRepository(_db);
         _levelPermRepo = new LevelPermissionRepository(_db);
+        _welcomeCooldownRepo = new WelcomeCooldownRepository(_db);
 
         _settingsStore = new SettingsStore(
             _config, _replyTemplateRepo, _randomPoolRepo, _giftRuleRepo, _levelPermRepo,
-            new SyncCacheRepository(_db));
+            _keywordReplyRepo, new SyncCacheRepository(_db));
         _settingsStore.InitializeFromFilesIfEmpty();
         _settingsStore.ApplyDbToMemory();
 
@@ -100,11 +107,12 @@ public sealed class LiveAppHost : IDisposable
         _songRequest = new SongRequestService(_config, _kugou, _queue, _permission, _reply, _replyQueue, _system, _log);
         _gift = new GiftService(_config, _douyin, _giftRepo, _users, _userLevel, _giftRuleRepo, _log, _system);
         _banVote = new BanVoteService(_config, _banVoteRepo, _users, _douyin, _replyQueue, _reply, _system, _log);
-        _welcome = new WelcomeService(_config, _reply, _replyQueue, _system);
-        _keywordReply = new KeywordReplyService(_config, _keywordReplyRepo);
+        _welcome = new WelcomeService(_config, _reply, _replyQueue, _system, _welcomeCooldownRepo);
+        _keywordReply = new KeywordReplyService(_config, _keywordReplyRepo, new NullAIReplyService());
         _commandQueue = new CommandQueueService(new AdminCommandRepository(_db));
         _backendSync = new BackendSyncService(
             _config, _commandQueue, _settingsStore, _playbackCommands, _engine, _queue, _reply, _log);
+        _dataCleanup = new DataCleanupService(_config, _db, _log);
         _watchdog = new ProcessWatchdogService(_config, _log, _system);
 
         _adminWeb = new AdminWebHost(new AdminAppContext
@@ -121,7 +129,8 @@ public sealed class LiveAppHost : IDisposable
             SongBlacklist = _songBlacklistRepo,
             KeywordReplies = _keywordReplyRepo,
             BanVotes = _banVoteRepo,
-            LevelPermissions = _levelPermRepo
+            LevelPermissions = _levelPermRepo,
+            Log = _log
         });
 
         _danmaku.DanmakuReceived += OnDanmakuReceived;
@@ -131,6 +140,7 @@ public sealed class LiveAppHost : IDisposable
 
         _adminWeb.Start();
         _backendSync.Start();
+        _dataCleanup.Start();
 
         _log.Info("LiveAssistant 已启动");
         if (_config.Settings.Admin.Enabled)
@@ -163,9 +173,15 @@ public sealed class LiveAppHost : IDisposable
             DouyinStatus = _douyinSidecarOk ? "在线" : "离线",
             KugouStatus = _kugouSidecarOk ? "在线" : "离线",
             DanmakuConnection = _danmaku.ConnectionStatus,
+            AdminAccountStatus = _adminAccountStatus,
+            AdminNickname = _adminNickname,
             CurrentSong = track == null ? "-" : $"{track.SongName} - {track.Artist}",
+            PlaybackMode = _engine.Mode.ToString(),
             QueueCount = queueCount,
-            Uptime = DateTime.Now - _startedAt
+            Uptime = DateTime.Now - _startedAt,
+            StartedAt = _startedAt,
+            CurrentTask = _currentTask,
+            LastError = _log.LastError
         };
     }
 
@@ -181,8 +197,11 @@ public sealed class LiveAppHost : IDisposable
             return;
         }
 
+        _isRunning = true;
+        _currentTask = "连接直播间";
         await _danmaku.StartAsync(webRid, ct);
         _gift.Start(webRid);
+        _currentTask = "监控中";
         _system.Add(_reply.Render("systemConnected", new Dictionary<string, string>()));
         await _engine.EnsurePlayingAsync();
         NotifyStateChanged();
@@ -190,6 +209,8 @@ public sealed class LiveAppHost : IDisposable
 
     public void Stop()
     {
+        _isRunning = false;
+        _currentTask = "已停止";
         _danmaku.Stop();
         _gift.Stop();
         _engine.Stop();
@@ -234,7 +255,7 @@ public sealed class LiveAppHost : IDisposable
                 return;
             }
 
-            _keywordReply.TryHandle(item, _replyQueue, _reply, webRid);
+            await _keywordReply.TryHandleAsync(item, _replyQueue, _reply, _users, webRid);
             await _banVote.HandleDanmakuAsync(item, webRid);
             await _songRequest.HandleDanmakuAsync(item, webRid);
             NotifyStateChanged();
@@ -242,11 +263,13 @@ public sealed class LiveAppHost : IDisposable
         catch (Exception ex)
         {
             _log.Error("app", "处理弹幕异常", ex);
+            _log.SetLastError("app", ex.Message);
         }
     }
 
     private async Task WatchSidecarsAsync(CancellationToken ct)
     {
+        var wasDouyinDown = false;
         while (!ct.IsCancellationRequested)
         {
             try
@@ -256,10 +279,36 @@ public sealed class LiveAppHost : IDisposable
                     () => _kugou.HealthCheckAsync(ct),
                     ct);
 
-                var dyOk = await _douyin.HealthCheckAsync(ct);
+                var health = await _douyin.GetHealthAsync(ct);
+                var dyOk = health != null;
                 var kgOk = await _kugou.HealthCheckAsync(ct);
                 _douyinSidecarOk = dyOk;
                 _kugouSidecarOk = kgOk;
+
+                if (health != null)
+                {
+                    _adminAccountStatus = health.LoginOk ? "管理员已登录" : "未登录";
+                    _adminNickname = health.Nickname ?? "-";
+                }
+                else
+                {
+                    _adminAccountStatus = "离线";
+                    _adminNickname = "-";
+                }
+
+                if (dyOk && wasDouyinDown && _isRunning)
+                {
+                    var webRid = _config.Settings.Douyin.WebRid;
+                    if (!string.IsNullOrWhiteSpace(webRid))
+                    {
+                        _log.DouyinInfo("抖音 Sidecar 恢复，重新连接采集");
+                        await _douyin.ReconnectAsync(webRid, ct);
+                        await _danmaku.StartAsync(webRid, ct);
+                        _gift.Start(webRid);
+                        _system.Add("抖音服务已恢复并重连");
+                    }
+                }
+                wasDouyinDown = !dyOk;
 
                 if (!dyOk)
                 {
@@ -279,6 +328,7 @@ public sealed class LiveAppHost : IDisposable
             catch (Exception ex)
             {
                 _log.Error("app", "Sidecar 守护循环异常", ex);
+                _log.SetLastError("watchdog", ex.Message);
             }
 
             try
@@ -289,10 +339,6 @@ public sealed class LiveAppHost : IDisposable
             {
                 break;
             }
-            catch (Exception ex)
-            {
-                _log.Error("app", "Sidecar 守护延迟异常", ex);
-            }
         }
     }
 
@@ -301,6 +347,7 @@ public sealed class LiveAppHost : IDisposable
     public void Dispose()
     {
         _watchCts?.Cancel();
+        _dataCleanup.Dispose();
         _backendSync.Dispose();
         _adminWeb.Dispose();
         _gift.Dispose();

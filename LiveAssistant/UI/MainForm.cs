@@ -16,6 +16,9 @@ public sealed class MainForm : Form
     private readonly Label _lblRuntimeSong = new();
     private readonly Label _lblRuntimeQueue = new();
     private readonly Label _lblUptime = new();
+    private readonly Label _lblAdminAccount = new();
+    private readonly Label _lblCurrentTask = new();
+    private readonly Label _lblLastError = new();
 
     private readonly ListBox _lstDanmaku = new();
     private readonly ListBox _lstSystem = new();
@@ -89,20 +92,23 @@ public sealed class MainForm : Form
         var layout = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 5,
-            RowCount = 1,
+            ColumnCount = 4,
+            RowCount = 2,
             Padding = new Padding(8, 4, 8, 4)
         };
-        for (var i = 0; i < 5; i++)
+        for (var i = 0; i < 4; i++)
         {
-            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20));
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
         }
 
         layout.Controls.Add(MakeStatusCell("抖音", _lblDouyinSidecar), 0, 0);
         layout.Controls.Add(MakeStatusCell("酷狗", _lblKugouSidecar), 1, 0);
-        layout.Controls.Add(MakeStatusCell("当前歌曲", _lblRuntimeSong), 2, 0);
-        layout.Controls.Add(MakeStatusCell("队列数量", _lblRuntimeQueue), 3, 0);
-        layout.Controls.Add(MakeStatusCell("运行时间", _lblUptime), 4, 0);
+        layout.Controls.Add(MakeStatusCell("管理员账号", _lblAdminAccount), 2, 0);
+        layout.Controls.Add(MakeStatusCell("运行时间", _lblUptime), 3, 0);
+        layout.Controls.Add(MakeStatusCell("当前歌曲", _lblRuntimeSong), 0, 1);
+        layout.Controls.Add(MakeStatusCell("队列数量", _lblRuntimeQueue), 1, 1);
+        layout.Controls.Add(MakeStatusCell("当前任务", _lblCurrentTask), 2, 1);
+        layout.Controls.Add(MakeStatusCell("最后错误", _lblLastError), 3, 1);
         panel.Controls.Add(layout);
         return panel;
     }
@@ -467,9 +473,13 @@ public sealed class MainForm : Form
         _lblDouyinSidecar.ForeColor = status.DouyinOnline ? Color.DarkGreen : Color.DarkRed;
         _lblKugouSidecar.Text = status.KugouStatus;
         _lblKugouSidecar.ForeColor = status.KugouOnline ? Color.DarkGreen : Color.DarkRed;
+        _lblAdminAccount.Text = $"{status.AdminAccountStatus} ({status.AdminNickname})";
         _lblRuntimeSong.Text = status.CurrentSong;
         _lblRuntimeQueue.Text = status.QueueCount.ToString();
         _lblUptime.Text = FormatUptime(status.Uptime);
+        _lblCurrentTask.Text = status.CurrentTask;
+        _lblLastError.Text = string.IsNullOrWhiteSpace(status.LastError) ? "无" : status.LastError;
+        _lblLastError.ForeColor = string.IsNullOrWhiteSpace(status.LastError) ? Color.Black : Color.DarkRed;
     }
 
     private static string FormatUptime(TimeSpan uptime)

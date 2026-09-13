@@ -15,7 +15,8 @@ public sealed class GiftRuleRepository
         using var conn = _db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT id, gift_name, points, enabled, created_at FROM gift_rules ORDER BY id ASC
+            SELECT id, gift_id, gift_name, points, allow_song_request, enabled, created_at
+            FROM gift_rules ORDER BY id ASC
             """;
         using var reader = cmd.ExecuteReader();
         while (reader.Read())
@@ -25,22 +26,26 @@ public sealed class GiftRuleRepository
         return list;
     }
 
-    public int? GetPointsForGift(string giftName)
+    public GiftRule? FindByGift(string giftName, string? giftId = null)
     {
-        if (string.IsNullOrWhiteSpace(giftName))
-        {
-            return null;
-        }
-
         using var conn = _db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT points FROM gift_rules
-            WHERE enabled=1 AND gift_name=$name COLLATE NOCASE LIMIT 1
+            SELECT id, gift_id, gift_name, points, allow_song_request, enabled, created_at
+            FROM gift_rules WHERE enabled=1 AND (
+                gift_name=$name COLLATE NOCASE OR ($gid != '' AND gift_id=$gid)
+            ) LIMIT 1
             """;
         cmd.Parameters.AddWithValue("$name", giftName.Trim());
-        var result = cmd.ExecuteScalar();
-        return result == null ? null : Convert.ToInt32(result);
+        cmd.Parameters.AddWithValue("$gid", giftId ?? "");
+        using var reader = cmd.ExecuteReader();
+        return reader.Read() ? Read(reader) : null;
+    }
+
+    public int? GetPointsForGift(string giftName, string? giftId = null)
+    {
+        var rule = FindByGift(giftName, giftId);
+        return rule?.Points;
     }
 
     public long Add(GiftRule rule)
@@ -49,11 +54,13 @@ public sealed class GiftRuleRepository
         using var conn = _db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO gift_rules (gift_name, points, enabled, created_at)
-            VALUES ($name, $pts, $en, $now)
+            INSERT INTO gift_rules (gift_id, gift_name, points, allow_song_request, enabled, created_at)
+            VALUES ($gid, $name, $pts, $allow, $en, $now)
             """;
+        cmd.Parameters.AddWithValue("$gid", rule.GiftId);
         cmd.Parameters.AddWithValue("$name", rule.GiftName);
         cmd.Parameters.AddWithValue("$pts", rule.Points);
+        cmd.Parameters.AddWithValue("$allow", rule.AllowSongRequest ? 1 : 0);
         cmd.Parameters.AddWithValue("$en", rule.Enabled ? 1 : 0);
         cmd.Parameters.AddWithValue("$now", now);
         cmd.ExecuteNonQuery();
@@ -67,10 +74,13 @@ public sealed class GiftRuleRepository
         using var conn = _db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            UPDATE gift_rules SET gift_name=$name, points=$pts, enabled=$en WHERE id=$id
+            UPDATE gift_rules SET gift_id=$gid, gift_name=$name, points=$pts,
+            allow_song_request=$allow, enabled=$en WHERE id=$id
             """;
+        cmd.Parameters.AddWithValue("$gid", rule.GiftId);
         cmd.Parameters.AddWithValue("$name", rule.GiftName);
         cmd.Parameters.AddWithValue("$pts", rule.Points);
+        cmd.Parameters.AddWithValue("$allow", rule.AllowSongRequest ? 1 : 0);
         cmd.Parameters.AddWithValue("$en", rule.Enabled ? 1 : 0);
         cmd.Parameters.AddWithValue("$id", rule.Id);
         cmd.ExecuteNonQuery();
@@ -88,9 +98,11 @@ public sealed class GiftRuleRepository
     private static GiftRule Read(SqliteDataReader reader) => new()
     {
         Id = reader.GetInt64(0),
-        GiftName = reader.GetString(1),
-        Points = reader.GetInt32(2),
-        Enabled = reader.GetInt64(3) == 1,
-        CreatedAt = DateTime.TryParse(reader.GetString(4), out var dt) ? dt : DateTime.Now
+        GiftId = reader.IsDBNull(1) ? "" : reader.GetString(1),
+        GiftName = reader.GetString(2),
+        Points = reader.GetInt32(3),
+        AllowSongRequest = reader.GetInt64(4) == 1,
+        Enabled = reader.GetInt64(5) == 1,
+        CreatedAt = DateTime.TryParse(reader.GetString(6), out var dt) ? dt : DateTime.Now
     };
 }

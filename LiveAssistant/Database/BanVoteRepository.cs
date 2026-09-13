@@ -13,6 +13,8 @@ public sealed class BanVoteSession
     public string? Result { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime? ExpiresAt { get; set; }
+    public string InitiatorUserId { get; set; } = "";
+    public string InitiatorNickname { get; set; } = "";
 }
 
 public sealed class BanVoteRepository
@@ -44,7 +46,13 @@ public sealed class BanVoteRepository
         return ReadSession(reader);
     }
 
-    public BanVoteSession CreateSession(string targetUserId, string targetNickname, int requiredVotes, int windowSeconds)
+    public BanVoteSession CreateSession(
+        string targetUserId,
+        string targetNickname,
+        int requiredVotes,
+        int windowSeconds,
+        string initiatorUserId,
+        string initiatorNickname)
     {
         var id = Guid.NewGuid().ToString("N");
         var now = DateTime.Now;
@@ -52,8 +60,8 @@ public sealed class BanVoteRepository
         using var conn = _db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO ban_vote_sessions (id, target_user_id, target_nickname, vote_count, required_votes, status, created_at, expires_at)
-            VALUES ($id, $uid, $nick, 0, $req, 'active', $now, $exp)
+            INSERT INTO ban_vote_sessions (id, target_user_id, target_nickname, vote_count, required_votes, status, created_at, expires_at, initiator_user_id, initiator_nickname)
+            VALUES ($id, $uid, $nick, 0, $req, 'active', $now, $exp, $iuid, $inick)
             """;
         cmd.Parameters.AddWithValue("$id", id);
         cmd.Parameters.AddWithValue("$uid", targetUserId);
@@ -61,6 +69,8 @@ public sealed class BanVoteRepository
         cmd.Parameters.AddWithValue("$req", requiredVotes);
         cmd.Parameters.AddWithValue("$now", now.ToString("O"));
         cmd.Parameters.AddWithValue("$exp", expires?.ToString("O") ?? "");
+        cmd.Parameters.AddWithValue("$iuid", initiatorUserId);
+        cmd.Parameters.AddWithValue("$inick", initiatorNickname);
         cmd.ExecuteNonQuery();
 
         return new BanVoteSession
@@ -70,7 +80,9 @@ public sealed class BanVoteRepository
             TargetNickname = targetNickname,
             RequiredVotes = requiredVotes,
             CreatedAt = now,
-            ExpiresAt = expires
+            ExpiresAt = expires,
+            InitiatorUserId = initiatorUserId,
+            InitiatorNickname = initiatorNickname
         };
     }
 
@@ -171,7 +183,7 @@ public sealed class BanVoteRepository
         {
             expires = exp;
         }
-        return new BanVoteSession
+        var session = new BanVoteSession
         {
             Id = reader.GetString(0),
             TargetUserId = reader.GetString(1),
@@ -182,5 +194,11 @@ public sealed class BanVoteRepository
             CreatedAt = DateTime.TryParse(reader.GetString(6), out var dt) ? dt : DateTime.Now,
             ExpiresAt = expires
         };
+        if (reader.FieldCount > 9)
+        {
+            session.InitiatorUserId = reader.IsDBNull(8) ? "" : reader.GetString(8);
+            session.InitiatorNickname = reader.IsDBNull(9) ? "" : reader.GetString(9);
+        }
+        return session;
     }
 }
