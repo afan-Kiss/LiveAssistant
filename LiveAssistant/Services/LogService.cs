@@ -97,6 +97,12 @@ public sealed class LogService
         Write("gift", "INFO", line);
     }
 
+    public void LogGiftDuplicate(string nickname, string giftName, string eventId, string reason)
+    {
+        var line = $"[GiftDuplicate] 用户={nickname} 礼物={giftName} 事件ID={eventId} 跳过原因={reason}";
+        Write("gift", "WARN", line);
+    }
+
     public void SetLastError(string source, string message) => _lastError = $"[{source}] {message}";
 
     private volatile string _lastError = "";

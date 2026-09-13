@@ -35,6 +35,7 @@ public sealed class LiveAppHost : IDisposable
     private readonly SongRequestPermissionService _permission;
     private readonly SongRequestService _songRequest;
     private readonly GiftService _gift;
+    private readonly GiftCollectorService _giftCollector;
     private readonly BanVoteService _banVote;
     private readonly WelcomeService _welcome;
     private readonly KeywordReplyService _keywordReply;
@@ -106,6 +107,7 @@ public sealed class LiveAppHost : IDisposable
             _config, _users, _queue, songBlacklist, _levelPermRepo, _userLevel);
         _songRequest = new SongRequestService(_config, _kugou, _queue, _permission, _reply, _replyQueue, _system, _log);
         _gift = new GiftService(_config, _douyin, _giftRepo, _users, _userLevel, _giftRuleRepo, _log, _system);
+        _giftCollector = new GiftCollectorService(_config, _douyin, _gift, _log);
         _banVote = new BanVoteService(_config, _banVoteRepo, _users, _douyin, _replyQueue, _reply, _system, _log);
         _welcome = new WelcomeService(_config, _reply, _replyQueue, _system, _welcomeCooldownRepo);
         _keywordReply = new KeywordReplyService(_config, _keywordReplyRepo, new NullAIReplyService());
@@ -201,6 +203,7 @@ public sealed class LiveAppHost : IDisposable
         _currentTask = "连接直播间";
         await _danmaku.StartAsync(webRid, ct);
         _gift.Start(webRid);
+        _giftCollector.StartGiftCollector(webRid);
         _currentTask = "监控中";
         _system.Add(_reply.Render("systemConnected", new Dictionary<string, string>()));
         await _engine.EnsurePlayingAsync();
@@ -212,6 +215,7 @@ public sealed class LiveAppHost : IDisposable
         _isRunning = false;
         _currentTask = "已停止";
         _danmaku.Stop();
+        _giftCollector.StopGiftCollector();
         _gift.Stop();
         _engine.Stop();
         _system.Add("已停止监控");
@@ -305,6 +309,7 @@ public sealed class LiveAppHost : IDisposable
                         await _douyin.ReconnectAsync(webRid, ct);
                         await _danmaku.StartAsync(webRid, ct);
                         _gift.Start(webRid);
+                        _giftCollector.StartGiftCollector(webRid);
                         _system.Add("抖音服务已恢复并重连");
                     }
                 }
@@ -350,6 +355,7 @@ public sealed class LiveAppHost : IDisposable
         _dataCleanup.Dispose();
         _backendSync.Dispose();
         _adminWeb.Dispose();
+        _giftCollector.Dispose();
         _gift.Dispose();
         _danmaku.Dispose();
         _replyQueue.Dispose();

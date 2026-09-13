@@ -31,6 +31,8 @@ public sealed class DouyinSettings
     public string WebRid { get; set; } = "";
     public int PollIntervalMs { get; set; } = 1500;
     public string DouyinExePath { get; set; } = "";
+    /// <summary>Sidecar cookies.json 路径；空则按 exe 旁 data/cookies.json 推断。</summary>
+    public string CookieStorePath { get; set; } = "";
 }
 
 public sealed class KugouSettings
@@ -76,6 +78,7 @@ public sealed class QueueSettings
 {
     public int MaxSize { get; set; } = 50;
     public int RequestCooldownSeconds { get; set; } = 30;
+    public int SongRequestCooldownSeconds { get; set; } = 30;
 }
 
 public sealed class ReplySettings
@@ -83,6 +86,7 @@ public sealed class ReplySettings
     public int MaxPerSecond { get; set; } = 2;
     public int MaxRetries { get; set; } = 3;
     public int RetryDelayMs { get; set; } = 1500;
+    public int SongRequestBatchWindowMs { get; set; } = 5000;
 }
 
 public sealed class EmergencySettings
@@ -133,6 +137,12 @@ public sealed class GiftSettings
 {
     public int PointsPerValue { get; set; } = 1;
     public int PollIntervalMs { get; set; } = 2000;
+    /// <summary>礼物 im/fetch 轮询间隔（毫秒）。</summary>
+    public int ImFetchIntervalMs { get; set; } = 10000;
+    /// <summary>连击超时自动结算（秒）。</summary>
+    public int ComboTimeoutSeconds { get; set; } = 10;
+    /// <summary>断线/Cookie 失效后的重连退避基数（毫秒）。</summary>
+    public int ReconnectDelayMs { get; set; } = 3000;
 }
 
 public sealed class UserLevelSettings

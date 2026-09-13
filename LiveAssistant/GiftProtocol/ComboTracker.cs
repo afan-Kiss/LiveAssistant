@@ -172,9 +172,10 @@ public sealed class ComboTracker
             finalFrame.DiamondCount = pending.DiamondCount;
         }
 
+        // Value 保持单价，与 GiftService 的 Value * Count 公式对齐
         if (finalFrame.DiamondCount > 0)
         {
-            finalFrame.Value = finalFrame.DiamondCount * finalFrame.Count;
+            finalFrame.Value = finalFrame.DiamondCount;
         }
         else if (pending.Value > finalFrame.Value)
         {

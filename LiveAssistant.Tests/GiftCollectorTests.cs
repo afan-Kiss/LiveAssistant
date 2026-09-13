@@ -1,0 +1,220 @@
+using System.Net;
+using Douyin.Live;
+using Google.Protobuf;
+using LiveAssistant.Config;
+using LiveAssistant.Database;
+using LiveAssistant.GiftProtocol;
+using LiveAssistant.Services;
+using Xunit;
+
+namespace LiveAssistant.Tests;
+
+public sealed class GiftCollectorTests : IDisposable
+{
+    private readonly string _tempDir;
+    private readonly string _cookiePath;
+
+    public GiftCollectorTests()
+    {
+        _tempDir = Path.Combine(Path.GetTempPath(), "la_gc_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(_tempDir);
+        _cookiePath = Path.Combine(_tempDir, "cookies.json");
+        File.WriteAllText(_cookiePath, """
+        {
+          "active": "默认账号",
+          "profiles": {
+            "默认账号": {
+              "name": "默认账号",
+              "cookie": "sessionid=abc123; ttwid=xyz"
+            }
+          }
+        }
+        """);
+    }
+
+    [Fact]
+    public async Task ImFetch_ReceivesGiftMessage_ThroughPipeline()
+    {
+        var gift = BuildGift(9001, 1, 77, "Tester", 11, "小心心", 1, 1, 1, 1);
+        var body = BuildImFetchBody(gift);
+        var handler = new ScriptedHandler(req =>
+        {
+            Assert.Contains("/webcast/im/fetch/", req.RequestUri!.AbsoluteUri);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(body)
+            };
+        });
+
+        var client = new GiftImFetchClient(new HttpClient(handler));
+        var result = await client.FetchAsync("12345", "web1", "sessionid=abc", "uid1", "", "");
+        Assert.Single(result.Gifts);
+
+        var pipeline = new GiftProtocolPipeline();
+        var events = pipeline.ProcessGiftMessage(result.Gifts[0]);
+        Assert.Single(events);
+        Assert.Equal("77", events[0].UserId);
+        Assert.Equal("小心心", events[0].GiftName);
+    }
+
+    [Fact]
+    public void ProtobufParse_ImFetchBody_OnlyKeepsGiftMessages()
+    {
+        var gift = BuildGift(1, 1, 2, "A", 3, "玫瑰", 5, 2, 9, 1);
+        var response = new Response();
+        response.MessagesList.Add(new Message
+        {
+            Method = "WebcastChatMessage",
+            Payload = ByteString.CopyFromUtf8("not-a-gift")
+        });
+        response.MessagesList.Add(new Message
+        {
+            Method = GiftNormalizer.WebcastGiftMethod,
+            Payload = gift.ToByteString()
+        });
+        response.Cursor = "c-1";
+        response.InternalExt = "ext-1";
+
+        var parsed = WebcastGiftParser.ParseImFetchBody(response.ToByteArray());
+        Assert.True(parsed.Success, parsed.Error);
+        Assert.Single(parsed.Gifts);
+        Assert.Equal((ulong)3, parsed.Gifts[0].GiftId);
+        Assert.Equal("c-1", parsed.Response?.Cursor);
+    }
+
+    [Fact]
+    public void ComboMerge_ViaCollectorPipeline()
+    {
+        var pipeline = new GiftProtocolPipeline();
+        Assert.Empty(pipeline.ProcessGiftMessage(BuildGift(1, 1, 5, "U", 8, "跑车", 10, 3, 1, 0)));
+        Assert.Empty(pipeline.ProcessGiftMessage(BuildGift(2, 1, 5, "U", 8, "跑车", 10, 6, 1, 0)));
+        var end = pipeline.ProcessGiftMessage(BuildGift(3, 1, 5, "U", 8, "跑车", 10, 6, 1, 1, totalCount: 6));
+        Assert.Single(end);
+        Assert.Equal(6, end[0].Count);
+        Assert.Equal(10, end[0].Value);
+    }
+
+    [Fact]
+    public async Task CookieInvalid_Http401_Throws()
+    {
+        var handler = new ScriptedHandler(_ => new HttpResponseMessage(HttpStatusCode.Unauthorized));
+        var client = new GiftImFetchClient(new HttpClient(handler));
+        await Assert.ThrowsAsync<CookieInvalidException>(() =>
+            client.FetchAsync("1", "w", "sessionid=x", "u", "", ""));
+    }
+
+    [Fact]
+    public async Task CookieInvalid_MissingSession_ThrowsBeforeRequest()
+    {
+        var handler = new ScriptedHandler(_ => throw new Exception("should not call"));
+        var client = new GiftImFetchClient(new HttpClient(handler));
+        await Assert.ThrowsAsync<CookieInvalidException>(() =>
+            client.FetchAsync("1", "w", "ttwid=only", "u", "", ""));
+    }
+
+    [Fact]
+    public void SidecarCookieStore_ReadsActiveCookie()
+    {
+        Assert.True(SidecarCookieStore.TryReadActiveCookie(_cookiePath, out var cookie, out var name, out var err), err);
+        Assert.Equal("默认账号", name);
+        Assert.Contains("sessionid=abc123", cookie);
+    }
+
+    [Fact]
+    public void SidecarCookieStore_DetectsMissingSession()
+    {
+        var bad = Path.Combine(_tempDir, "bad.json");
+        File.WriteAllText(bad, """
+        {"active":"a","profiles":{"a":{"cookie":"ttwid=1"}}}
+        """);
+        Assert.False(SidecarCookieStore.TryReadActiveCookie(bad, out _, out _, out var err));
+        Assert.Contains("sessionid", err ?? "", StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GiftCollector_StartStop_ReconnectLifecycle()
+    {
+        var config = new ConfigManager();
+        config.Load();
+        config.Settings.Douyin.CookieStorePath = _cookiePath;
+        config.Settings.Gift.ImFetchIntervalMs = 50;
+        config.Settings.Gift.ReconnectDelayMs = 50;
+
+        var dataDir = Path.Combine(_tempDir, "db");
+        Directory.CreateDirectory(dataDir);
+        var db = new AppDatabase(dataDir);
+        var users = new UserRepository(db);
+        var log = new LogService(dataDir);
+        var gifts = new GiftService(
+            config,
+            new DouyinService(config.Settings.Douyin, log),
+            new GiftRepository(db),
+            users,
+            new UserLevelService(config, users),
+            new GiftRuleRepository(db),
+            log,
+            new SystemMessageService(20));
+
+        // 故意让 im/fetch 失败，验证 Start/Stop 可重复（断线重连生命周期）。
+        var im = new GiftImFetchClient(new HttpClient(new ScriptedHandler(_ =>
+            new HttpResponseMessage(HttpStatusCode.InternalServerError))));
+
+        using var collector = new GiftCollectorService(config, new DouyinService(config.Settings.Douyin, log), gifts, log, im);
+        collector.StartGiftCollector("123");
+        Assert.True(collector.IsRunning);
+        collector.StopGiftCollector();
+        collector.StartGiftCollector("123");
+        Assert.True(collector.IsRunning);
+        collector.StopGiftCollector();
+        Assert.False(collector.IsRunning);
+        db.Dispose();
+    }
+
+    public void Dispose()
+    {
+        try { Directory.Delete(_tempDir, true); } catch { /* ignore */ }
+    }
+
+    private static GiftMessage BuildGift(
+        ulong msgId, ulong roomId, ulong userId, string nick,
+        ulong giftId, string giftName, uint diamond, ulong repeat, ulong group, uint repeatEnd,
+        ulong? totalCount = null)
+    {
+        return new GiftMessage
+        {
+            Common = new Common { MsgId = msgId, RoomId = roomId, CreateTime = 1_700_000_000UL },
+            GiftId = giftId,
+            RepeatCount = repeat,
+            GroupId = group,
+            RepeatEnd = repeatEnd,
+            TotalCount = totalCount ?? 0,
+            User = new User { Id = userId, NickName = nick, IdStr = userId.ToString() },
+            Gift = new GiftStruct { Id = giftId, Name = giftName, DiamondCount = diamond }
+        };
+    }
+
+    private static byte[] BuildImFetchBody(GiftMessage gift)
+    {
+        var response = new Response { Cursor = "t-1", InternalExt = "e-1" };
+        response.MessagesList.Add(new Message
+        {
+            Method = GiftNormalizer.WebcastGiftMethod,
+            Payload = gift.ToByteString()
+        });
+        var frame = new PushFrame
+        {
+            PayloadType = "msg",
+            PayloadEncoding = "",
+            Payload = ByteString.CopyFrom(response.ToByteArray())
+        };
+        return frame.ToByteArray();
+    }
+
+    private sealed class ScriptedHandler : HttpMessageHandler
+    {
+        private readonly Func<HttpRequestMessage, HttpResponseMessage> _handler;
+        public ScriptedHandler(Func<HttpRequestMessage, HttpResponseMessage> handler) => _handler = handler;
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            => Task.FromResult(_handler(request));
+    }
+}

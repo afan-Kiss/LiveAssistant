@@ -5,20 +5,18 @@ using LiveAssistant.Models;
 namespace LiveAssistant.Services;
 
 /// <summary>
-/// 礼物由管理员账号登录的抖音 Sidecar 采集，不限制主播身份。
+/// 礼物业务：积分 / 点歌资格。采集由 <see cref="GiftCollectorService"/> 负责。
 /// </summary>
 public sealed class GiftService : IDisposable
 {
     private readonly ConfigManager _config;
-    private readonly DouyinService _douyin;
     private readonly GiftRepository _gifts;
     private readonly UserRepository _users;
     private readonly UserLevelService _levels;
     private readonly GiftRuleRepository _giftRules;
     private readonly LogService _log;
     private readonly SystemMessageService _system;
-    private CancellationTokenSource? _cts;
-    private int _after;
+    private string _webRid = "";
 
     public event Action<GiftEvent>? GiftReceived;
 
@@ -32,8 +30,8 @@ public sealed class GiftService : IDisposable
         LogService log,
         SystemMessageService system)
     {
+        _ = douyin; // 保留构造签名，避免大规模 DI 改动
         _config = config;
-        _douyin = douyin;
         _gifts = gifts;
         _users = users;
         _levels = levels;
@@ -42,106 +40,84 @@ public sealed class GiftService : IDisposable
         _system = system;
     }
 
+    /// <summary>绑定当前直播间短号（供 EventId 兜底）。</summary>
+    public void BindRoom(string webRid)
+    {
+        _webRid = webRid?.Trim() ?? "";
+    }
+
+    /// <summary>兼容旧调用：仅绑定房间，不再轮询 Sidecar gift/feed。</summary>
     public void Start(string webRid)
     {
-        Stop();
-        _after = 0;
-        _cts = new CancellationTokenSource();
-        _ = Task.Run(() => PollLoopAsync(webRid, _cts.Token));
-        _log.GiftInfo("礼物轮询已启动（管理员账号 Sidecar 采集）");
+        BindRoom(webRid);
+        _log.GiftInfo("GiftService 已绑定房间（礼物采集改由 GiftCollector）");
     }
 
     public void Stop()
     {
-        _cts?.Cancel();
-        _cts = null;
+        // 采集停止由 GiftCollectorService 负责
     }
 
-    public void HandleGiftEvent(GiftEvent gift)
+    public bool HandleGiftEvent(GiftEvent gift)
     {
+        if (string.IsNullOrWhiteSpace(gift.EventId))
+        {
+            gift.EventId = GiftEvent.BuildEventId(
+                _webRid, gift.Sequence, gift.UserId, gift.GiftId, gift.GiftName, gift.Count,
+                gift.Time.ToString("O"));
+        }
+
+        if (_gifts.ExistsByEventId(gift.EventId))
+        {
+            _log.LogGiftDuplicate(gift.Nickname, gift.GiftName, gift.EventId, "事件已存在");
+            return false;
+        }
+
         var before = _users.GetUser(gift.UserId)?.Points ?? 0;
         var rule = _giftRules.FindByGift(gift.GiftName, gift.GiftId);
         var points = (rule?.Points ?? (gift.Value * _config.Settings.Gift.PointsPerValue)) * gift.Count;
+        var pointsAfter = before + points;
 
-        gift.Id = _gifts.Insert(gift, points, before + points);
+        if (!_gifts.TryInsert(gift, points, pointsAfter, out var id))
+        {
+            _log.LogGiftDuplicate(gift.Nickname, gift.GiftName, gift.EventId, "插入冲突");
+            return false;
+        }
+
+        gift.Id = id;
         if (points > 0)
         {
             _users.AddPoints(gift.UserId, gift.Nickname, points);
             _levels.RefreshUserLevel(gift.UserId);
         }
 
-        var after = _users.GetUser(gift.UserId)?.Points ?? before + points;
+        ApplySongPermission(gift, rule);
+
+        var after = _users.GetUser(gift.UserId)?.Points ?? pointsAfter;
         _log.LogGift(gift.UserId, gift.Nickname, gift.GiftName, gift.Count, points, after);
         _system.Add($"礼物: {gift.Nickname} 送出 {gift.GiftName}×{gift.Count} (+{points}积分)");
         GiftReceived?.Invoke(gift);
+        return true;
     }
 
-    private async Task PollLoopAsync(string webRid, CancellationToken ct)
+    private void ApplySongPermission(GiftEvent gift, GiftRule? rule)
     {
-        while (!ct.IsCancellationRequested)
+        if (rule == null)
         {
-            try
-            {
-                var feed = await _douyin.PollGiftAsync(webRid, _after, 50, ct);
-                if (feed?.Items != null)
-                {
-                    _after = feed.GiftCount;
-                    foreach (var raw in feed.Items)
-                    {
-                        var gift = MapGift(raw);
-                        if (gift != null)
-                        {
-                            HandleGiftEvent(gift);
-                        }
-                    }
-                }
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                _log.GiftWarn($"礼物轮询异常: {ex.Message}");
-                _log.Error("gift", "礼物轮询异常", ex);
-            }
-
-            try
-            {
-                await Task.Delay(_config.Settings.Gift.PollIntervalMs, ct);
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-        }
-    }
-
-    private static GiftEvent? MapGift(DouyinGiftMessage raw)
-    {
-        var userId = raw.User?.UserId ?? raw.UserId ?? "";
-        if (string.IsNullOrWhiteSpace(userId))
-        {
-            return null;
+            return;
         }
 
-        var time = DateTime.Now;
-        if (!string.IsNullOrWhiteSpace(raw.Time) && DateTime.TryParse(raw.Time, out var parsed))
+        var perm = rule.EffectiveSongPermissionCount();
+        if (perm == -1)
         {
-            time = parsed;
+            _users.SetSongPermissionUnlimited(gift.UserId, true);
+            return;
         }
 
-        return new GiftEvent
+        if (perm > 0)
         {
-            UserId = userId,
-            Nickname = raw.User?.Nickname ?? raw.Nickname ?? "",
-            GiftId = raw.GiftId ?? "",
-            GiftName = raw.GiftName ?? "礼物",
-            Count = raw.Count <= 0 ? 1 : raw.Count,
-            Value = raw.Value,
-            Time = time,
-            CreatedAt = time
-        };
+            _users.AddSongPermissionCredits(gift.UserId, perm * gift.Count);
+        }
     }
 
     public void Dispose() => Stop();

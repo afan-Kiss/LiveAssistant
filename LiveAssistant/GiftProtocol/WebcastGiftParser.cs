@@ -85,30 +85,56 @@ public static class WebcastGiftParser
     }
 
     /// <summary>
+    /// 解析 im/fetch HTTP 响应体：可能是 gzip、PushFrame 或裸 Response。
+    /// 仅提取 WebcastGiftMessage。
+    /// </summary>
+    public static ParseResult ParseImFetchBody(byte[] body)
+    {
+        if (body == null || body.Length == 0)
+        {
+            return ParseResult.Fail("empty im/fetch body");
+        }
+
+        try
+        {
+            body = MaybeGunzip(body, null);
+        }
+        catch (InvalidDataException)
+        {
+            // 非 gzip 时保留原字节
+        }
+
+        if (TryParsePushFrame(body, out var frame, out _) && frame != null && frame.Payload.Length > 0)
+        {
+            if (string.Equals(frame.PayloadType, "hb", StringComparison.OrdinalIgnoreCase))
+            {
+                return ParseResult.Ok(Array.Empty<GiftMessage>(), frame, null);
+            }
+
+            if (TryParseResponse(frame.Payload.ToByteArray(), frame.PayloadEncoding, out var nested, out var nestedErr) && nested != null)
+            {
+                return ParseResult.Ok(ExtractGifts(nested), frame, nested);
+            }
+
+            return ParseResult.Fail(nestedErr ?? "response parse failed", frame);
+        }
+
+        if (TryParseResponse(body, null, out var response, out var error) && response != null)
+        {
+            return ParseResult.Ok(ExtractGifts(response), null, response);
+        }
+
+        return ParseResult.Fail(error ?? "im/fetch body parse failed");
+    }
+
+    /// <summary>
     /// 解析 PushFrame 字节流中的全部礼物消息（不做连击合并）。
     /// </summary>
     public static ParseResult ParseGiftMessages(byte[] pushFrameBytes)
+        => ParseImFetchBody(pushFrameBytes);
+
+    private static IReadOnlyList<GiftMessage> ExtractGifts(Response response)
     {
-        if (!TryParsePushFrame(pushFrameBytes, out var frame, out var error) || frame == null)
-        {
-            return ParseResult.Fail(error ?? "push frame parse failed");
-        }
-
-        if (string.Equals(frame.PayloadType, "hb", StringComparison.OrdinalIgnoreCase))
-        {
-            return ParseResult.Ok(Array.Empty<GiftMessage>(), frame, null);
-        }
-
-        if (frame.Payload.Length == 0)
-        {
-            return ParseResult.Ok(Array.Empty<GiftMessage>(), frame, null);
-        }
-
-        if (!TryParseResponse(frame.Payload.ToByteArray(), frame.PayloadEncoding, out var response, out error) || response == null)
-        {
-            return ParseResult.Fail(error ?? "response parse failed", frame);
-        }
-
         var gifts = new List<GiftMessage>();
         foreach (var message in response.MessagesList)
         {
@@ -125,7 +151,7 @@ public static class WebcastGiftParser
             gifts.Add(gift);
         }
 
-        return ParseResult.Ok(gifts, frame, response);
+        return gifts;
     }
 
     /// <summary>

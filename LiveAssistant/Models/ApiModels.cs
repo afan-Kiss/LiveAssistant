@@ -115,11 +115,29 @@ public sealed class DouyinRoomData
     [JsonPropertyName("web_rid")]
     public string? WebRid { get; set; }
 
+    [JsonPropertyName("room_id")]
+    public string? RoomId { get; set; }
+
     [JsonPropertyName("title")]
     public string? Title { get; set; }
 
     [JsonPropertyName("status")]
     public int Status { get; set; }
+
+    [JsonPropertyName("user_count")]
+    public int UserCount { get; set; }
+}
+
+public sealed class DouyinCookieStatusData
+{
+    [JsonPropertyName("active")]
+    public string? Active { get; set; }
+
+    [JsonPropertyName("login_ok")]
+    public bool LoginOk { get; set; }
+
+    [JsonPropertyName("login_hint")]
+    public string? LoginHint { get; set; }
 }
 
 public sealed class KugouResponse<T>

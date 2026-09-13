@@ -60,7 +60,8 @@ public sealed class GiftProtocolTests
         Assert.Single(finals);
         Assert.Equal(10, finals[0].Count);
         Assert.Equal(10, finals[0].RepeatCount);
-        Assert.Equal(50, finals[0].Value);
+        Assert.Equal(5, finals[0].Value);
+        Assert.Equal(5, finals[0].DiamondCount);
         Assert.Equal(0, pipeline.Combo.ActiveComboCount);
     }
 
@@ -78,7 +79,7 @@ public sealed class GiftProtocolTests
         Assert.Single(settled);
         Assert.Equal(50, settled[0].Count);
         Assert.Equal(50, settled[0].RepeatCount);
-        Assert.Equal(5000, settled[0].Value);
+        Assert.Equal(100, settled[0].Value);
         Assert.True(settled[0].RepeatEnd);
         Assert.Equal(0, pipeline.Combo.ActiveComboCount);
     }
@@ -94,7 +95,7 @@ public sealed class GiftProtocolTests
         var finals = pipeline.ProcessGiftMessage(end);
         Assert.Single(finals);
         Assert.Equal(100, finals[0].Count);
-        Assert.Equal(52000, finals[0].Value);
+        Assert.Equal(520, finals[0].Value);
         Assert.Equal(520, finals[0].DiamondCount);
     }
 
@@ -159,7 +160,7 @@ public sealed class GiftProtocolTests
         Assert.Equal(5, ev.Count);
         Assert.Equal(5, ev.RepeatCount);
         Assert.Equal(99, ev.DiamondCount);
-        Assert.Equal(495, ev.Value);
+        Assert.Equal(99, ev.Value);
         Assert.Equal("11", ev.GroupId);
         Assert.True(ev.RepeatEnd);
     }

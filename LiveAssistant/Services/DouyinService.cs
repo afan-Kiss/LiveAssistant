@@ -78,6 +78,13 @@ public sealed class DouyinService
             return result?.Ok == true ? result.Data : null;
         }, null);
 
+    public Task<DouyinCookieStatusData?> GetCookieStatusAsync(CancellationToken ct = default)
+        => SafeAsync("cookie_status", async () =>
+        {
+            var result = await HttpJson.GetAsync<DouyinEnvelope<DouyinCookieStatusData>>(_client, "api/cookie", ct);
+            return result?.Ok == true ? result.Data : null;
+        }, null);
+
     public Task<bool> ModSilenceAsync(string webRid, string userId, string action, CancellationToken ct = default)
         => SafeAsync("mod_silence", async () =>
         {
