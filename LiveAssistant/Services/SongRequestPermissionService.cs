@@ -129,6 +129,29 @@ public sealed class SongRequestPermissionService
         return SongRequestPermissionResult.Permit(user);
     }
 
+    public int GetPointsCost(UserProfile user)
+    {
+        if (IsPrivileged(user.Role))
+        {
+            return 0;
+        }
+
+        if (user.SongPermissionUnlimited || user.SongPermissionCredits > 0)
+        {
+            return 0;
+        }
+
+        if (_config.Settings.SongRequestPolicy.Mode != SongRequestPolicyMode.Points)
+        {
+            return 0;
+        }
+
+        var levelPerm = _levelPerms.GetForLevel(user.Level);
+        return levelPerm?.PointsCostOverride >= 0
+            ? levelPerm.PointsCostOverride
+            : _config.Settings.SongRequestPolicy.PointsCost;
+    }
+
     public int GetQueuePriority(UserProfile user)
     {
         if (IsPrivileged(user.Role))

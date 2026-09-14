@@ -16,6 +16,8 @@ public sealed class GiftService : IDisposable
     private readonly GiftRuleRepository _giftRules;
     private readonly LogService _log;
     private readonly SystemMessageService _system;
+    private readonly ReplyService? _reply;
+    private readonly ReplyQueue? _replyQueue;
     private string _webRid = "";
 
     public event Action<GiftEvent>? GiftReceived;
@@ -28,7 +30,9 @@ public sealed class GiftService : IDisposable
         UserLevelService levels,
         GiftRuleRepository giftRules,
         LogService log,
-        SystemMessageService system)
+        SystemMessageService system,
+        ReplyService? reply = null,
+        ReplyQueue? replyQueue = null)
     {
         _ = douyin;
         _config = config;
@@ -38,6 +42,8 @@ public sealed class GiftService : IDisposable
         _giftRules = giftRules;
         _log = log;
         _system = system;
+        _reply = reply;
+        _replyQueue = replyQueue;
     }
 
     public void BindRoom(string webRid)
@@ -130,8 +136,35 @@ public sealed class GiftService : IDisposable
             $"pointsDelta={points} pointsAfter={after} rule={(rule?.GiftName ?? "-")}");
         _log.LogGift(gift.UserId, gift.Nickname, gift.GiftName, gift.Count, points, after);
         _system.Add($"礼物: {gift.Nickname} 送出 {gift.GiftName}×{gift.Count} (+{points}积分)");
+        TrySendGiftThanks(gift);
         GiftReceived?.Invoke(gift);
         return true;
+    }
+
+    private void TrySendGiftThanks(GiftEvent gift)
+    {
+        if (_replyQueue == null || _reply == null || string.IsNullOrWhiteSpace(_webRid))
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(gift.UserId))
+        {
+            return;
+        }
+
+        var msg = _reply.Render("giftThanks", new Dictionary<string, string>
+        {
+            ["name"] = gift.Nickname,
+            ["gift"] = gift.GiftName,
+            ["count"] = gift.Count.ToString()
+        });
+        if (string.IsNullOrWhiteSpace(msg))
+        {
+            msg = $"感谢送出 {gift.GiftName}×{gift.Count}";
+        }
+
+        _replyQueue.EnqueueMention(_webRid, gift.UserId, msg);
     }
 
     private bool TryValidateAmounts(GiftEvent gift, out string reason)

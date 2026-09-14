@@ -82,7 +82,10 @@ public sealed class KugouService
     }
 
     /// <summary>每日自动领取概念版试用会员（对齐 MoeKoeMusic getVip）。</summary>
-    public async Task<KugouVipClaimResult?> TryAutoClaimVipAsync(CancellationToken ct = default)
+    public Task<KugouVipClaimResult?> TryAutoClaimVipAsync(CancellationToken ct = default)
+        => TryAutoClaimVipAsync(force: false, ct);
+
+    public async Task<KugouVipClaimResult?> TryAutoClaimVipAsync(bool force, CancellationToken ct = default)
     {
         if (!_settings.AutoClaimVip || !_lastLoggedIn)
         {
@@ -90,13 +93,13 @@ public sealed class KugouService
         }
 
         var today = DateTime.Now.ToString("yyyy-MM-dd");
-        if (_lastVipClaimDate == today)
+        if (!force && _lastVipClaimDate == today)
         {
             return null;
         }
 
         var result = await ClaimDailyVipAsync(ct);
-        if (result != null)
+        if (result != null && !force)
         {
             _lastVipClaimDate = today;
         }
@@ -200,49 +203,38 @@ public sealed class KugouService
         CancellationToken ct)
     {
         await EnsureLoginReadyAsync(forceRefresh: false, ct);
+        var previewAllowed = allowPreviewFallback && CanAcceptPreview();
 
         for (var attempt = 0; attempt < 2; attempt++)
         {
             if (attempt > 0)
             {
-                await TryAutoClaimVipAsync(ct);
+                await TryAutoClaimVipAsync(force: true, ct);
                 await RefreshLoginStatusAsync(ct);
+                previewAllowed = allowPreviewFallback && CanAcceptPreview();
             }
 
-            var result = await PostSongUrlAsync(ctx, "auto", ct);
-            if (result?.Code != 0 || string.IsNullOrWhiteSpace(result.Data?.Url))
+            foreach (var mode in BuildUrlModes(previewAllowed))
             {
-                _log.KugouWarn($"取链失败 mode=auto: {result?.Msg ?? "无响应"} ({Label(ctx)})");
-                continue;
-            }
-
-            if (ShouldRejectPreview(result.Data))
-            {
-                if (attempt == 0)
+                var result = await PostSongUrlAsync(ctx, mode, ct);
+                if (result?.Code != 0 || string.IsNullOrWhiteSpace(result.Data?.Url))
                 {
-                    _log.KugouWarn($"登录态仍返回试听链，刷新登录后重试: {Label(ctx)}");
+                    _log.KugouWarn($"取链失败 mode={mode}: {result?.Msg ?? "无响应"} ({Label(ctx)})");
                     continue;
                 }
 
-                _log.KugouWarn($"完整音不可用，降级试听: {Label(ctx)}");
+                if (ShouldRejectPreview(result.Data))
+                {
+                    _log.KugouWarn($"登录态仍返回试听链 mode={mode}: {Label(ctx)}");
+                    continue;
+                }
+
+                if (result.Data.IsPreview)
+                {
+                    _log.KugouWarn($"未登录或会员曲，已降级试听: {Label(ctx)}");
+                }
+
                 return result.Data;
-            }
-
-            if (result.Data.IsPreview)
-            {
-                _log.KugouWarn($"未登录或会员曲，已降级试听: {Label(ctx)}");
-            }
-
-            return result.Data;
-        }
-
-        if (allowPreviewFallback)
-        {
-            var preview = await PostSongUrlAsync(ctx, "preview", ct);
-            if (preview?.Code == 0 && !string.IsNullOrWhiteSpace(preview.Data?.Url))
-            {
-                _log.KugouWarn($"完整音取链失败，已改用试听: {Label(ctx)}");
-                return preview.Data;
             }
         }
 
@@ -259,7 +251,7 @@ public sealed class KugouService
 
                 var alt = await GetPlayUrlCoreAsync(
                     KugouSongContext.FromSong(song, ctx.Keyword),
-                    allowPreviewFallback: true,
+                    allowPreviewFallback: previewAllowed,
                     tryAlternates: false,
                     ct);
                 if (alt != null)
@@ -272,8 +264,76 @@ public sealed class KugouService
         return null;
     }
 
+    private bool CanAcceptPreview()
+        => !_settings.RequireFullPlayback || !_lastLoggedIn;
+
+    private IEnumerable<string> BuildUrlModes(bool includePreview)
+    {
+        yield return "auto";
+        yield return "full";
+        if (includePreview)
+        {
+            yield return "preview";
+        }
+    }
+
     private bool ShouldRejectPreview(KugouUrlData data)
         => _settings.RequireFullPlayback && _lastLoggedIn && data.IsPreview;
+
+    /// <summary>搜索候选，按歌手去重，最多返回 displayLimit 个。</summary>
+    public async Task<List<SongSearchCandidate>> SearchCandidatesAsync(
+        string keyword,
+        int displayLimit = 3,
+        CancellationToken ct = default)
+    {
+        var songs = await SearchAsync(keyword, 1, 30, ct);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var list = new List<SongSearchCandidate>();
+        foreach (var song in songs)
+        {
+            if (string.IsNullOrWhiteSpace(song.Hash) && string.IsNullOrWhiteSpace(song.SongName))
+            {
+                continue;
+            }
+
+            var candidate = SongSearchCandidate.FromKugou(song, keyword);
+            if (string.IsNullOrWhiteSpace(candidate.Artist))
+            {
+                candidate.Artist = "未知歌手";
+            }
+
+            if (!seen.Add(candidate.Artist))
+            {
+                continue;
+            }
+
+            list.Add(candidate);
+            if (list.Count >= displayLimit)
+            {
+                break;
+            }
+        }
+
+        return list;
+    }
+
+    public Task<TrackInfo?> ResolveCandidateAsync(
+        SongSearchCandidate candidate,
+        string? requester = null,
+        CancellationToken ct = default)
+    {
+        var song = new KugouSongItem
+        {
+            Hash = candidate.Hash,
+            SongName = candidate.SongName,
+            Artist = candidate.Artist,
+            SongId = candidate.SongId,
+            Id = candidate.SongId,
+            AlbumId = candidate.AlbumId,
+            AlbumAudioId = candidate.AlbumAudioId
+        };
+        return ResolveFromSongAsync(song, candidate.SongName, isRandom: false, requester, ct);
+    }
 
     public async Task<TrackInfo?> ResolveTrackAsync(string keyword, CancellationToken ct = default)
     {

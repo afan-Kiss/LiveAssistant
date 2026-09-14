@@ -21,8 +21,14 @@ KUGOU_EXE = "酷狗api_v1.5.exe"
 
 def copy_file(src: Path, dst: Path) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dst)
-    print(f"  {src.name} -> {dst}")
+    try:
+        shutil.copy2(src, dst)
+        print(f"  {src.name} -> {dst}")
+    except PermissionError:
+        tmp = dst.with_suffix(dst.suffix + ".tmp")
+        shutil.copy2(src, tmp)
+        tmp.replace(dst)
+        print(f"  {src.name} -> {dst} (replaced locked file)")
 
 
 def copy_tree(src: Path, dst: Path) -> None:
@@ -36,14 +42,21 @@ def merge_data(src: Path, dst: Path) -> None:
     if not src.is_dir():
         return
     dst.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    skipped = 0
     for item in src.rglob("*"):
         if item.is_dir():
             continue
         rel = item.relative_to(src)
         target = dst / rel
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(item, target)
-    print(f"  merged {src}/ -> {dst}/")
+        try:
+            shutil.copy2(item, target)
+            copied += 1
+        except OSError:
+            skipped += 1
+    note = f" ({skipped} locked, kept existing)" if skipped else ""
+    print(f"  merged {src}/ -> {dst}/ ({copied} files{note})")
 
 
 def sync_to(target: Path, douyin_src: Path, kugou_src: Path) -> None:
@@ -61,9 +74,21 @@ def sync_to(target: Path, douyin_src: Path, kugou_src: Path) -> None:
         raise FileNotFoundError(f"缺少酷狗 kgapijs: {kgapijs}")
 
     print(f"sync -> {target}")
-    copy_file(douyin_exe, target / DOUYIN_EXE)
-    copy_file(kugou_exe, target / KUGOU_EXE)
-    copy_tree(kgapijs, target / "kgapijs")
+    errors: list[str] = []
+    for label, action, required in (
+        ("douyin", lambda: copy_file(douyin_exe, target / DOUYIN_EXE), target / DOUYIN_EXE),
+        ("kugou", lambda: copy_file(kugou_exe, target / KUGOU_EXE), target / KUGOU_EXE),
+        ("kgapijs", lambda: copy_tree(kgapijs, target / "kgapijs"), target / "kgapijs"),
+    ):
+        try:
+            action()
+        except OSError as exc:
+            if required.exists():
+                print(f"  WARN {label}: {exc} (kept existing)")
+            else:
+                errors.append(f"{label}: {exc}")
+    if errors:
+        raise OSError("; ".join(errors))
 
     data_dst = target / "data"
     merge_data(douyin_src / "data", data_dst)

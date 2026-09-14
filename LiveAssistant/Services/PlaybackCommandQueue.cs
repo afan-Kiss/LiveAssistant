@@ -28,6 +28,7 @@ public sealed class PlaybackCommandQueue : IDisposable
     private readonly object _enqueueLock = new();
     private bool _skipAdvancePending;
     private int _failContinueDepth;
+    private volatile bool _playbackStarting;
     private readonly Stack<QueueItem> _playbackHistory = new();
     private readonly Func<QueueItem, CancellationToken, Task<TrackInfo?>>? _resolveFresh;
     private readonly Func<TrackInfo, bool, CancellationToken, Task<bool>>? _playAsync;
@@ -222,7 +223,7 @@ public sealed class PlaybackCommandQueue : IDisposable
                 }
                 return;
             case PlaybackCommandKind.EnsurePlaying:
-                if (_playback.State != Models.PlaybackState.Idle)
+                if (ShouldDeferEnsurePlaying())
                 {
                     return;
                 }
@@ -399,12 +400,9 @@ public sealed class PlaybackCommandQueue : IDisposable
             item.AlbumAudioId = track.AlbumAudioId;
         }
 
-        _queue.SetNowPlaying(item);
         PushHistory(item);
 
-        var ok = _playAsync != null
-            ? await _playAsync(track, isRandomFill, ct)
-            : await _playback.PlayAsync(track, isRandomFill, ct);
+        var ok = await StartPlaybackAsync(track, isRandomFill, ct);
         _log.LogPlayback(track.SongName, source, item.Nickname, track.PlayUrl, ok,
             ok ? null : "播放器启动失败");
 
@@ -468,11 +466,8 @@ public sealed class PlaybackCommandQueue : IDisposable
             PlayUrl = track.PlayUrl,
             IsRandom = true
         };
-        _queue.BeginPlaying(item);
 
-        var ok = _playAsync != null
-            ? await _playAsync(track, true, ct)
-            : await _playback.PlayAsync(track, isRandomFill: true, ct);
+        var ok = await StartPlaybackAsync(track, isRandomFill, ct);
         _log.LogPlayback(track.SongName, "random", "随机", track.PlayUrl, ok,
             ok ? null : "播放器启动失败");
 
@@ -483,10 +478,43 @@ public sealed class PlaybackCommandQueue : IDisposable
             return;
         }
 
+        _queue.SetNowPlaying(item);
+        PushHistory(item);
         _random.RecordPlayed(track.SongId, track.Hash);
         _system.Add(isRandomFill
             ? $"随机补位: {track.SongName} - {track.Artist}"
             : $"随机播放: {track.SongName} - {track.Artist}");
+    }
+
+    private bool ShouldDeferEnsurePlaying()
+    {
+        if (_playbackStarting)
+        {
+            return true;
+        }
+
+        if (_playback.State != Models.PlaybackState.Idle)
+        {
+            return true;
+        }
+
+        // DequeueNext 已占位或随机曲正在播：新点歌应排队等待
+        return _queue.NowPlaying != null;
+    }
+
+    private async Task<bool> StartPlaybackAsync(TrackInfo track, bool isRandomFill, CancellationToken ct)
+    {
+        _playbackStarting = true;
+        try
+        {
+            return _playAsync != null
+                ? await _playAsync(track, isRandomFill, ct)
+                : await _playback.PlayAsync(track, isRandomFill: isRandomFill, ct);
+        }
+        finally
+        {
+            _playbackStarting = false;
+        }
     }
 
     /// <summary>

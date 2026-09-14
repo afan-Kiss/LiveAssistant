@@ -18,10 +18,13 @@ public sealed class DanmakuDeduplicator
     private readonly string? _path;
     private readonly object _gate = new();
     private readonly Dictionary<string, DateTime> _seen = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DateTime> _contentSeen = new(StringComparer.Ordinal);
+    private readonly TimeSpan _contentWindow;
 
-    public DanmakuDeduplicator(string? dataDirectory = null, TimeSpan? ttl = null)
+    public DanmakuDeduplicator(string? dataDirectory = null, TimeSpan? ttl = null, TimeSpan? contentWindow = null)
     {
         _ttl = ttl ?? TimeSpan.FromMinutes(30);
+        _contentWindow = contentWindow ?? TimeSpan.FromSeconds(20);
         if (!string.IsNullOrWhiteSpace(dataDirectory))
         {
             Directory.CreateDirectory(dataDirectory);
@@ -64,6 +67,31 @@ public sealed class DanmakuDeduplicator
 
             _seen[id] = now;
             PersistLocked(now);
+            return true;
+        }
+    }
+
+    /// <summary>同一用户+内容短时去重（双 feed 不同 msg_id 时）。</summary>
+    public bool TryAdmitUserContent(string? userId, string? content, DateTime? utcNow = null)
+    {
+        var uid = userId?.Trim() ?? "";
+        var text = content?.Trim() ?? "";
+        if (uid.Length == 0 || text.Length == 0)
+        {
+            return true;
+        }
+
+        var key = $"c:{uid}|{text}";
+        var now = utcNow ?? DateTime.UtcNow;
+        lock (_gate)
+        {
+            PruneContentLocked(now);
+            if (_contentSeen.TryGetValue(key, out var seenAt) && now - seenAt < _contentWindow)
+            {
+                return false;
+            }
+
+            _contentSeen[key] = now;
             return true;
         }
     }
@@ -167,6 +195,19 @@ public sealed class DanmakuDeduplicator
         foreach (var key in expired)
         {
             _seen.Remove(key);
+        }
+    }
+
+    private void PruneContentLocked(DateTime now)
+    {
+        if (_contentSeen.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var key in _contentSeen.Where(kv => now - kv.Value >= _contentWindow).Select(kv => kv.Key).ToList())
+        {
+            _contentSeen.Remove(key);
         }
     }
 

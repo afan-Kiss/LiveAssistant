@@ -6,10 +6,23 @@ namespace LiveAssistant;
 /// </summary>
 internal static class AppPaths
 {
-    public static string ExeDirectory { get; } = ResolveExeDirectory();
+    private static string? _cachedExeDirectory;
+
+    public static string ExeDirectory => ResolveExeDirectory();
 
     private static string ResolveExeDirectory()
     {
+        var testDir = Environment.GetEnvironmentVariable("LA_TEST_EXE_DIR");
+        if (!string.IsNullOrWhiteSpace(testDir))
+        {
+            return Path.GetFullPath(testDir);
+        }
+
+        if (_cachedExeDirectory != null)
+        {
+            return _cachedExeDirectory;
+        }
+
         try
         {
             var processPath = Environment.ProcessPath;
@@ -18,7 +31,8 @@ internal static class AppPaths
                 var dir = Path.GetDirectoryName(processPath);
                 if (!string.IsNullOrWhiteSpace(dir))
                 {
-                    return Path.GetFullPath(dir);
+                    _cachedExeDirectory = Path.GetFullPath(dir);
+                    return _cachedExeDirectory;
                 }
             }
         }
@@ -27,6 +41,7 @@ internal static class AppPaths
             // fall through
         }
 
-        return Path.GetFullPath(AppContext.BaseDirectory);
+        _cachedExeDirectory = Path.GetFullPath(AppContext.BaseDirectory);
+        return _cachedExeDirectory;
     }
 }

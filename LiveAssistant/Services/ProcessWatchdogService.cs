@@ -17,9 +17,12 @@ public sealed class ProcessWatchdogService
     }
 
     public IReadOnlyList<string> GetMissingRequiredFiles()
-        => SidecarLocator.GetMissingRequiredFiles(
-            _config.Settings.Douyin.DouyinExePath,
-            _config.Settings.Kugou.KugouExePath);
+    {
+        var root = AppPaths.ExeDirectory;
+        var douyin = SidecarLocator.ResolveDouyin(_config.Settings.Douyin.DouyinExePath, root);
+        var kugou = SidecarLocator.ResolveKugou(_config.Settings.Kugou.KugouExePath, root);
+        return SidecarLocator.GetMissingRequiredFiles(douyin, kugou);
+    }
 
     public async Task EnsureSidecarsAsync(
         Func<Task<bool>> douyinHealth,

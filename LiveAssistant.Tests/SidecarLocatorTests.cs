@@ -89,6 +89,36 @@ public sealed class SidecarLocatorTests
     }
 
     [Fact]
+    public void Bootstrap_CopiesKugouFromRepoSidecarsFolder()
+    {
+        var repo = CreateTempRoot();
+        var publish = Path.Combine(repo, "publish", "app");
+        var donor = Path.Combine(repo, "sidecars");
+        Directory.CreateDirectory(publish);
+        Directory.CreateDirectory(donor);
+        File.WriteAllBytes(Path.Combine(donor, SidecarLocator.PreferredDouyinFileName), new byte[] { 1 });
+        File.WriteAllBytes(Path.Combine(donor, SidecarLocator.PreferredKugouFileName), new byte[] { 2 });
+        Directory.CreateDirectory(Path.Combine(donor, SidecarLocator.KugouJsFolderName));
+        File.WriteAllText(Path.Combine(donor, SidecarLocator.KugouJsFolderName, "index.js"), "ok");
+
+        Environment.SetEnvironmentVariable("LA_TEST_EXE_DIR", publish);
+        try
+        {
+            SidecarBootstrap.EnsureReady();
+
+            var douyin = SidecarLocator.ResolveDouyin("", publish);
+            var kugou = SidecarLocator.ResolveKugou("", publish);
+            var missing = SidecarLocator.GetMissingRequiredFiles(douyin, kugou);
+            Assert.Empty(missing);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("LA_TEST_EXE_DIR", null);
+            Directory.Delete(repo, true);
+        }
+    }
+
+    [Fact]
     public void IgnoresFudaiAndUnmannedLiveExe()
     {
         Assert.True(SidecarLocator.LooksLikeFudaiOrUnrelated("福袋助手.exe"));

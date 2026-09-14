@@ -1,4 +1,5 @@
 using LiveAssistant.Models;
+using LiveAssistant.Utils;
 
 namespace LiveAssistant.Services;
 
@@ -196,6 +197,18 @@ public sealed class DanmakuService : IDisposable
                     continue;
                 }
 
+                if (ShouldIgnoreBotMessage(nickname, content))
+                {
+                    _log.DouyinInfo($"[danmaku-bot] drop self/bot content={Truncate(content)}");
+                    continue;
+                }
+
+                if (!_deduper.TryAdmitUserContent(userId, content))
+                {
+                    _log.DouyinInfo($"[danmaku-dedupe] drop duplicate content user={userId}");
+                    continue;
+                }
+
                 var item = new DanmakuItem
                 {
                     MsgId = msgId,
@@ -212,6 +225,23 @@ public sealed class DanmakuService : IDisposable
                 _log.Error("douyin", "处理弹幕项异常", ex);
             }
         }
+    }
+
+    private bool ShouldIgnoreBotMessage(string nickname, string content)
+    {
+        if (SongNameParser.IsBotReply(content))
+        {
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(DouyinLoginNickname)
+            && !DouyinLoginNickname.Equals("-", StringComparison.Ordinal)
+            && nickname.Equals(DouyinLoginNickname, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return false;
     }
 
     private static string ResolveMsgId(DouyinDanmakuMessage msg)

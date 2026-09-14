@@ -47,6 +47,15 @@ static class Program
             MessageBox.Show($"释放内置配置失败: {ex.Message}", AppBranding.DisplayName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
 
+        try
+        {
+            SidecarBootstrap.EnsureReady();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"补齐 Sidecar 文件失败: {ex.Message}", AppBranding.DisplayName, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
         LiveAppHost? host = null;
         try
         {

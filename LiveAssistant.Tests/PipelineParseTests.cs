@@ -9,6 +9,14 @@ namespace LiveAssistant.Tests;
 public sealed class PipelineParseTests
 {
     [Fact]
+    public void SkipSongParser_AcceptsCommonCommands()
+    {
+        Assert.True(SkipSongParser.TryParse("切歌"));
+        Assert.True(SkipSongParser.TryParse("下一首"));
+        Assert.False(SkipSongParser.TryParse("切歌 泡沫"));
+    }
+
+    [Fact]
     public void PointsQueryParser_AcceptsCommonFormats()
     {
         Assert.True(PointsQueryParser.TryParse("查积分"));
@@ -23,12 +31,18 @@ public sealed class PipelineParseTests
     {
         Assert.True(SongNameParser.TryParse("点歌 泡沫", out var a));
         Assert.Equal("泡沫", a);
+        Assert.True(SongNameParser.TryParse("点歌泡沫", out var noSpace));
+        Assert.Equal("泡沫", noSpace);
+        Assert.True(SongNameParser.TryParse("点歌双截棍", out var noSpace2));
+        Assert.Equal("双截棍", noSpace2);
         Assert.True(SongNameParser.TryParse("点歌:晴天", out var b));
         Assert.Equal("晴天", b);
         Assert.True(SongNameParser.TryParse("点歌：后来", out var c));
         Assert.Equal("后来", c);
         Assert.False(SongNameParser.TryParse("点歌", out _));
         Assert.False(SongNameParser.TryParse("我想点歌 泡沫", out _));
+        Assert.False(SongNameParser.TryParse("点歌成功《泡沫》", out _));
+        Assert.True(SongNameParser.IsBotReply("点歌成功《泡沫》"));
     }
 
     [Fact]

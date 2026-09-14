@@ -80,14 +80,14 @@ public sealed class KugouServiceTests
     }
 
     [Fact]
-    public async Task GetPlayUrl_WhenAutoFails_FallsBackToPreview()
+    public async Task GetPlayUrl_WhenAutoFails_FallsBackToPreview_WhenNotLoggedIn()
     {
         var handler = new StubHandler(req =>
         {
             var path = req.RequestUri?.AbsolutePath ?? "";
             if (path.Contains("login/status", StringComparison.Ordinal))
             {
-                return Json(new { code = 0, data = new { logged_in = true, nickname = "test" } });
+                return Json(new { code = 0, data = new { logged_in = false } });
             }
 
             if (path.Contains("song/url", StringComparison.Ordinal))
@@ -117,7 +117,76 @@ public sealed class KugouServiceTests
     }
 
     [Fact]
-    public async Task GetPlayUrl_AlternateResult_StillFallsBackToPreview()
+    public async Task GetPlayUrl_WhenLoggedInAndFullRequired_DoesNotFallBackToPreview()
+    {
+        var handler = new StubHandler(req =>
+        {
+            var path = req.RequestUri?.AbsolutePath ?? "";
+            if (path.Contains("login/status", StringComparison.Ordinal))
+            {
+                return Json(new { code = 0, data = new { logged_in = true, nickname = "test" } });
+            }
+
+            if (path.Contains("song/url", StringComparison.Ordinal))
+            {
+                return Json(new { code = 502, msg = "got preview url for full request" });
+            }
+
+            return Json(new { code = 1, msg = "unknown" });
+        });
+
+        var svc = CreateService(handler);
+        var url = await svc.GetPlayUrlAsync("paomo-hash", "泡沫", CancellationToken.None);
+
+        Assert.Null(url);
+    }
+
+    [Fact]
+    public async Task GetPlayUrl_TriesFullModeAfterAuto()
+    {
+        var modes = new List<string>();
+        var handler = new StubHandler(req =>
+        {
+            var path = req.RequestUri?.AbsolutePath ?? "";
+            if (path.Contains("login/status", StringComparison.Ordinal))
+            {
+                return Json(new { code = 0, data = new { logged_in = true, nickname = "test" } });
+            }
+
+            if (path.Contains("song/url", StringComparison.Ordinal))
+            {
+                var body = req.Content?.ReadAsStringAsync().GetAwaiter().GetResult() ?? "";
+                if (body.Contains("\"mode\":\"auto\"", StringComparison.Ordinal))
+                {
+                    modes.Add("auto");
+                    return Json(new { code = 502, msg = "auto failed" });
+                }
+
+                if (body.Contains("\"mode\":\"full\"", StringComparison.Ordinal))
+                {
+                    modes.Add("full");
+                    return Json(new
+                    {
+                        code = 0,
+                        data = new { url = "http://fs/yp/f_paomo.mp3", is_preview = false }
+                    });
+                }
+            }
+
+            return Json(new { code = 1, msg = "unknown" });
+        });
+
+        var svc = CreateService(handler);
+        var url = await svc.GetPlayUrlAsync("paomo-hash", "泡沫", CancellationToken.None);
+
+        Assert.NotNull(url);
+        Assert.False(url!.IsPreview);
+        Assert.Contains("auto", modes);
+        Assert.Contains("full", modes);
+    }
+
+    [Fact]
+    public async Task GetPlayUrl_AlternateResult_StillFallsBackToPreview_WhenNotLoggedIn()
     {
         var primaryHash = "primary-hash";
         var altHash = "alt-hash";
@@ -126,7 +195,7 @@ public sealed class KugouServiceTests
             var path = req.RequestUri?.AbsolutePath ?? "";
             if (path.Contains("login/status", StringComparison.Ordinal))
             {
-                return Json(new { code = 0, data = new { logged_in = true, nickname = "test" } });
+                return Json(new { code = 0, data = new { logged_in = false } });
             }
 
             if (path.Contains("search", StringComparison.Ordinal))

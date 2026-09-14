@@ -93,7 +93,21 @@ def main() -> int:
     sync_sidecars = ROOT / "scripts" / "sync-sidecars.py"
     if sync_sidecars.exists():
         print("sync sidecars...")
-        subprocess.run([sys.executable, str(sync_sidecars)], check=False)
+        subprocess.run(
+            ["taskkill", "/F", "/IM", "LiveAssistant.exe", "/T"],
+            capture_output=True,
+        )
+        subprocess.run(
+            ["taskkill", "/F", "/IM", "酷狗api_v1.5.exe", "/T"],
+            capture_output=True,
+        )
+        subprocess.run(
+            ["taskkill", "/F", "/IM", "抖音直播弹幕助手.exe", "/T"],
+            capture_output=True,
+        )
+        result = subprocess.run([sys.executable, str(sync_sidecars)])
+        if result.returncode != 0:
+            print("WARN: sidecar sync failed; run scripts/sync-sidecars.py manually", file=sys.stderr)
 
     print(f"OK: {exe}")
     print(f"SIZE_MB: {exe.stat().st_size / 1024 / 1024:.1f}")

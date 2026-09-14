@@ -14,6 +14,8 @@ public sealed class SongRequestPolicySettings
     [JsonConverter(typeof(JsonStringEnumConverter))]
     public SongRequestPolicyMode Mode { get; set; } = SongRequestPolicyMode.Free;
     public int PointsCost { get; set; } = 10;
+    /// <summary>积分点歌模式下，弹幕「切歌」消耗的积分；免费/礼物解锁模式不扣。</summary>
+    public int SkipPointsCost { get; set; } = 20;
     public int GiftUnlockMinPoints { get; set; } = 100;
     public int MinLevel { get; set; }
     public string RequiredGiftName { get; set; } = "";

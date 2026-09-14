@@ -40,6 +40,7 @@ public sealed class LiveAppHost : IDisposable
     private readonly WelcomeService _welcome;
     private readonly KeywordReplyService _keywordReply;
     private readonly PointsQueryService _pointsQuery;
+    private readonly SkipSongService _skipSong;
     private readonly UserLevelService _userLevel;
     private readonly CommandQueueService _commandQueue;
     private readonly BackendSyncService _backendSync;
@@ -113,12 +114,14 @@ public sealed class LiveAppHost : IDisposable
         _permission = new SongRequestPermissionService(
             _config, _users, _queue, songBlacklist, _levelPermRepo, _userLevel, _giftRepo);
         _songRequest = new SongRequestService(_config, _kugou, _queue, _permission, _reply, _replyQueue, _system, _log);
-        _gift = new GiftService(_config, _douyin, _giftRepo, _users, _userLevel, _giftRuleRepo, _log, _system);
+        _gift = new GiftService(_config, _douyin, _giftRepo, _users, _userLevel, _giftRuleRepo, _log, _system, _reply, _replyQueue);
         _giftCollector = new GiftCollectorService(_config, _douyin, _gift, _log, giftRepo: _giftRepo);
         _banVote = new BanVoteService(_config, _banVoteRepo, _users, _douyin, _replyQueue, _reply, _system, _log);
         _welcome = new WelcomeService(_config, _reply, _replyQueue, _system, _welcomeCooldownRepo);
         _keywordReply = new KeywordReplyService(_config, _keywordReplyRepo, new NullAIReplyService());
         _pointsQuery = new PointsQueryService(_users);
+        _skipSong = new SkipSongService(
+            _config, _users, _playback, _queue, _engine, _reply, _replyQueue, _system, _log);
         _commandQueue = new CommandQueueService(new AdminCommandRepository(_db));
         _backendSync = new BackendSyncService(
             _config, _commandQueue, _settingsStore, _playbackCommands, _engine, _queue, _reply, _log);
@@ -289,6 +292,11 @@ public sealed class LiveAppHost : IDisposable
             }
 
             if (_pointsQuery.TryHandle(item, webRid, _reply, _replyQueue))
+            {
+                return;
+            }
+
+            if (_skipSong.TryHandle(item, webRid))
             {
                 return;
             }

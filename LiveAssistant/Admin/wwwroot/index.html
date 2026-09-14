@@ -605,6 +605,8 @@
             <div id="policyPointsBlock" class="form-grid">
               <div class="form-field"><label>每次点歌消耗积分</label>
                 <input id="pCost" type="number" value="${p.pointsCost || 10}"></div>
+              <div class="form-field"><label>弹幕切歌消耗积分</label>
+                <input id="pSkipCost" type="number" value="${p.skipPointsCost ?? 20}"></div>
             </div>
             <div id="policyGiftBlock" class="form-grid">
               <div class="form-field"><label>解锁所需累计积分</label>
@@ -623,7 +625,8 @@
         </div>
         <div class="panel">
           <h3>弹幕指令</h3>
-          <p class="hint">观众发送 <b>查积分</b> / <b>我的积分</b> 可查询自己的积分和等级。回复话术在「回复模板 → 查积分回复」中修改。</p>
+          <p class="hint">点歌流程：<b>点歌 歌名</b> → 多结果时选择歌手（最多展示3位）→ 回复 <b>确定</b> 后才入队。积分模式下会提示所需积分。<br>
+            其他指令：<b>查积分</b> / <b>切歌</b> / <b>下一首</b>。回复话术在「回复模板」中修改。</p>
         </div>`;
       selectPolicyMode(p.mode || 'Free');
     }
@@ -633,6 +636,7 @@
       await api('PUT', '/api/song-request-policy', {
         mode,
         pointsCost: +(document.getElementById('pCost')?.value || 10),
+        skipPointsCost: +(document.getElementById('pSkipCost')?.value || 20),
         giftUnlockMinPoints: +(document.getElementById('pUnlock')?.value || 100),
         minLevel: +(document.getElementById('pMinLevel')?.value || 0),
         requiredGiftName: document.getElementById('pGift')?.value || ''

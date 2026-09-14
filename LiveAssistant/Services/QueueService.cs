@@ -48,7 +48,8 @@ public sealed class QueueService
                 return 0;
             }
 
-            var ahead = _nowPlaying != null ? 1 : 0;
+            // 随机补位不计入用户排队等待数
+            var ahead = _nowPlaying != null && !_nowPlaying.IsRandom ? 1 : 0;
             var idx = _waiting.FindIndex(x => x.Id == queueItemId);
             if (idx < 0)
             {

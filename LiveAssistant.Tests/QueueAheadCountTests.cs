@@ -31,6 +31,20 @@ public sealed class QueueAheadCountTests : IDisposable
     }
 
     [Fact]
+    public void RandomNowPlaying_DoesNotCountAsAhead()
+    {
+        _queue.BeginPlaying(new QueueItem
+        {
+            Nickname = "随机",
+            SongName = "随机曲",
+            IsRandom = true
+        });
+        var request = _queue.Add(new QueueItem { UserId = "2", Nickname = "B", SongName = "S2", Artist = "" });
+
+        Assert.Equal(0, _queue.GetAheadCount(request.Id));
+    }
+
+    [Fact]
     public void VipInsert_RecalculatesAheadCount()
     {
         _queue.Add(new QueueItem { UserId = "1", Nickname = "A", SongName = "S1", Artist = "" });
