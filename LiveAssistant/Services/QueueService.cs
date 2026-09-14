@@ -34,6 +34,31 @@ public sealed class QueueService
         get { lock (_lock) return _waiting.Count; }
     }
 
+    public int TotalQueueCount
+    {
+        get { lock (_lock) return _waiting.Count + (_nowPlaying != null ? 1 : 0); }
+    }
+
+    public int GetAheadCount(long queueItemId)
+    {
+        lock (_lock)
+        {
+            if (_nowPlaying?.Id == queueItemId)
+            {
+                return 0;
+            }
+
+            var ahead = _nowPlaying != null ? 1 : 0;
+            var idx = _waiting.FindIndex(x => x.Id == queueItemId);
+            if (idx < 0)
+            {
+                return ahead;
+            }
+
+            return ahead + idx;
+        }
+    }
+
     public IReadOnlyList<QueueItem> GetAllItems()
     {
         lock (_lock)

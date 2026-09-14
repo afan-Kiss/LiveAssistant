@@ -15,7 +15,7 @@ public sealed class GiftRuleRepository
         using var conn = _db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT id, gift_id, gift_name, points, allow_song_request, enabled, created_at
+            SELECT id, gift_id, gift_name, points, song_permission_count, allow_song_request, enabled, created_at
             FROM gift_rules ORDER BY id ASC
             """;
         using var reader = cmd.ExecuteReader();
@@ -31,7 +31,7 @@ public sealed class GiftRuleRepository
         using var conn = _db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT id, gift_id, gift_name, points, allow_song_request, enabled, created_at
+            SELECT id, gift_id, gift_name, points, song_permission_count, allow_song_request, enabled, created_at
             FROM gift_rules WHERE enabled=1 AND (
                 gift_name=$name COLLATE NOCASE OR ($gid != '' AND gift_id=$gid)
             ) LIMIT 1
@@ -42,24 +42,19 @@ public sealed class GiftRuleRepository
         return reader.Read() ? Read(reader) : null;
     }
 
-    public int? GetPointsForGift(string giftName, string? giftId = null)
-    {
-        var rule = FindByGift(giftName, giftId);
-        return rule?.Points;
-    }
-
     public long Add(GiftRule rule)
     {
         var now = DateTime.Now.ToString("O");
         using var conn = _db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO gift_rules (gift_id, gift_name, points, allow_song_request, enabled, created_at)
-            VALUES ($gid, $name, $pts, $allow, $en, $now)
+            INSERT INTO gift_rules (gift_id, gift_name, points, song_permission_count, allow_song_request, enabled, created_at)
+            VALUES ($gid, $name, $pts, $perm, $allow, $en, $now)
             """;
         cmd.Parameters.AddWithValue("$gid", rule.GiftId);
         cmd.Parameters.AddWithValue("$name", rule.GiftName);
         cmd.Parameters.AddWithValue("$pts", rule.Points);
+        cmd.Parameters.AddWithValue("$perm", rule.SongPermissionCount);
         cmd.Parameters.AddWithValue("$allow", rule.AllowSongRequest ? 1 : 0);
         cmd.Parameters.AddWithValue("$en", rule.Enabled ? 1 : 0);
         cmd.Parameters.AddWithValue("$now", now);
@@ -74,12 +69,13 @@ public sealed class GiftRuleRepository
         using var conn = _db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            UPDATE gift_rules SET gift_id=$gid, gift_name=$name, points=$pts,
+            UPDATE gift_rules SET gift_id=$gid, gift_name=$name, points=$pts, song_permission_count=$perm,
             allow_song_request=$allow, enabled=$en WHERE id=$id
             """;
         cmd.Parameters.AddWithValue("$gid", rule.GiftId);
         cmd.Parameters.AddWithValue("$name", rule.GiftName);
         cmd.Parameters.AddWithValue("$pts", rule.Points);
+        cmd.Parameters.AddWithValue("$perm", rule.SongPermissionCount);
         cmd.Parameters.AddWithValue("$allow", rule.AllowSongRequest ? 1 : 0);
         cmd.Parameters.AddWithValue("$en", rule.Enabled ? 1 : 0);
         cmd.Parameters.AddWithValue("$id", rule.Id);
@@ -101,8 +97,9 @@ public sealed class GiftRuleRepository
         GiftId = reader.IsDBNull(1) ? "" : reader.GetString(1),
         GiftName = reader.GetString(2),
         Points = reader.GetInt32(3),
-        AllowSongRequest = reader.GetInt64(4) == 1,
-        Enabled = reader.GetInt64(5) == 1,
-        CreatedAt = DateTime.TryParse(reader.GetString(6), out var dt) ? dt : DateTime.Now
+        SongPermissionCount = reader.IsDBNull(4) ? 0 : reader.GetInt32(4),
+        AllowSongRequest = reader.GetInt64(5) == 1,
+        Enabled = reader.GetInt64(6) == 1,
+        CreatedAt = DateTime.TryParse(reader.GetString(7), out var dt) ? dt : DateTime.Now
     };
 }

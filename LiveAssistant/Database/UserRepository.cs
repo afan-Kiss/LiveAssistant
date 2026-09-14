@@ -61,7 +61,8 @@ public sealed class UserRepository
         using var conn = _db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT user_id, nickname, role, status, points, level, request_count, last_request_at
+            SELECT user_id, nickname, role, status, points, level, request_count, last_request_at,
+                   song_permission_credits, song_permission_unlimited
             FROM users WHERE user_id = $uid
             """;
         cmd.Parameters.AddWithValue("$uid", userId);
@@ -80,7 +81,8 @@ public sealed class UserRepository
         using var conn = _db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT user_id, nickname, role, status, points, level, request_count, last_request_at
+            SELECT user_id, nickname, role, status, points, level, request_count, last_request_at,
+                   song_permission_credits, song_permission_unlimited
             FROM users ORDER BY points DESC, updated_at DESC LIMIT $limit OFFSET $offset
             """;
         cmd.Parameters.AddWithValue("$limit", limit);
@@ -103,7 +105,8 @@ public sealed class UserRepository
         using var conn = _db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT user_id, nickname, role, status, points, level, request_count, last_request_at
+            SELECT user_id, nickname, role, status, points, level, request_count, last_request_at,
+                   song_permission_credits, song_permission_unlimited
             FROM users WHERE nickname = $nick COLLATE NOCASE LIMIT 1
             """;
         cmd.Parameters.AddWithValue("$nick", nickname.Trim());
@@ -286,6 +289,65 @@ public sealed class UserRepository
         cmd.ExecuteNonQuery();
     }
 
+    public void AddSongPermissionCredits(string userId, int credits)
+    {
+        if (string.IsNullOrWhiteSpace(userId) || credits <= 0)
+        {
+            return;
+        }
+
+        var now = DateTime.Now.ToString("O");
+        using var conn = _db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            UPDATE users SET song_permission_credits = song_permission_credits + $credits, updated_at = $now
+            WHERE user_id = $uid
+            """;
+        cmd.Parameters.AddWithValue("$uid", userId);
+        cmd.Parameters.AddWithValue("$credits", credits);
+        cmd.Parameters.AddWithValue("$now", now);
+        cmd.ExecuteNonQuery();
+    }
+
+    public void SetSongPermissionUnlimited(string userId, bool unlimited)
+    {
+        if (string.IsNullOrWhiteSpace(userId))
+        {
+            return;
+        }
+
+        var now = DateTime.Now.ToString("O");
+        using var conn = _db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            UPDATE users SET song_permission_unlimited = $flag, updated_at = $now WHERE user_id = $uid
+            """;
+        cmd.Parameters.AddWithValue("$uid", userId);
+        cmd.Parameters.AddWithValue("$flag", unlimited ? 1 : 0);
+        cmd.Parameters.AddWithValue("$now", now);
+        cmd.ExecuteNonQuery();
+    }
+
+    public bool ConsumeSongPermissionCredit(string userId)
+    {
+        var user = GetUser(userId);
+        if (user == null || user.SongPermissionUnlimited || user.SongPermissionCredits <= 0)
+        {
+            return false;
+        }
+
+        var now = DateTime.Now.ToString("O");
+        using var conn = _db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            UPDATE users SET song_permission_credits = song_permission_credits - 1, updated_at = $now
+            WHERE user_id = $uid AND song_permission_credits > 0
+            """;
+        cmd.Parameters.AddWithValue("$uid", userId);
+        cmd.Parameters.AddWithValue("$now", now);
+        return cmd.ExecuteNonQuery() > 0;
+    }
+
     private static UserProfile ReadUser(SqliteDataReader reader)
     {
         DateTime? lastRequest = null;
@@ -303,7 +365,9 @@ public sealed class UserRepository
             Points = reader.IsDBNull(4) ? 0 : reader.GetInt32(4),
             Level = reader.IsDBNull(5) ? 0 : reader.GetInt32(5),
             RequestCount = reader.IsDBNull(6) ? 0 : reader.GetInt32(6),
-            LastRequestAt = lastRequest
+            LastRequestAt = lastRequest,
+            SongPermissionCredits = reader.FieldCount > 8 && !reader.IsDBNull(8) ? reader.GetInt32(8) : 0,
+            SongPermissionUnlimited = reader.FieldCount > 9 && !reader.IsDBNull(9) && reader.GetInt64(9) == 1
         };
     }
 }

@@ -1,7 +1,7 @@
 {
   "songRequestAccepted": "@{name} 已收到你的点歌《{song}》，当前排队前面还有{queue}首",
   "songRequestRejected": "@{name} 点歌失败：{reason}",
-  "songRequestCooldown": "@{name} 点歌太频繁，请{seconds}秒后再试",
+  "songRequestCooldown": "@{name} 点歌太频繁，请稍后再试",
   "songNotFound": "@{name} 没找到《{song}》，请换个歌名",
   "queueFull": "@{name} 队列已满，请稍后再试",
   "nowPlaying": "正在播放《{song}》",

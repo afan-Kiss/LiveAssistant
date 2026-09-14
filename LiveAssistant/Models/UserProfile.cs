@@ -10,4 +10,6 @@ public sealed class UserProfile
     public int RequestCount { get; set; }
     public DateTime? LastRequestAt { get; set; }
     public UserStatus Status { get; set; } = UserStatus.Active;
+    public int SongPermissionCredits { get; set; }
+    public bool SongPermissionUnlimited { get; set; }
 }

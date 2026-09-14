@@ -9,6 +9,7 @@ public sealed class ReplyJob
     public required string UserId { get; init; }
     public required string Content { get; init; }
     public int RetryCount { get; set; }
+    public bool IsSongRequestBatch { get; init; }
 }
 
 /// <summary>
@@ -26,6 +27,12 @@ public sealed class ReplyQueue : IDisposable
     private readonly Task _worker;
     private readonly Queue<DateTime> _sentTimestamps = new();
     private readonly object _rateLock = new();
+    private readonly object _batchLock = new();
+    private readonly List<SongRequestReplyEntry> _songBatch = new();
+    private string _batchWebRid = "";
+    private string _batchUserId = "";
+    private int _batchQueueCount;
+    private CancellationTokenSource? _batchCts;
 
     public ReplyQueue(DouyinService douyin, LogService log, ReplySettings settings)
     {
@@ -53,6 +60,81 @@ public sealed class ReplyQueue : IDisposable
         }
     }
 
+    public void EnqueueSongRequestReply(string webRid, string userId, string nickname, string songName, int queueCount)
+    {
+        if (string.IsNullOrWhiteSpace(webRid) || string.IsNullOrWhiteSpace(userId))
+        {
+            return;
+        }
+
+        lock (_batchLock)
+        {
+            _batchWebRid = webRid;
+            _batchUserId = userId;
+            _batchQueueCount = queueCount;
+            _songBatch.Add(new SongRequestReplyEntry
+            {
+                Nickname = nickname,
+                SongName = songName
+            });
+
+            _batchCts?.Cancel();
+            _batchCts = new CancellationTokenSource();
+            var token = _batchCts.Token;
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(_settings.SongRequestBatchWindowMs, token);
+                    FlushSongRequestBatch();
+                }
+                catch (OperationCanceledException)
+                {
+                    // replaced by newer batch window
+                }
+            }, token);
+        }
+    }
+
+    internal void FlushSongRequestBatch()
+    {
+        List<SongRequestReplyEntry> items;
+        string webRid;
+        string userId;
+        int queueCount;
+
+        lock (_batchLock)
+        {
+            if (_songBatch.Count == 0)
+            {
+                return;
+            }
+
+            items = _songBatch.ToList();
+            webRid = _batchWebRid;
+            userId = _batchUserId;
+            queueCount = _batchQueueCount;
+            _songBatch.Clear();
+        }
+
+        var content = SongRequestReplyFormatter.FormatMerged(items, queueCount);
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            return;
+        }
+
+        if (!_channel.Writer.TryWrite(new ReplyJob
+        {
+            WebRid = webRid,
+            UserId = userId,
+            Content = content,
+            IsSongRequestBatch = true
+        }))
+        {
+            _log.DouyinWarn("点歌合并回复入队失败");
+        }
+    }
+
     private async Task WorkerLoopAsync(CancellationToken ct)
     {
         try
@@ -66,7 +148,7 @@ public sealed class ReplyQueue : IDisposable
                     if (ok)
                     {
                         RecordSent();
-                        _log.DouyinInfo($"回复已发送 user={job.UserId}");
+                        _log.DouyinInfo($"回复已发送 user={job.UserId} batch={job.IsSongRequestBatch}");
                         continue;
                     }
 
@@ -145,6 +227,8 @@ public sealed class ReplyQueue : IDisposable
 
     public void Dispose()
     {
+        FlushSongRequestBatch();
+        _batchCts?.Cancel();
         _cts.Cancel();
         _channel.Writer.TryComplete();
         try
@@ -156,5 +240,6 @@ public sealed class ReplyQueue : IDisposable
             // ignore
         }
         _cts.Dispose();
+        _batchCts?.Dispose();
     }
 }

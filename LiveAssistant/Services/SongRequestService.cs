@@ -80,7 +80,7 @@ public sealed class SongRequestService
             }
 
             var priority = _permission.GetQueuePriority(permission.User!);
-            _queue.AddWithPriority(new QueueItem
+            var added = _queue.AddWithPriority(new QueueItem
             {
                 UserId = item.UserId,
                 Nickname = item.Nickname,
@@ -94,14 +94,9 @@ public sealed class SongRequestService
 
             _permission.RecordSuccessfulRequest(item);
 
-            var ahead = Math.Max(0, _queue.WaitingCount - 1);
-            var reply = _reply.Render("songRequestAccepted", new Dictionary<string, string>
-            {
-                ["name"] = item.Nickname,
-                ["song"] = track.SongName,
-                ["queue"] = ahead.ToString()
-            });
-            SendReply(webRid, item.UserId, reply);
+            var ahead = _queue.GetAheadCount(added.Id);
+            var queueTotal = _queue.TotalQueueCount;
+            _replyQueue.EnqueueSongRequestReply(webRid, item.UserId, item.Nickname, track.SongName, queueTotal);
 
             _system.Add($"已加入队列: {item.Nickname} - {track.SongName}（前面 {ahead} 首）");
             _log.LogSongRequest(displayUser, track.SongName, true);
@@ -127,11 +122,7 @@ public sealed class SongRequestService
         var msg = _reply.Render(templateKey, variables);
         if (string.IsNullOrWhiteSpace(msg) && templateKey == "songRequestCooldown")
         {
-            msg = _reply.Render("songRequestRejected", new Dictionary<string, string>
-            {
-                ["name"] = item.Nickname,
-                ["reason"] = permission.RejectReason ?? "暂时无法点歌"
-            });
+            msg = $"@{item.Nickname} 点歌太频繁，请稍后再试";
         }
 
         SendReply(webRid, item.UserId, msg);

@@ -79,9 +79,16 @@ public sealed class SettingsStore
             return;
         }
 
-        foreach (var (name, pts) in new[] { ("小心心", 1), ("玫瑰", 5), ("嘉年华", 5000) })
+        foreach (var (name, pts, perm) in new[] { ("小心心", 1, 1), ("玫瑰", 5, 0), ("嘉年华", 5000, -1) })
         {
-            _giftRules.Add(new GiftRule { GiftName = name, Points = pts, Enabled = true, AllowSongRequest = true });
+            _giftRules.Add(new GiftRule
+            {
+                GiftName = name,
+                Points = pts,
+                SongPermissionCount = perm,
+                Enabled = true,
+                AllowSongRequest = perm != 0
+            });
         }
     }
 

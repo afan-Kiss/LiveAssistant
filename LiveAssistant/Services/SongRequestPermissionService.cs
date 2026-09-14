@@ -57,6 +57,7 @@ public sealed class SongRequestPermissionService
 
         var levelPerm = _levelPerms.GetForLevel(user.Level);
         var policy = _config.Settings.SongRequestPolicy;
+        var hasGiftPermission = user.SongPermissionUnlimited || user.SongPermissionCredits > 0;
 
         if (user.Level < policy.MinLevel)
         {
@@ -73,32 +74,35 @@ public sealed class SongRequestPermissionService
             return Deny(user, item.Nickname, "积分不足", $"需要至少 {levelPerm.MinPoints} 积分");
         }
 
-        switch (policy.Mode)
+        if (!hasGiftPermission)
         {
-            case SongRequestPolicyMode.Points:
-                var cost = levelPerm?.PointsCostOverride >= 0
-                    ? levelPerm.PointsCostOverride
-                    : policy.PointsCost;
-                if (user.Points < cost)
-                {
-                    return Deny(user, item.Nickname, "积分不足", $"点歌需要 {cost} 积分");
-                }
-                break;
-            case SongRequestPolicyMode.GiftUnlock:
-                if (user.Points < policy.GiftUnlockMinPoints)
-                {
-                    return Deny(user, item.Nickname, "未解锁点歌", $"需送礼物累计 {policy.GiftUnlockMinPoints} 积分");
-                }
-                if (!string.IsNullOrWhiteSpace(policy.RequiredGiftName))
-                {
-                    return Deny(user, item.Nickname, "需要指定礼物", $"需送出 {policy.RequiredGiftName}");
-                }
-                break;
+            switch (policy.Mode)
+            {
+                case SongRequestPolicyMode.Points:
+                    var cost = levelPerm?.PointsCostOverride >= 0
+                        ? levelPerm.PointsCostOverride
+                        : policy.PointsCost;
+                    if (user.Points < cost)
+                    {
+                        return Deny(user, item.Nickname, "积分不足", $"点歌需要 {cost} 积分");
+                    }
+                    break;
+                case SongRequestPolicyMode.GiftUnlock:
+                    if (user.Points < policy.GiftUnlockMinPoints)
+                    {
+                        return Deny(user, item.Nickname, "未解锁点歌", $"需送礼物累计 {policy.GiftUnlockMinPoints} 积分");
+                    }
+                    if (!string.IsNullOrWhiteSpace(policy.RequiredGiftName))
+                    {
+                        return Deny(user, item.Nickname, "需要指定礼物", $"需送出 {policy.RequiredGiftName}");
+                    }
+                    break;
+            }
         }
 
         if (ShouldApplyCooldown(user))
         {
-            var cooldownSec = levelPerm?.CooldownSeconds ?? _config.Settings.Queue.RequestCooldownSeconds;
+            var cooldownSec = GetCooldownSeconds(user, levelPerm);
             var (allowed, remaining) = _users.CheckCooldown(item.UserId, cooldownSec);
             if (!allowed)
             {
@@ -143,6 +147,21 @@ public sealed class SongRequestPermissionService
         var user = _users.GetUser(item.UserId);
         if (user != null && !IsPrivileged(user.Role))
         {
+            if (user.SongPermissionUnlimited)
+            {
+                _users.RecordSuccessfulRequest(item.UserId, item.Nickname);
+                _levels.RefreshUserLevel(item.UserId);
+                return;
+            }
+
+            if (user.SongPermissionCredits > 0)
+            {
+                _users.ConsumeSongPermissionCredit(item.UserId);
+                _users.RecordSuccessfulRequest(item.UserId, item.Nickname);
+                _levels.RefreshUserLevel(item.UserId);
+                return;
+            }
+
             var policy = _config.Settings.SongRequestPolicy;
             if (policy.Mode == SongRequestPolicyMode.Points)
             {
@@ -156,6 +175,15 @@ public sealed class SongRequestPermissionService
 
         _users.RecordSuccessfulRequest(item.UserId, item.Nickname);
         _levels.RefreshUserLevel(item.UserId);
+    }
+
+    private int GetCooldownSeconds(UserProfile user, LevelPermission? levelPerm)
+    {
+        if (user.Level > 0 && levelPerm != null && levelPerm.CooldownSeconds >= 0)
+        {
+            return levelPerm.CooldownSeconds;
+        }
+        return _config.Settings.Queue.SongRequestCooldownSeconds;
     }
 
     private static bool IsPrivileged(UserRole role) =>

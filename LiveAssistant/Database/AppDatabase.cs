@@ -189,6 +189,19 @@ public sealed class AppDatabase : IDisposable
         EnsureColumn(conn, "keyword_replies", "reply_content", "TEXT");
         EnsureColumn(conn, "level_permissions", "queue_priority", "INTEGER DEFAULT 0");
         EnsureColumn(conn, "level_permissions", "points_cost_override", "INTEGER DEFAULT -1");
+        EnsureColumn(conn, "gift_events", "event_id", "TEXT");
+        EnsureColumn(conn, "gift_rules", "song_permission_count", "INTEGER DEFAULT 0");
+        EnsureColumn(conn, "users", "song_permission_credits", "INTEGER DEFAULT 0");
+        EnsureColumn(conn, "users", "song_permission_unlimited", "INTEGER DEFAULT 0");
+
+        using (var idxCmd = conn.CreateCommand())
+        {
+            idxCmd.CommandText = """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_gift_events_event_id
+                ON gift_events(event_id) WHERE event_id IS NOT NULL AND event_id != ''
+                """;
+            idxCmd.ExecuteNonQuery();
+        }
 
         using var roleCmd = conn.CreateCommand();
         roleCmd.CommandText = """
@@ -247,7 +260,12 @@ public sealed class AppDatabase : IDisposable
         alter.ExecuteNonQuery();
     }
 
-    public SqliteConnection Open() => new(_connectionString);
+    public SqliteConnection Open()
+    {
+        var conn = new SqliteConnection(_connectionString);
+        conn.Open();
+        return conn;
+    }
 
     public void Dispose()
     {
