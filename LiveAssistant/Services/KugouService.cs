@@ -10,11 +10,11 @@ public sealed class KugouService
     private readonly LogService _log;
     private readonly HttpClient _client;
 
-    public KugouService(KugouSettings settings, LogService log)
+    public KugouService(KugouSettings settings, LogService log, HttpClient? client = null)
     {
         _settings = settings;
         _log = log;
-        _client = HttpJson.CreateClient(settings.BaseUrl, settings.ApiKey, "X-API-Key");
+        _client = client ?? HttpJson.CreateClient(settings.BaseUrl, settings.ApiKey, "X-API-Key");
     }
 
     public Task<bool> HealthCheckAsync(CancellationToken ct = default)
@@ -78,39 +78,75 @@ public sealed class KugouService
         };
     }
 
+    /// <summary>
+    /// 播放前取最新直链：优先 hash → GetPlayUrlAsync，失败再按歌名搜索。
+    /// 不使用入队时缓存的旧 PlayUrl。
+    /// </summary>
+    public async Task<TrackInfo?> ResolveFreshTrackAsync(
+        string? hash,
+        string songName,
+        string? artist = null,
+        string? songId = null,
+        string? requester = null,
+        bool isRandom = false,
+        CancellationToken ct = default)
+    {
+        var name = songName?.Trim() ?? "";
+        var songHash = hash?.Trim() ?? "";
+
+        if (!string.IsNullOrWhiteSpace(songHash))
+        {
+            var urlData = await GetPlayUrlAsync(songHash, name, ct);
+            if (urlData != null && !string.IsNullOrWhiteSpace(urlData.Url))
+            {
+                return new TrackInfo
+                {
+                    SongName = urlData.SongName ?? name,
+                    Artist = urlData.Artist ?? artist ?? "",
+                    SongId = urlData.SongId ?? urlData.Id ?? songId ?? "",
+                    Hash = songHash,
+                    PlayUrl = urlData.Url,
+                    IsRandom = isRandom,
+                    Requester = requester ?? ""
+                };
+            }
+
+            _log.KugouWarn($"hash 取链失败，回退歌名搜索: hash={songHash} song={name}");
+        }
+
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return null;
+        }
+
+        var track = await ResolveTrackAsync(name, ct);
+        if (track == null)
+        {
+            return null;
+        }
+
+        track.IsRandom = isRandom;
+        track.Requester = requester ?? "";
+        if (string.IsNullOrWhiteSpace(track.Artist) && !string.IsNullOrWhiteSpace(artist))
+        {
+            track.Artist = artist;
+        }
+
+        return track;
+    }
+
     public async Task<TrackInfo?> ResolveTrackFromItemAsync(RandomPlaylistItem item, CancellationToken ct = default)
     {
         try
         {
-            if (!string.IsNullOrWhiteSpace(item.Hash))
-            {
-                var urlData = await GetPlayUrlAsync(item.Hash, item.Keyword, ct);
-                if (urlData != null)
-                {
-                    return new TrackInfo
-                    {
-                        SongName = urlData.SongName ?? item.Title ?? item.Keyword,
-                        Artist = urlData.Artist ?? item.Artist ?? "",
-                        SongId = urlData.SongId ?? urlData.Id ?? item.SongId ?? "",
-                        Hash = item.Hash,
-                        PlayUrl = urlData.Url,
-                        IsRandom = true
-                    };
-                }
-            }
-
-            var keyword = !string.IsNullOrWhiteSpace(item.Keyword) ? item.Keyword : item.Title ?? "";
-            if (string.IsNullOrWhiteSpace(keyword))
-            {
-                return null;
-            }
-
-            var track = await ResolveTrackAsync(keyword, ct);
-            if (track != null)
-            {
-                track.IsRandom = true;
-            }
-            return track;
+            return await ResolveFreshTrackAsync(
+                item.Hash,
+                !string.IsNullOrWhiteSpace(item.Keyword) ? item.Keyword! : (item.Title ?? ""),
+                item.Artist,
+                item.SongId,
+                requester: null,
+                isRandom: true,
+                ct);
         }
         catch (Exception ex)
         {

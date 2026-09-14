@@ -41,14 +41,22 @@ try {
         $ownerRepo = $remoteUrl -replace '^https://github.com/','' -replace '\.git$',''
     }
 
-    $authUrl = "https://$token@github.com/$ownerRepo.git"
+    # Fine-grained PAT (github_pat_*) 与 classic PAT 均可用 x-access-token
+    $authUrl = "https://x-access-token:$token@github.com/$ownerRepo.git"
     git remote remove origin 2>$null
     git remote add origin $authUrl
 
     git add -A
     git status
     git -c user.email="liveassistant@local" -c user.name="LiveAssistant" commit -m $Message
+    # 若工作区无变更，commit 可能失败；仍继续 push 已有提交
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "commit skipped or failed; continuing push of existing commits"
+    }
     git push -u origin main
+    if ($LASTEXITCODE -ne 0) {
+        throw "git push failed (403 多为 PAT 未授予该仓库 Contents: Read and write)"
+    }
 
     git remote set-url origin "https://github.com/$ownerRepo.git"
     Write-Host "Pushed to https://github.com/$ownerRepo"
