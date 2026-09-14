@@ -5,6 +5,7 @@ namespace LiveAssistant.Services;
 
 public sealed class ReplyJob
 {
+    public required string ReplyId { get; init; }
     public required string WebRid { get; init; }
     public required string UserId { get; init; }
     public required string Content { get; init; }
@@ -13,7 +14,7 @@ public sealed class ReplyJob
 }
 
 /// <summary>
-/// 弹幕回复统一发送队列：限速、防刷屏、失败重试。
+/// 弹幕回复统一发送队列：限速、防刷屏、失败重试、reply_id 幂等。
 /// </summary>
 public sealed class ReplyQueue : IDisposable
 {
@@ -23,6 +24,8 @@ public sealed class ReplyQueue : IDisposable
     private readonly DouyinService _douyin;
     private readonly LogService _log;
     private readonly ReplySettings _settings;
+    private readonly ReplyIdempotencyStore _idempotency;
+    private readonly Func<string, string, string, CancellationToken, Task<bool>> _sendMention;
     private readonly CancellationTokenSource _cts = new();
     private readonly Task _worker;
     private readonly Queue<DateTime> _sentTimestamps = new();
@@ -34,13 +37,23 @@ public sealed class ReplyQueue : IDisposable
     private int _batchQueueCount;
     private CancellationTokenSource? _batchCts;
 
-    public ReplyQueue(DouyinService douyin, LogService log, ReplySettings settings)
+    public ReplyQueue(
+        DouyinService douyin,
+        LogService log,
+        ReplySettings settings,
+        ReplyIdempotencyStore? idempotency = null,
+        Func<string, string, string, CancellationToken, Task<bool>>? sendMention = null)
     {
         _douyin = douyin;
         _log = log;
         _settings = settings;
+        _idempotency = idempotency ?? new ReplyIdempotencyStore();
+        _sendMention = sendMention ?? ((webRid, userId, content, ct) =>
+            _douyin.SendMentionAsync(webRid, userId, content, ct));
         _worker = Task.Run(() => WorkerLoopAsync(_cts.Token));
     }
+
+    public ReplyIdempotencyStore Idempotency => _idempotency;
 
     public void EnqueueMention(string webRid, string userId, string content)
     {
@@ -49,14 +62,32 @@ public sealed class ReplyQueue : IDisposable
             return;
         }
 
-        if (!_channel.Writer.TryWrite(new ReplyJob
+        TryEnqueue(new ReplyJob
         {
+            ReplyId = NewReplyId(),
             WebRid = webRid,
             UserId = userId,
             Content = content
-        }))
+        });
+    }
+
+    /// <summary>测试/内部：按指定 reply_id 入队（用于幂等验证）。</summary>
+    internal void EnqueueMentionWithReplyId(string replyId, string webRid, string userId, string content)
+    {
+        TryEnqueue(new ReplyJob
         {
-            _log.DouyinWarn("回复入队失败");
+            ReplyId = replyId,
+            WebRid = webRid,
+            UserId = userId,
+            Content = content
+        });
+    }
+
+    private void TryEnqueue(ReplyJob job)
+    {
+        if (!_channel.Writer.TryWrite(job))
+        {
+            _log.DouyinWarn($"回复入队失败 reply_id={job.ReplyId}");
         }
     }
 
@@ -123,15 +154,18 @@ public sealed class ReplyQueue : IDisposable
             return;
         }
 
-        if (!_channel.Writer.TryWrite(new ReplyJob
+        var job = new ReplyJob
         {
+            ReplyId = NewReplyId(),
             WebRid = webRid,
             UserId = userId,
             Content = content,
             IsSongRequestBatch = true
-        }))
+        };
+
+        if (!_channel.Writer.TryWrite(job))
         {
-            _log.DouyinWarn("点歌合并回复入队失败");
+            _log.DouyinWarn($"点歌合并回复入队失败 reply_id={job.ReplyId}");
         }
     }
 
@@ -143,12 +177,23 @@ public sealed class ReplyQueue : IDisposable
             {
                 try
                 {
+                    if (_idempotency.HasSucceeded(job.ReplyId))
+                    {
+                        _log.DouyinInfo(
+                            $"[reply-send] reply_id={job.ReplyId} target_user={job.UserId} " +
+                            $"content={Truncate(job.Content)} result=skip_already_sent");
+                        continue;
+                    }
+
                     await WaitForRateLimitAsync(ct);
-                    var ok = await _douyin.SendMentionAsync(job.WebRid, job.UserId, job.Content, ct);
+                    var ok = await _sendMention(job.WebRid, job.UserId, job.Content, ct);
                     if (ok)
                     {
+                        _idempotency.MarkSucceeded(job.ReplyId);
                         RecordSent();
-                        _log.DouyinInfo($"回复已发送 user={job.UserId} batch={job.IsSongRequestBatch}");
+                        _log.DouyinInfo(
+                            $"[reply-send] reply_id={job.ReplyId} target_user={job.UserId} " +
+                            $"content={Truncate(job.Content)} result=ok batch={job.IsSongRequestBatch}");
                         continue;
                     }
 
@@ -176,10 +221,21 @@ public sealed class ReplyQueue : IDisposable
 
     private async Task HandleFailureAsync(ReplyJob job, string reason, CancellationToken ct)
     {
+        // 若已成功发送过（例如先前成功后被重复入队），不再重试
+        if (_idempotency.HasSucceeded(job.ReplyId))
+        {
+            _log.DouyinInfo(
+                $"[reply-send] reply_id={job.ReplyId} target_user={job.UserId} " +
+                $"content={Truncate(job.Content)} result=skip_already_sent");
+            return;
+        }
+
         job.RetryCount++;
         if (job.RetryCount <= _settings.MaxRetries)
         {
-            _log.DouyinWarn($"回复发送失败，重试 {job.RetryCount}/{_settings.MaxRetries}: {reason}");
+            _log.DouyinWarn(
+                $"[reply-send] reply_id={job.ReplyId} target_user={job.UserId} " +
+                $"content={Truncate(job.Content)} result=retry/{job.RetryCount} error={reason}");
             try
             {
                 await Task.Delay(_settings.RetryDelayMs, ct);
@@ -192,7 +248,10 @@ public sealed class ReplyQueue : IDisposable
             return;
         }
 
-        _log.Error("douyin", $"回复发送失败且已达重试上限 user={job.UserId} reason={reason}");
+        _log.Error(
+            "douyin",
+            $"[reply-send] reply_id={job.ReplyId} target_user={job.UserId} " +
+            $"content={Truncate(job.Content)} result=fail error={reason}");
     }
 
     private async Task WaitForRateLimitAsync(CancellationToken ct)
@@ -223,6 +282,18 @@ public sealed class ReplyQueue : IDisposable
         {
             _sentTimestamps.Enqueue(DateTime.UtcNow);
         }
+    }
+
+    private static string NewReplyId() => Guid.NewGuid().ToString("N");
+
+    private static string Truncate(string s, int max = 120)
+    {
+        if (string.IsNullOrEmpty(s) || s.Length <= max)
+        {
+            return s;
+        }
+
+        return s[..max] + "...";
     }
 
     public void Dispose()

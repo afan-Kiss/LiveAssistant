@@ -99,7 +99,8 @@ public sealed class LiveAppHost : IDisposable
         _playbackCommands = new PlaybackCommandQueue(
             _config, _queue, _kugou, _random, _playback, _reply, _system, _log);
         _engine = new PlaybackEngine(_config, _playbackCommands, _system);
-        _danmaku = new DanmakuService(_douyin, _log, _system);
+        _danmaku = new DanmakuService(
+            _douyin, _log, _system, new DanmakuDeduplicator(_config.DataDirectory));
 
         var songBlacklist = new SongBlacklistService(_songBlacklistRepo);
         _userLevel = new UserLevelService(_config, _users);

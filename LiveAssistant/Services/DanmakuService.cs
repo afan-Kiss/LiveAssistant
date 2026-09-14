@@ -1,5 +1,4 @@
 using LiveAssistant.Models;
-using LiveAssistant.Utils;
 
 namespace LiveAssistant.Services;
 
@@ -8,6 +7,7 @@ public sealed class DanmakuService : IDisposable
     private readonly DouyinService _douyin;
     private readonly LogService _log;
     private readonly SystemMessageService _system;
+    private readonly DanmakuDeduplicator _deduper;
     private CancellationTokenSource? _cts;
     private int _after;
     private string _webRid = "";
@@ -19,11 +19,16 @@ public sealed class DanmakuService : IDisposable
     public string AccountNickname { get; private set; } = "-";
     public string RoomTitle { get; private set; } = "-";
 
-    public DanmakuService(DouyinService douyin, LogService log, SystemMessageService system)
+    public DanmakuService(
+        DouyinService douyin,
+        LogService log,
+        SystemMessageService system,
+        DanmakuDeduplicator? deduper = null)
     {
         _douyin = douyin;
         _log = log;
         _system = system;
+        _deduper = deduper ?? new DanmakuDeduplicator();
     }
 
     public async Task StartAsync(string webRid, CancellationToken ct = default)
@@ -88,12 +93,26 @@ public sealed class DanmakuService : IDisposable
 
                             try
                             {
+                                var msgId = ResolveMsgId(msg);
+                                var userId = msg.User?.UserId ?? "";
+                                var nickname = msg.User?.Nickname ?? "未知";
+                                var content = msg.Content ?? "";
+
+                                _log.DouyinInfo(
+                                    $"[danmaku-recv] msg_id={msgId} user_id={userId} nickname={nickname} content={Truncate(content)}");
+
+                                if (!_deduper.TryAdmit(msgId))
+                                {
+                                    _log.DouyinInfo($"[danmaku-dedupe] drop msg_id={msgId}");
+                                    continue;
+                                }
+
                                 var item = new DanmakuItem
                                 {
-                                    MsgId = msg.MsgId ?? Guid.NewGuid().ToString("N"),
-                                    Content = msg.Content ?? "",
-                                    Nickname = msg.User?.Nickname ?? "未知",
-                                    UserId = msg.User?.UserId ?? "",
+                                    MsgId = msgId,
+                                    Content = content,
+                                    Nickname = nickname,
+                                    UserId = userId,
                                     MsgType = msgType,
                                     Timestamp = DateTime.Now
                                 };
@@ -148,6 +167,30 @@ public sealed class DanmakuService : IDisposable
                 _log.Error("douyin", "poll_delay", ex);
             }
         }
+    }
+
+    private static string ResolveMsgId(DouyinDanmakuMessage msg)
+    {
+        if (!string.IsNullOrWhiteSpace(msg.MsgId))
+        {
+            return msg.MsgId.Trim();
+        }
+
+        // Sidecar 未给 msg_id 时用稳定回退键，避免每次 Guid 导致无法去重
+        var uid = msg.User?.UserId?.Trim() ?? "";
+        var content = msg.Content?.Trim() ?? "";
+        var ts = msg.Timestamp?.Trim() ?? "";
+        return $"fb:{uid}|{content}|{ts}";
+    }
+
+    private static string Truncate(string s, int max = 120)
+    {
+        if (string.IsNullOrEmpty(s) || s.Length <= max)
+        {
+            return s;
+        }
+
+        return s[..max] + "...";
     }
 
     public void Dispose()
