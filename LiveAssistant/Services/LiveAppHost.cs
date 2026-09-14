@@ -39,20 +39,26 @@ public sealed class LiveAppHost : IDisposable
     private readonly BanVoteService _banVote;
     private readonly WelcomeService _welcome;
     private readonly KeywordReplyService _keywordReply;
+    private readonly PointsQueryService _pointsQuery;
     private readonly UserLevelService _userLevel;
     private readonly CommandQueueService _commandQueue;
     private readonly BackendSyncService _backendSync;
     private readonly DataCleanupService _dataCleanup;
     private readonly AdminWebHost _adminWeb;
+    private readonly AdminTunnelService _adminTunnel;
     private readonly ProcessWatchdogService _watchdog;
     private readonly DateTime _startedAt = DateTime.Now;
     private CancellationTokenSource? _watchCts;
     private volatile bool _douyinSidecarOk;
     private volatile bool _kugouSidecarOk;
+    private volatile string _kugouLoginStatus = "未检测";
+    private volatile string _kugouVipLabel = "";
+    private volatile bool _kugouLoginWarned;
     private volatile string _adminAccountStatus = "未检测";
     private volatile string _adminNickname = "-";
     private volatile string _currentTask = "空闲";
     private volatile bool _isRunning;
+    private int _disposed;
 
     public LiveAppHost()
     {
@@ -105,13 +111,14 @@ public sealed class LiveAppHost : IDisposable
         var songBlacklist = new SongBlacklistService(_songBlacklistRepo);
         _userLevel = new UserLevelService(_config, _users);
         _permission = new SongRequestPermissionService(
-            _config, _users, _queue, songBlacklist, _levelPermRepo, _userLevel);
+            _config, _users, _queue, songBlacklist, _levelPermRepo, _userLevel, _giftRepo);
         _songRequest = new SongRequestService(_config, _kugou, _queue, _permission, _reply, _replyQueue, _system, _log);
         _gift = new GiftService(_config, _douyin, _giftRepo, _users, _userLevel, _giftRuleRepo, _log, _system);
         _giftCollector = new GiftCollectorService(_config, _douyin, _gift, _log, giftRepo: _giftRepo);
         _banVote = new BanVoteService(_config, _banVoteRepo, _users, _douyin, _replyQueue, _reply, _system, _log);
         _welcome = new WelcomeService(_config, _reply, _replyQueue, _system, _welcomeCooldownRepo);
         _keywordReply = new KeywordReplyService(_config, _keywordReplyRepo, new NullAIReplyService());
+        _pointsQuery = new PointsQueryService(_users);
         _commandQueue = new CommandQueueService(new AdminCommandRepository(_db));
         _backendSync = new BackendSyncService(
             _config, _commandQueue, _settingsStore, _playbackCommands, _engine, _queue, _reply, _log);
@@ -135,6 +142,7 @@ public sealed class LiveAppHost : IDisposable
             LevelPermissions = _levelPermRepo,
             Log = _log
         });
+        _adminTunnel = new AdminTunnelService(_config, _log, _system);
 
         _danmaku.DanmakuReceived += OnDanmakuReceived;
         _songRequest.RequestHandled += () => _ = _engine.EnsurePlayingAsync();
@@ -142,14 +150,30 @@ public sealed class LiveAppHost : IDisposable
         _queue.QueueChanged += () => NotifyStateChanged();
 
         _adminWeb.Start();
+        _adminTunnel.Start();
         _backendSync.Start();
         _dataCleanup.Start();
 
-        _log.Info("LiveAssistant 已启动");
+        _log.Info($"{AppBranding.DisplayName} 已启动");
         if (_config.Settings.Admin.Enabled)
         {
             _system.Add($"管理后台: http://127.0.0.1:{_config.Settings.Admin.Port}{_config.Settings.Admin.Path}");
         }
+
+        StartSidecarWatchdog();
+    }
+
+    public IReadOnlyList<string> GetMissingSidecarFiles() => _watchdog.GetMissingRequiredFiles();
+
+    private void StartSidecarWatchdog()
+    {
+        if (_watchCts != null)
+        {
+            return;
+        }
+
+        _watchCts = new CancellationTokenSource();
+        _ = WatchSidecarsAsync(_watchCts.Token);
     }
 
     public ConfigManager Config => _config;
@@ -159,6 +183,7 @@ public sealed class LiveAppHost : IDisposable
     public PlaybackCommandQueue PlaybackCommands => _playbackCommands;
     public PlaybackEngine Engine => _engine;
     public DanmakuService Danmaku => _danmaku;
+    public KugouService Kugou => _kugou;
     public SettingsStore SettingsStore => _settingsStore;
     public DateTime StartedAt => _startedAt;
 
@@ -175,9 +200,13 @@ public sealed class LiveAppHost : IDisposable
             KugouOnline = _kugouSidecarOk,
             DouyinStatus = _douyinSidecarOk ? "在线" : "离线",
             KugouStatus = _kugouSidecarOk ? "在线" : "离线",
+            KugouLoginStatus = _kugouSidecarOk ? _kugouLoginStatus : "离线",
+            KugouVipLabel = _kugouVipLabel,
+            KugouLoginPageUrl = _kugou.LoginPageUrl,
             DanmakuConnection = _danmaku.ConnectionStatus,
-            AdminAccountStatus = _adminAccountStatus,
-            AdminNickname = _adminNickname,
+            RoomOwnerNickname = _danmaku.RoomOwnerNickname,
+            DouyinLoginStatus = _adminAccountStatus,
+            DouyinLoginNickname = _adminNickname,
             CurrentSong = track == null ? "-" : $"{track.SongName} - {track.Artist}",
             PlaybackMode = _engine.Mode.ToString(),
             QueueCount = queueCount,
@@ -190,8 +219,7 @@ public sealed class LiveAppHost : IDisposable
 
     public async Task StartAsync(CancellationToken ct = default)
     {
-        _watchCts = new CancellationTokenSource();
-        _ = WatchSidecarsAsync(_watchCts.Token);
+        StartSidecarWatchdog();
 
         var webRid = _config.Settings.Douyin.WebRid;
         if (string.IsNullOrWhiteSpace(webRid))
@@ -260,6 +288,11 @@ public sealed class LiveAppHost : IDisposable
                 return;
             }
 
+            if (_pointsQuery.TryHandle(item, webRid, _reply, _replyQueue))
+            {
+                return;
+            }
+
             await _keywordReply.TryHandleAsync(item, _replyQueue, _reply, _users, webRid);
             await _banVote.HandleDanmakuAsync(item, webRid);
             await _songRequest.HandleDanmakuAsync(item, webRid);
@@ -290,9 +323,44 @@ public sealed class LiveAppHost : IDisposable
                 _douyinSidecarOk = dyOk;
                 _kugouSidecarOk = kgOk;
 
+                if (kgOk)
+                {
+                    var login = await _kugou.RefreshLoginStatusAsync(ct);
+                    if (login.LoggedIn)
+                    {
+                        var claim = await _kugou.TryAutoClaimVipAsync(ct);
+                        if (claim != null && (claim.Claimed || claim.Upgraded))
+                        {
+                            login = await _kugou.RefreshLoginStatusAsync(ct);
+                            _system.Add($"酷狗试用会员: {claim.Message}");
+                        }
+                    }
+
+                    _kugouLoginStatus = login.DisplayStatus;
+                    _kugouVipLabel = login.VipLabel;
+                    if (!_kugouLoginWarned)
+                    {
+                        if (!login.LoggedIn)
+                        {
+                            _system.Add("酷狗未登录：点击「酷狗登录」扫码，登录后会自动领取每日试用会员");
+                        }
+                        else if (string.IsNullOrWhiteSpace(login.VipLabel))
+                        {
+                            _system.Add("酷狗已登录，正在自动领取试用会员；若仍无会员请重新扫码");
+                        }
+
+                        _kugouLoginWarned = true;
+                    }
+                }
+                else
+                {
+                    _kugouLoginStatus = "离线";
+                    _kugouVipLabel = "";
+                }
+
                 if (health != null)
                 {
-                    _adminAccountStatus = health.LoginOk ? "管理员已登录" : "未登录";
+                    _adminAccountStatus = health.LoginOk ? "已登录" : "未登录";
                     _adminNickname = health.Nickname ?? "-";
                 }
                 else
@@ -352,17 +420,23 @@ public sealed class LiveAppHost : IDisposable
 
     public void Dispose()
     {
-        _watchCts?.Cancel();
-        _dataCleanup.Dispose();
-        _backendSync.Dispose();
-        _adminWeb.Dispose();
-        _giftCollector.Dispose();
-        _gift.Dispose();
-        _danmaku.Dispose();
-        _replyQueue.Dispose();
-        _playbackCommands.Dispose();
-        _playback.Dispose();
-        _db.Dispose();
-        _log.Info("LiveAssistant 已退出");
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
+        try { _watchCts?.Cancel(); } catch { /* ignore */ }
+        try { _dataCleanup.Dispose(); } catch { /* ignore */ }
+        try { _backendSync.Dispose(); } catch { /* ignore */ }
+        try { _adminTunnel.Dispose(); } catch { /* ignore */ }
+        try { _adminWeb.Dispose(); } catch { /* ignore */ }
+        try { _giftCollector.Dispose(); } catch { /* ignore */ }
+        try { _gift.Dispose(); } catch { /* ignore */ }
+        try { _danmaku.Dispose(); } catch { /* ignore */ }
+        try { _replyQueue.Dispose(); } catch { /* ignore */ }
+        try { _playbackCommands.Dispose(); } catch { /* ignore */ }
+        try { _playback.Dispose(); } catch { /* ignore */ }
+        try { _db.Dispose(); } catch { /* ignore */ }
+        try { _log.Info($"{AppBranding.DisplayName} 已退出"); } catch { /* ignore */ }
     }
 }

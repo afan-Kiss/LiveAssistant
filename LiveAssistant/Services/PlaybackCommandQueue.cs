@@ -372,7 +372,8 @@ public sealed class PlaybackCommandQueue : IDisposable
         var track = _resolveFresh != null
             ? await _resolveFresh(item, ct)
             : await _kugou.ResolveFreshTrackAsync(
-                item.Hash, item.SongName, item.Artist, item.SongId, item.Nickname, item.IsRandom, ct);
+                item.Hash, item.SongName, item.Artist, item.SongId, item.Nickname, item.IsRandom,
+                item.AlbumId, item.AlbumAudioId, ct);
 
         if (track == null || string.IsNullOrWhiteSpace(track.PlayUrl))
         {
@@ -386,6 +387,16 @@ public sealed class PlaybackCommandQueue : IDisposable
         if (!string.IsNullOrWhiteSpace(track.Hash))
         {
             item.Hash = track.Hash;
+        }
+
+        if (!string.IsNullOrWhiteSpace(track.AlbumId))
+        {
+            item.AlbumId = track.AlbumId;
+        }
+
+        if (track.AlbumAudioId > 0)
+        {
+            item.AlbumAudioId = track.AlbumAudioId;
         }
 
         _queue.SetNowPlaying(item);
@@ -415,23 +426,34 @@ public sealed class PlaybackCommandQueue : IDisposable
         }
     }
 
-    private async Task PlayRandomAsync(bool isRandomFill, CancellationToken ct)
+    private async Task<TrackInfo?> ResolveRandomTrackAsync(CancellationToken ct)
     {
-        var pick = _random.PickNext();
-        if (pick == null)
+        var source = _config.Settings.RandomPlaylist.Source?.Trim() ?? "kugou";
+        if (source.Equals("fixed", StringComparison.OrdinalIgnoreCase))
         {
-            _system.Add("随机歌单为空，无法补位");
-            _log.PlaybackWarn("随机歌单为空");
-            return;
+            var pick = _random.PickNext();
+            if (pick == null)
+            {
+                _system.Add("随机歌单为空，无法补位");
+                _log.PlaybackWarn("随机歌单为空");
+                return null;
+            }
+
+            return await _kugou.ResolveTrackFromItemAsync(pick, ct);
         }
 
-        var track = await _kugou.ResolveTrackFromItemAsync(pick, ct);
+        return await _kugou.PickRandomTrackAsync(_random.WasRecentlyPlayed, ct);
+    }
+
+    private async Task PlayRandomAsync(bool isRandomFill, CancellationToken ct)
+    {
+        var track = await ResolveRandomTrackAsync(ct);
         if (track == null || string.IsNullOrWhiteSpace(track.PlayUrl))
         {
-            var songLabel = pick.Keyword ?? pick.Title ?? "?";
+            var songLabel = track?.SongName ?? "随机";
             _log.LogPlayback(songLabel, "random", "随机", null, false, "随机曲目解析失败");
             _log.LogPlaybackError(songLabel, "随机", "random", null, "随机曲目解析失败");
-            _system.Add($"随机歌曲解析失败: {pick.Keyword ?? pick.Title}");
+            _system.Add("酷狗曲库随机取歌失败：请确认酷狗 API 在线并已扫码登录（会自动领取试用会员）");
             await FailCurrentAndContinueAsync(songLabel, ct);
             return;
         }
@@ -495,12 +517,13 @@ public sealed class PlaybackCommandQueue : IDisposable
 
     private Task HandlePlayFailureAsync(string songName)
     {
+        var label = string.IsNullOrWhiteSpace(songName) ? "未知歌曲" : songName.Trim();
         var msg = _reply.Render("playbackError", new Dictionary<string, string>
         {
-            ["song"] = songName
+            ["song"] = label
         });
-        _system.Add(string.IsNullOrWhiteSpace(msg) ? $"播放失败，已跳过《{songName}》" : msg);
-        _log.PlaybackWarn($"播放失败: {songName}");
+        _system.Add(string.IsNullOrWhiteSpace(msg) ? $"播放失败，已跳过《{label}》" : msg);
+        _log.PlaybackWarn($"播放失败: {label}");
         return Task.CompletedTask;
     }
 

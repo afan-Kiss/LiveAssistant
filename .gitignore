@@ -8,3 +8,9 @@ logs/
 *.db
 *.db-journal
 Config/DeployCredentials.local.json
+LiveAssistant/Config/DeployCredentials.local.json
+
+# sidecar 二进制（体积大，用 scripts/sync-sidecars.py 同步）
+sidecars/
+publish/
+

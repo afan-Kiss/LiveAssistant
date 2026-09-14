@@ -97,4 +97,22 @@ public sealed class GiftRepository
         }
         return list;
     }
+
+    public bool HasReceivedGift(string userId, string giftName)
+    {
+        if (string.IsNullOrWhiteSpace(userId) || string.IsNullOrWhiteSpace(giftName))
+        {
+            return false;
+        }
+
+        using var conn = _db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT COUNT(1) FROM gift_events
+            WHERE user_id = $uid AND gift_name = $name COLLATE NOCASE
+            """;
+        cmd.Parameters.AddWithValue("$uid", userId);
+        cmd.Parameters.AddWithValue("$name", giftName.Trim());
+        return Convert.ToInt32(cmd.ExecuteScalar()) > 0;
+    }
 }

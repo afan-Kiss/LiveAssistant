@@ -12,5 +12,6 @@
   "systemDouyinDown": "抖音服务未响应",
   "welcome": "欢迎 {name} 来到直播间~",
   "banVotePassed": "@{name} 已被投票禁言",
-  "giftThanks": "感谢 {name} 送出 {gift}×{count}"
+  "giftThanks": "感谢 {name} 送出 {gift}×{count}",
+  "pointsQuery": "@{name} 你当前有 {score} 积分，等级 Lv{level}"
 }

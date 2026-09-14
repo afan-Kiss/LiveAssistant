@@ -8,6 +8,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>LiveAssistant</RootNamespace>
     <AssemblyName>LiveAssistant</AssemblyName>
+    <AssemblyTitle>24小时直播助手</AssemblyTitle>
+    <Product>24小时直播助手</Product>
   </PropertyGroup>
 
   <ItemGroup>
@@ -23,6 +25,7 @@
     </PackageReference>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.11" />
     <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="SSH.NET" Version="2026.0.0" />
   </ItemGroup>
 
   <ItemGroup>
@@ -37,9 +40,41 @@
     </Content>
   </ItemGroup>
 
+  <!-- 单文件发布：把必要静态资源打进 EXE，启动时释放到 EXE 旁 -->
+  <ItemGroup>
+    <EmbeddedResource Include="Config\appsettings.json">
+      <LogicalName>LiveAssistant.Packaged.Config.appsettings.json</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Config\ReplyTemplates.json">
+      <LogicalName>LiveAssistant.Packaged.Config.ReplyTemplates.json</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Admin\wwwroot\index.html">
+      <LogicalName>LiveAssistant.Packaged.Admin.wwwroot.index.html</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Config\DeployCredentials.local.json" Condition="Exists('Config\DeployCredentials.local.json')">
+      <LogicalName>LiveAssistant.Packaged.Config.DeployCredentials.local.json</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
   <!-- Source: https://github.com/opedium/douyin-live-proto (MIT) -->
   <ItemGroup>
     <Protobuf Include="GiftProtocol\Proto\douyin_live.proto" GrpcServices="None" Access="Public" />
   </ItemGroup>
+
+  <!-- 开发构建：把 sidecars/ 复制到输出目录，便于 dotnet run 直接启动 -->
+  <Target Name="CopySidecarsToOutput" AfterTargets="Build">
+    <PropertyGroup>
+      <SidecarsRoot>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\..\sidecars'))</SidecarsRoot>
+    </PropertyGroup>
+    <ItemGroup>
+      <SidecarExe Include="$(SidecarsRoot)\抖音直播弹幕助手.exe" Condition="Exists('$(SidecarsRoot)\抖音直播弹幕助手.exe')" />
+      <SidecarExe Include="$(SidecarsRoot)\酷狗api_v1.5.exe" Condition="Exists('$(SidecarsRoot)\酷狗api_v1.5.exe')" />
+      <SidecarKgapijs Include="$(SidecarsRoot)\kgapijs\**\*" Condition="Exists('$(SidecarsRoot)\kgapijs')" />
+      <SidecarData Include="$(SidecarsRoot)\data\**\*" Condition="Exists('$(SidecarsRoot)\data')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(SidecarExe)" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" Condition="'@(SidecarExe)' != ''" />
+    <Copy SourceFiles="@(SidecarKgapijs)" DestinationFiles="@(SidecarKgapijs->'$(OutputPath)kgapijs\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" Condition="'@(SidecarKgapijs)' != ''" />
+    <Copy SourceFiles="@(SidecarData)" DestinationFiles="@(SidecarData->'$(OutputPath)data\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" Condition="'@(SidecarData)' != ''" />
+  </Target>
 
 </Project>

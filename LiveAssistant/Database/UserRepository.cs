@@ -95,6 +95,36 @@ public sealed class UserRepository
         return list;
     }
 
+    public List<UserProfile> SearchUsers(string query, int limit = 100)
+    {
+        query = query.Trim();
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return ListUsers(limit);
+        }
+
+        var list = new List<UserProfile>();
+        using var conn = _db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT user_id, nickname, role, status, points, level, request_count, last_request_at,
+                   song_permission_credits, song_permission_unlimited
+            FROM users
+            WHERE nickname LIKE $q COLLATE NOCASE OR user_id LIKE $q
+            ORDER BY points DESC, updated_at DESC
+            LIMIT $limit
+            """;
+        cmd.Parameters.AddWithValue("$q", "%" + query + "%");
+        cmd.Parameters.AddWithValue("$limit", limit);
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            list.Add(ReadUser(reader));
+        }
+
+        return list;
+    }
+
     public UserProfile? FindByNickname(string nickname)
     {
         if (string.IsNullOrWhiteSpace(nickname))
@@ -296,6 +326,7 @@ public sealed class UserRepository
             return;
         }
 
+        EnsureUser(userId, "");
         var now = DateTime.Now.ToString("O");
         using var conn = _db.Open();
         using var cmd = conn.CreateCommand();
@@ -316,6 +347,7 @@ public sealed class UserRepository
             return;
         }
 
+        EnsureUser(userId, "");
         var now = DateTime.Now.ToString("O");
         using var conn = _db.Open();
         using var cmd = conn.CreateCommand();

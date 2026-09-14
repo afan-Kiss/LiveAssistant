@@ -24,6 +24,9 @@ public sealed class DouyinDanmakuFeedData
 
     [JsonPropertyName("running")]
     public bool Running { get; set; }
+
+    [JsonPropertyName("mention_count")]
+    public int MentionCount { get; set; }
 }
 
 public sealed class DouyinDanmakuMessage
@@ -121,6 +124,9 @@ public sealed class DouyinRoomData
     [JsonPropertyName("title")]
     public string? Title { get; set; }
 
+    [JsonPropertyName("owner")]
+    public DouyinUser? Owner { get; set; }
+
     [JsonPropertyName("status")]
     public int Status { get; set; }
 
@@ -158,6 +164,39 @@ public sealed class KugouSearchData
     public List<KugouSongItem>? Songs { get; set; }
 }
 
+public sealed class KugouVipClaimData
+{
+    [JsonPropertyName("claimed")]
+    public bool Claimed { get; set; }
+
+    [JsonPropertyName("upgraded")]
+    public bool Upgraded { get; set; }
+
+    [JsonPropertyName("already_claimed")]
+    public bool AlreadyClaimed { get; set; }
+
+    [JsonPropertyName("vip_label")]
+    public string? VipLabel { get; set; }
+
+    [JsonPropertyName("message")]
+    public string? Message { get; set; }
+}
+
+public sealed class KugouLoginStatusData
+{
+    [JsonPropertyName("logged_in")]
+    public bool LoggedIn { get; set; }
+
+    [JsonPropertyName("nickname")]
+    public string? Nickname { get; set; }
+
+    [JsonPropertyName("vip_label")]
+    public string? VipLabel { get; set; }
+
+    [JsonPropertyName("vip_end")]
+    public string? VipEnd { get; set; }
+}
+
 public sealed class KugouSongItem
 {
     [JsonPropertyName("id")]
@@ -168,6 +207,12 @@ public sealed class KugouSongItem
 
     [JsonPropertyName("hash")]
     public string? Hash { get; set; }
+
+    [JsonPropertyName("album_id")]
+    public string? AlbumId { get; set; }
+
+    [JsonPropertyName("album_audio_id")]
+    public long AlbumAudioId { get; set; }
 
     [JsonPropertyName("歌曲名称")]
     public string? SongName { get; set; }
@@ -183,6 +228,15 @@ public sealed class KugouUrlData
 {
     [JsonPropertyName("url")]
     public string? Url { get; set; }
+
+    [JsonPropertyName("is_preview")]
+    public bool IsPreview { get; set; }
+
+    [JsonPropertyName("time_length")]
+    public int TimeLength { get; set; }
+
+    [JsonPropertyName("quality")]
+    public string? Quality { get; set; }
 
     [JsonPropertyName("歌曲名称")]
     public string? SongName { get; set; }

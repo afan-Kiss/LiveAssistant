@@ -9,6 +9,8 @@ public sealed class QueueItem
     public string Artist { get; set; } = "";
     public string SongId { get; set; } = "";
     public string Hash { get; set; } = "";
+    public string AlbumId { get; set; } = "";
+    public long AlbumAudioId { get; set; }
     public string? PlayUrl { get; set; }
     public bool IsRandom { get; set; }
     public int SortOrder { get; set; }

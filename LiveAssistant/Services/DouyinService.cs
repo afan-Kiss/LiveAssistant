@@ -1,6 +1,7 @@
 using LiveAssistant.Config;
 using LiveAssistant.Models;
 using LiveAssistant.Utils;
+using System.Text.Json;
 
 namespace LiveAssistant.Services;
 
@@ -54,6 +55,14 @@ public sealed class DouyinService
             return result?.Ok == true ? result.Data : null;
         }, null);
 
+    public Task<DouyinDanmakuFeedData?> PollAtDanmakuAsync(string webRid, int after, int limit = 50, CancellationToken ct = default)
+        => SafeAsync("poll_at_danmaku", async () =>
+        {
+            var result = await HttpJson.PostAsync<DouyinEnvelope<DouyinDanmakuFeedData>>(_client, "api/live/danmaku/at/feed",
+                new { web_rid = webRid, after, limit }, ct);
+            return result?.Ok == true ? result.Data : null;
+        }, null);
+
     public Task<bool> SendMentionAsync(string webRid, string userId, string content, CancellationToken ct = default)
         => SafeAsync("send_mention", async () =>
         {
@@ -96,10 +105,44 @@ public sealed class DouyinService
     public Task<DouyinUser?> LookupUserAsync(string webRid, string keyword, CancellationToken ct = default)
         => SafeAsync("lookup_user", async () =>
         {
-            var result = await HttpJson.PostAsync<DouyinEnvelope<DouyinLookupData>>(_client, "api/live/user/lookup",
+            var result = await HttpJson.PostAsync<DouyinEnvelope<JsonElement>>(_client, "api/live/user/lookup",
                 new { web_rid = webRid, keyword }, ct);
-            return result?.Ok == true ? result.Data?.User : null;
+            if (result?.Ok != true)
+            {
+                return null;
+            }
+
+            return ParseLookupUser(result.Data);
         }, null);
+
+    internal static DouyinUser? ParseLookupUser(JsonElement data)
+    {
+        if (data.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in data.EnumerateArray())
+            {
+                var user = item.Deserialize<DouyinUser>(HttpJson.Options);
+                if (user != null && !string.IsNullOrWhiteSpace(user.UserId))
+                {
+                    return user;
+                }
+            }
+
+            return null;
+        }
+
+        if (data.ValueKind == JsonValueKind.Object)
+        {
+            if (data.TryGetProperty("user", out var nested))
+            {
+                return nested.Deserialize<DouyinUser>(HttpJson.Options);
+            }
+
+            return data.Deserialize<DouyinUser>(HttpJson.Options);
+        }
+
+        return null;
+    }
 
     private async Task<T> SafeAsync<T>(string operation, Func<Task<T>> action, T fallback)
     {

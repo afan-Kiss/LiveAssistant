@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>24小时直播助手 · 没运行</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      background: #0f1419;
+      color: #e7e9ea;
+    }
+    .card {
+      background: #1a1f26;
+      border-radius: 16px;
+      padding: 36px 40px;
+      width: min(420px, 92vw);
+      text-align: center;
+      border: 1px solid #38444d;
+    }
+    h1 { font-size: 22px; margin-bottom: 18px; font-weight: 600; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 18px;
+      border-radius: 999px;
+      font-size: 18px;
+      font-weight: 700;
+      background: rgba(244, 33, 46, 0.15);
+      color: #f4212e;
+      border: 1px solid rgba(244, 33, 46, 0.45);
+    }
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #f4212e;
+      box-shadow: 0 0 0 4px rgba(244, 33, 46, 0.2);
+    }
+    p { margin-top: 18px; color: #8b98a5; font-size: 14px; line-height: 1.6; }
+    #hint { margin-top: 10px; font-size: 12px; color: #6e767d; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>24小时直播助手</h1>
+    <div class="badge"><span class="dot"></span>没运行</div>
+    <p>客户端未启动或未连上云端。<br>请在电脑上打开 24小时直播助手。</p>
+    <p id="hint">后台静默检测中…</p>
+  </div>
+  <script>
+    // 禁止整页刷新。仅探测独立 health；在线后才跳转一次。
+    let jumping = false;
+    const hint = document.getElementById('hint');
+
+    function stamp() {
+      const d = new Date();
+      const p = (n) => String(n).padStart(2, '0');
+      return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+    }
+
+    async function poke() {
+      if (jumping) return;
+      try {
+        const res = await fetch('/diangexitong/health?_=' + Date.now(), {
+          method: 'GET',
+          cache: 'no-store',
+          headers: { 'Accept': 'application/json' }
+        });
+        if (res.status === 200) {
+          const data = await res.json().catch(() => null);
+          if (data && data.ok === true) {
+            jumping = true;
+            hint.textContent = '已检测到在线，正在进入…';
+            location.replace('/diangexitong/');
+            return;
+          }
+        }
+        hint.textContent = '仍未运行 · 上次检测 ' + stamp();
+      } catch (_) {
+        hint.textContent = '检测失败 · 上次尝试 ' + stamp();
+      }
+    }
+
+    setInterval(poke, 5000);
+    poke();
+  </script>
+</body>
+</html>

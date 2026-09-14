@@ -10,13 +10,19 @@ public sealed class DanmakuService : IDisposable
     private readonly DanmakuDeduplicator _deduper;
     private CancellationTokenSource? _cts;
     private int _after;
+    private int _afterAt;
     private string _webRid = "";
 
     public event Action<DanmakuItem>? DanmakuReceived;
 
     public bool IsRunning { get; private set; }
     public string ConnectionStatus { get; private set; } = "未连接";
-    public string AccountNickname { get; private set; } = "-";
+    /// <summary>直播间主播昵称（来自 room/resolve 的 owner）。</summary>
+    public string RoomOwnerNickname { get; private set; } = "-";
+
+    /// <summary>抖音侧车 Cookie 登录昵称（用于 @ 回复/房管操作）。</summary>
+    public string DouyinLoginNickname { get; private set; } = "-";
+
     public string RoomTitle { get; private set; } = "-";
 
     public DanmakuService(
@@ -42,13 +48,15 @@ public sealed class DanmakuService : IDisposable
         Stop();
 
         var health = await _douyin.GetHealthAsync(ct);
-        AccountNickname = health?.Nickname ?? "-";
+        DouyinLoginNickname = health?.Nickname ?? "-";
 
         var room = await _douyin.ResolveRoomAsync(_webRid, ct);
+        RoomOwnerNickname = room?.Owner?.Nickname ?? "-";
         RoomTitle = room?.Title ?? _webRid;
 
         await _douyin.StartCollectAsync(_webRid, ct);
         _after = 0;
+        _afterAt = 0;
         _cts = new CancellationTokenSource();
         IsRunning = true;
         ConnectionStatus = "已连接";
@@ -75,53 +83,41 @@ public sealed class DanmakuService : IDisposable
             try
             {
                 var feed = await _douyin.PollDanmakuAsync(_webRid, _after, 50, ct);
-                if (feed != null)
+                var atFeed = await _douyin.PollAtDanmakuAsync(_webRid, _afterAt, 50, ct);
+                if (feed != null || atFeed != null)
                 {
                     failCount = 0;
-                    ConnectionStatus = feed.Running ? "已连接" : "监控中";
-                    _after = feed.MessageCount;
-
-                    if (feed.Items != null)
+                    ConnectionStatus = (feed?.Running ?? atFeed?.Running ?? false) ? "已连接" : "监控中";
+                    if (feed != null)
                     {
-                        foreach (var msg in feed.Items)
+                        _after = feed.MessageCount;
+                        DispatchItems(feed.Items);
+                    }
+
+                    if (atFeed != null)
+                    {
+                        _afterAt = atFeed.MentionCount > 0 ? atFeed.MentionCount : atFeed.MessageCount;
+                        DispatchItems(atFeed.Items);
+                    }
+                }
+                else
+                {
+                    failCount++;
+                    ConnectionStatus = "等待抖音API";
+                    if (failCount >= 3)
+                    {
+                        _system.Add("连接断开，正在重连...");
+                        try
                         {
-                            var msgType = msg.MsgType ?? "chat";
-                            if (string.IsNullOrWhiteSpace(msg.Content) && msgType == "chat")
-                            {
-                                continue;
-                            }
-
-                            try
-                            {
-                                var msgId = ResolveMsgId(msg);
-                                var userId = msg.User?.UserId ?? "";
-                                var nickname = msg.User?.Nickname ?? "未知";
-                                var content = msg.Content ?? "";
-
-                                _log.DouyinInfo(
-                                    $"[danmaku-recv] msg_id={msgId} user_id={userId} nickname={nickname} content={Truncate(content)}");
-
-                                if (!_deduper.TryAdmit(msgId))
-                                {
-                                    _log.DouyinInfo($"[danmaku-dedupe] drop msg_id={msgId}");
-                                    continue;
-                                }
-
-                                var item = new DanmakuItem
-                                {
-                                    MsgId = msgId,
-                                    Content = content,
-                                    Nickname = nickname,
-                                    UserId = userId,
-                                    MsgType = msgType,
-                                    Timestamp = DateTime.Now
-                                };
-                                DanmakuReceived?.Invoke(item);
-                            }
-                            catch (Exception ex)
-                            {
-                                _log.Error("douyin", "处理弹幕项异常", ex);
-                            }
+                            await _douyin.ReconnectAsync(_webRid, ct);
+                            await _douyin.StartCollectAsync(_webRid, ct);
+                            _system.Add("重连成功");
+                            _log.DouyinInfo("弹幕重连成功");
+                            failCount = 0;
+                        }
+                        catch (Exception rex)
+                        {
+                            _log.DouyinWarn($"重连失败: {rex.Message}");
                         }
                     }
                 }
@@ -165,6 +161,55 @@ public sealed class DanmakuService : IDisposable
             catch (Exception ex)
             {
                 _log.Error("douyin", "poll_delay", ex);
+            }
+        }
+    }
+
+    private void DispatchItems(List<DouyinDanmakuMessage>? items)
+    {
+        if (items == null)
+        {
+            return;
+        }
+
+        foreach (var msg in items)
+        {
+            var msgType = msg.MsgType ?? "chat";
+            if (string.IsNullOrWhiteSpace(msg.Content) && msgType == "chat")
+            {
+                continue;
+            }
+
+            try
+            {
+                var msgId = ResolveMsgId(msg);
+                var userId = msg.User?.UserId ?? "";
+                var nickname = msg.User?.Nickname ?? "未知";
+                var content = msg.Content ?? "";
+
+                _log.DouyinInfo(
+                    $"[danmaku-recv] msg_id={msgId} user_id={userId} nickname={nickname} content={Truncate(content)}");
+
+                if (!_deduper.TryAdmit(msgId))
+                {
+                    _log.DouyinInfo($"[danmaku-dedupe] drop msg_id={msgId}");
+                    continue;
+                }
+
+                var item = new DanmakuItem
+                {
+                    MsgId = msgId,
+                    Content = content,
+                    Nickname = nickname,
+                    UserId = userId,
+                    MsgType = msgType,
+                    Timestamp = DateTime.Now
+                };
+                DanmakuReceived?.Invoke(item);
+            }
+            catch (Exception ex)
+            {
+                _log.Error("douyin", "处理弹幕项异常", ex);
             }
         }
     }

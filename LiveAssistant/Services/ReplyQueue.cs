@@ -33,8 +33,6 @@ public sealed class ReplyQueue : IDisposable
     private readonly object _batchLock = new();
     private readonly List<SongRequestReplyEntry> _songBatch = new();
     private string _batchWebRid = "";
-    private string _batchUserId = "";
-    private int _batchQueueCount;
     private CancellationTokenSource? _batchCts;
 
     public ReplyQueue(
@@ -91,22 +89,28 @@ public sealed class ReplyQueue : IDisposable
         }
     }
 
-    public void EnqueueSongRequestReply(string webRid, string userId, string nickname, string songName, int queueCount)
+    public void EnqueueSongRequestReply(string webRid, string userId, string nickname, string songName, int aheadCount)
     {
-        if (string.IsNullOrWhiteSpace(webRid) || string.IsNullOrWhiteSpace(userId))
+        if (string.IsNullOrWhiteSpace(webRid))
         {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(userId))
+        {
+            _log.DouyinWarn($"点歌回复跳过：缺少 user_id，无法 @ {nickname}");
             return;
         }
 
         lock (_batchLock)
         {
             _batchWebRid = webRid;
-            _batchUserId = userId;
-            _batchQueueCount = queueCount;
             _songBatch.Add(new SongRequestReplyEntry
             {
+                UserId = userId,
                 Nickname = nickname,
-                SongName = songName
+                SongName = songName,
+                AheadCount = Math.Max(0, aheadCount)
             });
 
             _batchCts?.Cancel();
@@ -131,8 +135,6 @@ public sealed class ReplyQueue : IDisposable
     {
         List<SongRequestReplyEntry> items;
         string webRid;
-        string userId;
-        int queueCount;
 
         lock (_batchLock)
         {
@@ -143,29 +145,37 @@ public sealed class ReplyQueue : IDisposable
 
             items = _songBatch.ToList();
             webRid = _batchWebRid;
-            userId = _batchUserId;
-            queueCount = _batchQueueCount;
             _songBatch.Clear();
         }
 
-        var content = SongRequestReplyFormatter.FormatMerged(items, queueCount);
-        if (string.IsNullOrWhiteSpace(content))
+        foreach (var group in items.GroupBy(e => e.UserId, StringComparer.Ordinal))
         {
-            return;
-        }
+            var userId = group.Key;
+            if (string.IsNullOrWhiteSpace(userId))
+            {
+                _log.DouyinWarn("点歌回复跳过：缺少 user_id，无法 @ 对方");
+                continue;
+            }
 
-        var job = new ReplyJob
-        {
-            ReplyId = NewReplyId(),
-            WebRid = webRid,
-            UserId = userId,
-            Content = content,
-            IsSongRequestBatch = true
-        };
+            var content = SongRequestReplyFormatter.FormatForUser(group.ToList());
+            if (string.IsNullOrWhiteSpace(content))
+            {
+                continue;
+            }
 
-        if (!_channel.Writer.TryWrite(job))
-        {
-            _log.DouyinWarn($"点歌合并回复入队失败 reply_id={job.ReplyId}");
+            var job = new ReplyJob
+            {
+                ReplyId = NewReplyId(),
+                WebRid = webRid,
+                UserId = userId,
+                Content = content,
+                IsSongRequestBatch = group.Count() > 1
+            };
+
+            if (!_channel.Writer.TryWrite(job))
+            {
+                _log.DouyinWarn($"点歌 @ 回复入队失败 reply_id={job.ReplyId} user={userId}");
+            }
         }
     }
 

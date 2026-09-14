@@ -12,6 +12,7 @@ public sealed class SongRequestPermissionService
     private readonly SongBlacklistService _blacklist;
     private readonly LevelPermissionRepository _levelPerms;
     private readonly UserLevelService _levels;
+    private readonly GiftRepository? _gifts;
 
     public SongRequestPermissionService(
         ConfigManager config,
@@ -19,7 +20,8 @@ public sealed class SongRequestPermissionService
         QueueService queue,
         SongBlacklistService blacklist,
         LevelPermissionRepository levelPerms,
-        UserLevelService levels)
+        UserLevelService levels,
+        GiftRepository? gifts = null)
     {
         _config = config;
         _users = users;
@@ -27,6 +29,7 @@ public sealed class SongRequestPermissionService
         _blacklist = blacklist;
         _levelPerms = levelPerms;
         _levels = levels;
+        _gifts = gifts;
     }
 
     public SongRequestPermissionResult Evaluate(DanmakuItem item)
@@ -92,7 +95,9 @@ public sealed class SongRequestPermissionService
                     {
                         return Deny(user, item.Nickname, "未解锁点歌", $"需送礼物累计 {policy.GiftUnlockMinPoints} 积分");
                     }
-                    if (!string.IsNullOrWhiteSpace(policy.RequiredGiftName))
+                    if (!string.IsNullOrWhiteSpace(policy.RequiredGiftName)
+                        && _gifts != null
+                        && !_gifts.HasReceivedGift(item.UserId, policy.RequiredGiftName))
                     {
                         return Deny(user, item.Nickname, "需要指定礼物", $"需送出 {policy.RequiredGiftName}");
                     }

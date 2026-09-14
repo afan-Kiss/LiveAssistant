@@ -36,7 +36,7 @@ public static class SidecarCookieStore
                 return null;
             }
 
-            // build/bin/douyin-danmaku.exe → 优先 bin/data，再回退到仓库 data/
+            // 抖音直播弹幕助手.exe 在 build\ 旁 data\；旧版 douyin-danmaku 在 build\bin\data
             var candidates = new[]
             {
                 Path.Combine(binDir, "data", "cookies.json"),

@@ -9,13 +9,22 @@ public sealed class KugouService
     private readonly KugouSettings _settings;
     private readonly LogService _log;
     private readonly HttpClient _client;
+    private DateTime _loginCheckedAt = DateTime.MinValue;
+    private bool _lastLoggedIn;
+    private KugouLoginSnapshot _loginSnapshot = new();
+    private string? _lastVipClaimDate;
 
     public KugouService(KugouSettings settings, LogService log, HttpClient? client = null)
     {
         _settings = settings;
         _log = log;
         _client = client ?? HttpJson.CreateClient(settings.BaseUrl, settings.ApiKey, "X-API-Key");
+        _client.Timeout = TimeSpan.FromSeconds(45);
     }
+
+    public KugouLoginSnapshot LoginSnapshot => _loginSnapshot;
+
+    public string LoginPageUrl => $"{_settings.BaseUrl.TrimEnd('/')}/api/v1/login/page";
 
     public Task<bool> HealthCheckAsync(CancellationToken ct = default)
         => SafeAsync("health", async () =>
@@ -24,63 +33,270 @@ public sealed class KugouService
             return result?.Code == 0;
         }, false);
 
-    public Task<KugouSongItem?> SearchFirstAsync(string keyword, CancellationToken ct = default)
+    public Task<List<KugouSongItem>> SearchAsync(string keyword, int page = 1, int pageSize = 30, CancellationToken ct = default)
         => SafeAsync("search", async () =>
         {
             var result = await HttpJson.PostAsync<KugouResponse<KugouSearchData>>(_client, "api/v1/search",
-                new { keyword, page = 1, pagesize = 10 }, ct);
+                new { keyword, page, pagesize = pageSize }, ct);
             if (result?.Code != 0 || result.Data?.Songs == null || result.Data.Songs.Count == 0)
             {
+                return new List<KugouSongItem>();
+            }
+
+            return result.Data.Songs;
+        }, new List<KugouSongItem>());
+
+    public Task<KugouSongItem?> SearchFirstAsync(string keyword, CancellationToken ct = default)
+        => SafeAsync("search", async () =>
+        {
+            var songs = await SearchAsync(keyword, 1, 10, ct);
+            return songs.Count == 0 ? null : songs[0];
+        }, null);
+
+    public async Task<KugouLoginSnapshot> RefreshLoginStatusAsync(CancellationToken ct = default)
+    {
+        var status = await HttpJson.GetAsync<KugouResponse<KugouLoginStatusData>>(
+            _client, "api/v1/login/status?refresh=1", ct);
+        _loginCheckedAt = DateTime.UtcNow;
+        _lastLoggedIn = status?.Code == 0 && status.Data?.LoggedIn == true;
+        _loginSnapshot = new KugouLoginSnapshot
+        {
+            LoggedIn = _lastLoggedIn,
+            Nickname = status?.Data?.Nickname?.Trim() ?? "",
+            VipLabel = status?.Data?.VipLabel?.Trim() ?? "",
+            VipEnd = status?.Data?.VipEnd?.Trim() ?? ""
+        };
+
+        if (_lastLoggedIn)
+        {
+            var label = _loginSnapshot.DisplayStatus;
+            if (!string.IsNullOrWhiteSpace(_loginSnapshot.VipEnd))
+            {
+                label += $" 至 {_loginSnapshot.VipEnd}";
+            }
+
+            _log.KugouInfo($"酷狗登录: {label}");
+        }
+
+        return _loginSnapshot;
+    }
+
+    /// <summary>每日自动领取概念版试用会员（对齐 MoeKoeMusic getVip）。</summary>
+    public async Task<KugouVipClaimResult?> TryAutoClaimVipAsync(CancellationToken ct = default)
+    {
+        if (!_settings.AutoClaimVip || !_lastLoggedIn)
+        {
+            return null;
+        }
+
+        var today = DateTime.Now.ToString("yyyy-MM-dd");
+        if (_lastVipClaimDate == today)
+        {
+            return null;
+        }
+
+        var result = await ClaimDailyVipAsync(ct);
+        if (result != null)
+        {
+            _lastVipClaimDate = today;
+        }
+
+        return result;
+    }
+
+    public Task<KugouVipClaimResult?> ClaimDailyVipAsync(CancellationToken ct = default)
+        => SafeAsync("vip_claim", async () =>
+        {
+            var result = await HttpJson.GetAsync<KugouResponse<KugouVipClaimData>>(
+                _client, "api/v1/vip/claim", ct);
+            if (result?.Code != 0 || result.Data == null)
+            {
+                _log.KugouWarn($"自动领取试用会员失败: {result?.Msg ?? "无响应"}");
                 return null;
             }
-            return result.Data.Songs[0];
+
+            var data = result.Data;
+            var msg = data.Message?.Trim() ?? result.Msg?.Trim() ?? "";
+            if (data.Claimed || data.Upgraded)
+            {
+                _log.KugouInfo($"试用会员: {msg}");
+            }
+            else if (data.AlreadyClaimed)
+            {
+                _log.KugouInfo("试用会员: 今日已领取");
+            }
+
+            return new KugouVipClaimResult
+            {
+                Claimed = data.Claimed,
+                Upgraded = data.Upgraded,
+                AlreadyClaimed = data.AlreadyClaimed,
+                Message = msg,
+                VipLabel = data.VipLabel?.Trim() ?? ""
+            };
         }, null);
+
+    /// <summary>从酷狗曲库随机搜歌并取可播放链接。</summary>
+    public async Task<TrackInfo?> PickRandomTrackAsync(
+        Func<string?, string?, bool> wasRecentlyPlayed,
+        CancellationToken ct = default)
+    {
+        var rng = Random.Shared;
+        var seeds = KugouRandomCatalog.SearchSeeds;
+
+        for (var attempt = 0; attempt < 12; attempt++)
+        {
+            var keyword = seeds[rng.Next(seeds.Length)];
+            var page = rng.Next(1, 6);
+            var songs = await SearchAsync(keyword, page, 30, ct);
+            if (songs.Count == 0)
+            {
+                continue;
+            }
+
+            var order = Enumerable.Range(0, songs.Count).OrderBy(_ => rng.Next()).ToList();
+            foreach (var index in order)
+            {
+                var song = songs[index];
+                var hash = song.Hash?.Trim() ?? "";
+                var songId = FirstNonEmpty(song.SongId, song.Id);
+                var songName = song.SongName?.Trim() ?? "";
+
+                if (string.IsNullOrWhiteSpace(hash) && string.IsNullOrWhiteSpace(songName))
+                {
+                    continue;
+                }
+
+                if (wasRecentlyPlayed(songId, hash))
+                {
+                    continue;
+                }
+
+                var track = await ResolveFromSongAsync(song, keyword, isRandom: true, requester: "随机", ct);
+                if (track != null)
+                {
+                    return track;
+                }
+            }
+        }
+
+        _log.KugouWarn("酷狗曲库随机取歌失败，已重试多次");
+        return null;
+    }
 
     public Task<KugouUrlData?> GetPlayUrlAsync(string? hash, string? keyword, CancellationToken ct = default)
-        => SafeAsync("song_url", async () =>
-        {
-            object body = !string.IsNullOrWhiteSpace(hash)
-                ? new { hash, mode = "auto", quality = "auto" }
-                : new { keyword, mode = "auto", quality = "auto" };
+        => GetPlayUrlAsync(KugouSongContext.FromHash(hash, keyword), ct);
 
-            var result = await HttpJson.PostAsync<KugouResponse<KugouUrlData>>(_client, "api/v1/song/url", body, ct);
+    internal Task<KugouUrlData?> GetPlayUrlAsync(KugouSongContext ctx, CancellationToken ct = default)
+        => SafeAsync("song_url", () => GetPlayUrlCoreAsync(ctx, ct), null);
+
+    private async Task<KugouUrlData?> GetPlayUrlCoreAsync(KugouSongContext ctx, CancellationToken ct)
+        => await GetPlayUrlCoreAsync(ctx, allowPreviewFallback: true, tryAlternates: true, ct);
+
+    private async Task<KugouUrlData?> GetPlayUrlCoreAsync(
+        KugouSongContext ctx,
+        bool allowPreviewFallback,
+        bool tryAlternates,
+        CancellationToken ct)
+    {
+        await EnsureLoginReadyAsync(forceRefresh: false, ct);
+
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            if (attempt > 0)
+            {
+                await TryAutoClaimVipAsync(ct);
+                await RefreshLoginStatusAsync(ct);
+            }
+
+            var result = await PostSongUrlAsync(ctx, "auto", ct);
             if (result?.Code != 0 || string.IsNullOrWhiteSpace(result.Data?.Url))
             {
-                _log.KugouWarn($"取链失败: {result?.Msg ?? "无响应"}");
-                return null;
+                _log.KugouWarn($"取链失败 mode=auto: {result?.Msg ?? "无响应"} ({Label(ctx)})");
+                continue;
             }
+
+            if (ShouldRejectPreview(result.Data))
+            {
+                if (attempt == 0)
+                {
+                    _log.KugouWarn($"登录态仍返回试听链，刷新登录后重试: {Label(ctx)}");
+                    continue;
+                }
+
+                _log.KugouWarn($"完整音不可用，降级试听: {Label(ctx)}");
+                return result.Data;
+            }
+
+            if (result.Data.IsPreview)
+            {
+                _log.KugouWarn($"未登录或会员曲，已降级试听: {Label(ctx)}");
+            }
+
             return result.Data;
-        }, null);
+        }
+
+        if (allowPreviewFallback)
+        {
+            var preview = await PostSongUrlAsync(ctx, "preview", ct);
+            if (preview?.Code == 0 && !string.IsNullOrWhiteSpace(preview.Data?.Url))
+            {
+                _log.KugouWarn($"完整音取链失败，已改用试听: {Label(ctx)}");
+                return preview.Data;
+            }
+        }
+
+        if (tryAlternates && !string.IsNullOrWhiteSpace(ctx.Keyword))
+        {
+            var songs = await SearchAsync(ctx.Keyword, 1, 10, ct);
+            foreach (var song in songs)
+            {
+                var hash = song.Hash?.Trim() ?? "";
+                if (string.IsNullOrWhiteSpace(hash) || hash.Equals(ctx.Hash, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var alt = await GetPlayUrlCoreAsync(
+                    KugouSongContext.FromSong(song, ctx.Keyword),
+                    allowPreviewFallback: true,
+                    tryAlternates: false,
+                    ct);
+                if (alt != null)
+                {
+                    return alt;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private bool ShouldRejectPreview(KugouUrlData data)
+        => _settings.RequireFullPlayback && _lastLoggedIn && data.IsPreview;
 
     public async Task<TrackInfo?> ResolveTrackAsync(string keyword, CancellationToken ct = default)
     {
-        var song = await SearchFirstAsync(keyword, ct);
-        if (song == null)
+        var songs = await SearchAsync(keyword, 1, 10, ct);
+        foreach (var song in songs)
         {
-            return null;
+            if (string.IsNullOrWhiteSpace(song.Hash) && string.IsNullOrWhiteSpace(song.SongName))
+            {
+                continue;
+            }
+
+            var track = await ResolveFromSongAsync(song, keyword, isRandom: false, requester: "", ct);
+            if (track != null)
+            {
+                return track;
+            }
         }
 
-        var hash = song.Hash ?? "";
-        var urlData = await GetPlayUrlAsync(hash, keyword, ct);
-        if (urlData == null)
-        {
-            return null;
-        }
-
-        return new TrackInfo
-        {
-            SongName = urlData.SongName ?? song.SongName ?? keyword,
-            Artist = urlData.Artist ?? song.Artist ?? "",
-            SongId = urlData.SongId ?? urlData.Id ?? song.SongId ?? song.Id ?? "",
-            Hash = hash,
-            PlayUrl = urlData.Url,
-            DurationSec = song.Duration
-        };
+        return null;
     }
 
     /// <summary>
-    /// 播放前取最新直链：优先 hash → GetPlayUrlAsync，失败再按歌名搜索。
-    /// 不使用入队时缓存的旧 PlayUrl。
+    /// 播放前取最新直链：优先 hash + 专辑信息 → GetPlayUrlAsync，失败再按歌名搜索。
     /// </summary>
     public async Task<TrackInfo?> ResolveFreshTrackAsync(
         string? hash,
@@ -89,26 +305,26 @@ public sealed class KugouService
         string? songId = null,
         string? requester = null,
         bool isRandom = false,
+        string? albumId = null,
+        long albumAudioId = 0,
         CancellationToken ct = default)
     {
         var name = songName?.Trim() ?? "";
         var songHash = hash?.Trim() ?? "";
 
-        if (!string.IsNullOrWhiteSpace(songHash))
+        if (!string.IsNullOrWhiteSpace(songHash) || albumAudioId > 0)
         {
-            var urlData = await GetPlayUrlAsync(songHash, name, ct);
+            var ctx = new KugouSongContext
+            {
+                Hash = songHash,
+                Keyword = name,
+                AlbumId = albumId?.Trim(),
+                AlbumAudioId = albumAudioId
+            };
+            var urlData = await GetPlayUrlAsync(ctx, ct);
             if (urlData != null && !string.IsNullOrWhiteSpace(urlData.Url))
             {
-                return new TrackInfo
-                {
-                    SongName = urlData.SongName ?? name,
-                    Artist = urlData.Artist ?? artist ?? "",
-                    SongId = urlData.SongId ?? urlData.Id ?? songId ?? "",
-                    Hash = songHash,
-                    PlayUrl = urlData.Url,
-                    IsRandom = isRandom,
-                    Requester = requester ?? ""
-                };
+                return BuildTrackInfo(urlData, songHash, name, artist, songId, requester, isRandom);
             }
 
             _log.KugouWarn($"hash 取链失败，回退歌名搜索: hash={songHash} song={name}");
@@ -146,7 +362,7 @@ public sealed class KugouService
                 item.SongId,
                 requester: null,
                 isRandom: true,
-                ct);
+                ct: ct);
         }
         catch (Exception ex)
         {
@@ -154,6 +370,104 @@ public sealed class KugouService
             _log.Error("kugou", "resolve_track_from_item", ex);
             return null;
         }
+    }
+
+    private async Task<TrackInfo?> ResolveFromSongAsync(
+        KugouSongItem song,
+        string? keyword,
+        bool isRandom,
+        string? requester,
+        CancellationToken ct)
+    {
+        var urlData = await GetPlayUrlAsync(KugouSongContext.FromSong(song, keyword), ct);
+        if (urlData == null || string.IsNullOrWhiteSpace(urlData.Url))
+        {
+            return null;
+        }
+
+        return BuildTrackInfo(
+            urlData,
+            song.Hash ?? "",
+            FirstNonEmpty(urlData.SongName, song.SongName, keyword),
+            FirstNonEmpty(urlData.Artist, song.Artist),
+            FirstNonEmpty(urlData.SongId, urlData.Id, song.SongId, song.Id),
+            requester,
+            isRandom,
+            song.AlbumId,
+            song.AlbumAudioId);
+    }
+
+    private static TrackInfo BuildTrackInfo(
+        KugouUrlData urlData,
+        string hash,
+        string? songName,
+        string? artist,
+        string? songId,
+        string? requester,
+        bool isRandom,
+        string? albumId = null,
+        long albumAudioId = 0)
+        => new()
+        {
+            SongName = songName?.Trim() ?? "",
+            Artist = artist?.Trim() ?? "",
+            SongId = songId?.Trim() ?? "",
+            Hash = hash.Trim(),
+            AlbumId = albumId?.Trim() ?? "",
+            AlbumAudioId = albumAudioId,
+            PlayUrl = urlData.Url,
+            DurationSec = urlData.TimeLength,
+            IsRandom = isRandom,
+            IsPreview = urlData.IsPreview,
+            Requester = requester ?? ""
+        };
+
+    private async Task<bool> EnsureLoginReadyAsync(bool forceRefresh, CancellationToken ct)
+    {
+        if (!forceRefresh && DateTime.UtcNow - _loginCheckedAt < TimeSpan.FromSeconds(45))
+        {
+            return _lastLoggedIn;
+        }
+
+        await RefreshLoginStatusAsync(ct);
+        return _lastLoggedIn;
+    }
+
+    private async Task<KugouResponse<KugouUrlData>?> PostSongUrlAsync(KugouSongContext ctx, string mode, CancellationToken ct)
+    {
+        object body = !string.IsNullOrWhiteSpace(ctx.Hash)
+            ? new
+            {
+                hash = ctx.Hash,
+                album_id = ctx.AlbumId,
+                album_audio_id = ctx.AlbumAudioId > 0 ? ctx.AlbumAudioId : (long?)null,
+                mode,
+                quality = "auto"
+            }
+            : new
+            {
+                keyword = ctx.Keyword,
+                mode,
+                quality = "auto"
+            };
+
+        return await HttpJson.PostAsync<KugouResponse<KugouUrlData>>(_client, "api/v1/song/url", body, ct);
+    }
+
+    private static string Label(KugouSongContext ctx)
+        => ctx.Keyword ?? ctx.Hash ?? "?";
+
+    private static string FirstNonEmpty(params string?[] values)
+    {
+        foreach (var value in values)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value.Trim();
+            }
+        }
+
+        return "";
     }
 
     private async Task<T> SafeAsync<T>(string operation, Func<Task<T>> action, T fallback)

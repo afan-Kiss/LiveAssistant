@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>点歌系统管理后台</title>
+  <title>24小时直播助手管理后台</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: "Segoe UI", sans-serif; background: #0f1419; color: #e7e9ea; }
@@ -33,37 +33,97 @@
     .tpl-grid { display: grid; gap: 12px; }
     .tpl-item label { display: block; font-size: 12px; color: #8b98a5; margin-bottom: 4px; }
     .tpl-item textarea { min-height: 60px; }
+    .status-badge {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 6px 12px; border-radius: 999px; font-size: 13px; font-weight: 700;
+    }
+    .status-badge .dot { width: 8px; height: 8px; border-radius: 50%; }
+    .status-online { background: rgba(0, 186, 124, 0.15); color: #00ba7c; border: 1px solid rgba(0, 186, 124, 0.45); }
+    .status-online .dot { background: #00ba7c; box-shadow: 0 0 0 3px rgba(0, 186, 124, 0.25); }
+    .status-offline { background: rgba(244, 33, 46, 0.15); color: #f4212e; border: 1px solid rgba(244, 33, 46, 0.45); }
+    .status-offline .dot { background: #f4212e; box-shadow: 0 0 0 3px rgba(244, 33, 46, 0.25); }
+    .title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+    .title-row h2 { margin-bottom: 0; }
+    header .left { display: flex; align-items: center; gap: 12px; }
+    .status-checking { background: rgba(139, 152, 165, 0.15); color: #8b98a5; border: 1px solid rgba(139, 152, 165, 0.45); }
+    .status-checking .dot { background: #8b98a5; }
+    .panel { background: #1a1f26; border: 1px solid #38444d; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    .panel h3 { font-size: 15px; margin-bottom: 8px; }
+    .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 12px 0; }
+    .option-card {
+      background: #0f1419; border: 2px solid #38444d; border-radius: 12px; padding: 14px; cursor: pointer;
+      transition: border-color .15s, background .15s;
+    }
+    .option-card:hover { border-color: #5b6b7a; }
+    .option-card.active { border-color: #1d9bf0; background: rgba(29, 155, 240, 0.08); }
+    .option-card h4 { margin-bottom: 6px; font-size: 14px; }
+    .option-card p { color: #8b98a5; font-size: 12px; line-height: 1.5; }
+    .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-top: 12px; }
+    .form-field label { display: block; font-size: 12px; color: #8b98a5; margin-bottom: 4px; }
+    .form-field input, .form-field select { margin: 0; }
+    .chip-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+    .chip {
+      background: #38444d; border: none; color: #e7e9ea; border-radius: 999px;
+      padding: 6px 12px; font-size: 12px; cursor: pointer; width: auto;
+    }
+    .chip:hover { background: #4a5a68; }
+    .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+    .toolbar input { width: auto; min-width: 160px; margin: 0; }
+    .edit-panel {
+      position: fixed; right: 24px; bottom: 24px; width: 360px; max-width: calc(100vw - 48px);
+      background: #1a1f26; border: 1px solid #38444d; border-radius: 12px; padding: 16px;
+      box-shadow: 0 12px 40px rgba(0,0,0,.45); z-index: 20;
+    }
+    .edit-panel.hidden { display: none; }
+    .edit-panel h3 { margin-bottom: 10px; }
+    .edit-actions { display: flex; gap: 8px; margin-top: 12px; }
+    .edit-actions button { width: auto; flex: 1; margin: 0; }
+    .inline-input { width: 72px; padding: 4px 6px; margin: 0; font-size: 12px; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; background: #38444d; }
+    .badge.ok { background: rgba(0,186,124,.2); color: #00ba7c; }
+    .badge.warn { background: rgba(255,173,31,.15); color: #ffad1f; }
   </style>
 </head>
 <body>
   <div id="loginView" class="login-wrap">
     <div class="card">
-      <h2>点歌系统 /diangexitong</h2>
-      <p class="hint">密码通过环境变量 LIVEASSISTANT_ADMIN_PASSWORD 或配置文件设置</p>
-      <input id="username" placeholder="用户名" value="admin">
-      <input id="password" type="password" placeholder="密码">
-      <button onclick="login()">登录</button>
+      <div class="title-row">
+        <h2>24小时直播助手</h2>
+        <span class="status-badge status-checking" data-runtime-status><span class="dot"></span>检测中</span>
+      </div>
+      <p class="hint">可直接登录；点歌客户端未运行时进入后显示「没运行」</p>
+      <input id="username" placeholder="用户名" value="" autocomplete="username">
+      <input id="password" type="password" placeholder="密码" autocomplete="current-password">
+      <button id="loginBtn" type="button" onclick="login()">登录</button>
       <p id="loginError" style="color:#f4212e;margin-top:8px"></p>
     </div>
   </div>
 
   <div id="appView" class="hidden">
-    <header><h1>点歌系统管理后台</h1><button class="sec" style="width:auto" onclick="logout()">退出</button></header>
+    <header>
+      <div class="left">
+        <h1>24小时直播助手管理后台</h1>
+        <span class="status-badge status-checking" data-runtime-status><span class="dot"></span>检测中</span>
+      </div>
+      <button class="sec" style="width:auto" onclick="logout()">退出</button>
+    </header>
     <nav id="nav"></nav>
     <main id="main"></main>
+    <div id="userEditPanel" class="edit-panel hidden"></div>
   </div>
 
   <script>
     const base = location.pathname.replace(/\/index\.html$/, '').replace(/\/$/, '') || '/diangexitong';
     let token = localStorage.getItem('adminToken') || '';
+    let appOnline = false;
     const tabs = [
       { id: 'dashboard', label: '控制台' },
       { id: 'queue', label: '点歌队列' },
       { id: 'users', label: '用户管理' },
       { id: 'templates', label: '回复模板' },
       { id: 'random', label: '随机歌曲' },
-      { id: 'gifts', label: '礼物规则' },
-      { id: 'policy', label: '点歌策略' },
+      { id: 'policy', label: '点歌设置' },
+      { id: 'gifts', label: '礼物积分' },
       { id: 'levels', label: '等级权限' },
       { id: 'keywords', label: '关键词回复' },
       { id: 'welcome', label: '欢迎消息' },
@@ -75,6 +135,7 @@
       { key: 'songRequestSuccess', label: '点歌成功' },
       { key: 'songRequestRejected', label: '点歌失败' },
       { key: 'songRequestQueued', label: '排队提示' },
+      { key: 'pointsQuery', label: '查积分回复' },
       { key: 'giftThanks', label: '礼物感谢' },
       { key: 'welcome', label: '欢迎消息' },
       { key: 'banVotePassed', label: '禁言结果' },
@@ -83,30 +144,76 @@
     ];
     let currentTab = 'dashboard';
 
+    function setRuntimeStatus(online) {
+      appOnline = !!online;
+      const label = appOnline ? '在线' : '没运行';
+      const cls = appOnline ? 'status-online' : 'status-offline';
+      document.querySelectorAll('[data-runtime-status]').forEach((el) => {
+        el.className = 'status-badge ' + cls;
+        el.innerHTML = '<span class="dot"></span>' + label;
+      });
+    }
+
+    async function refreshRuntimeStatus() {
+      try {
+        const res = await fetch(base + '/health?_=' + Date.now(), { cache: 'no-store' });
+        if (res.status === 200) {
+          const data = await res.json().catch(() => null);
+          setRuntimeStatus(data && data.ok === true);
+          return;
+        }
+      } catch (_) {}
+      setRuntimeStatus(false);
+    }
+
     async function api(method, path, body) {
       const res = await fetch(base + path, {
         method, headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
         body: body ? JSON.stringify(body) : undefined
       });
       if (res.status === 401) { logout(); throw new Error('unauthorized'); }
+      if (res.status === 502 || res.status === 503) {
+        setRuntimeStatus(false);
+        throw new Error('offline');
+      }
       return res.json().catch(() => ({}));
     }
 
     async function login() {
-      const res = await fetch(base + '/api/auth/login', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: document.getElementById('username').value, password: document.getElementById('password').value })
-      }).then(r => r.json());
-      if (res.ok) {
-        token = res.token; localStorage.setItem('adminToken', token);
-        document.getElementById('loginView').classList.add('hidden');
-        document.getElementById('appView').classList.remove('hidden');
-        renderNav(); showTab('dashboard');
-        setInterval(() => currentTab === 'dashboard' && renderDashboard(), 3000);
-      } else document.getElementById('loginError').textContent = res.message || '登录失败';
+      const err = document.getElementById('loginError');
+      err.textContent = '';
+      try {
+        const res = await fetch(base + '/api/auth/login', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: document.getElementById('username').value, password: document.getElementById('password').value })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (data.ok) {
+          token = data.token; localStorage.setItem('adminToken', token);
+          document.getElementById('loginView').classList.add('hidden');
+          document.getElementById('appView').classList.remove('hidden');
+          await refreshRuntimeStatus();
+          renderNav(); showTab('dashboard');
+          setInterval(() => currentTab === 'dashboard' && renderDashboard(), 3000);
+        } else err.textContent = data.message || '登录失败';
+      } catch (_) {
+        err.textContent = '登录失败，请稍后重试';
+      }
     }
 
     function logout() { token = ''; localStorage.removeItem('adminToken'); location.reload(); }
+
+    function bindLoginKeys() {
+      const onEnter = (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          login();
+        }
+      };
+      document.getElementById('username').addEventListener('keydown', onEnter);
+      document.getElementById('password').addEventListener('keydown', onEnter);
+    }
+    bindLoginKeys();
 
     function renderNav() {
       document.getElementById('nav').innerHTML = tabs.map(t =>
@@ -116,20 +223,44 @@
     function showTab(id) { currentTab = id; renderNav(); renderTab(); }
 
     async function renderTab() {
+      if (currentTab !== 'dashboard') {
+        await refreshRuntimeStatus();
+        if (!appOnline) {
+          await renderOfflineHint(tabs.find(t => t.id === currentTab)?.label || '功能');
+          return;
+        }
+      }
       const m = { dashboard: renderDashboard, queue: renderQueue, users: renderUsers, templates: renderTemplates,
         random: renderRandom, gifts: renderGiftRules, policy: renderPolicy, levels: renderLevels,
         keywords: renderKeywords, welcome: renderWelcome, banvote: renderBanVote, blacklist: renderBlacklist, cleanup: renderCleanup };
-      await (m[currentTab] || renderDashboard)();
+      try {
+        await (m[currentTab] || renderDashboard)();
+      } catch (_) {
+        await renderOfflineHint(tabs.find(t => t.id === currentTab)?.label || '功能');
+      }
     }
 
     async function renderDashboard() {
-      const s = await api('GET', '/api/status');
-      document.getElementById('main').innerHTML = `
+      await refreshRuntimeStatus();
+      if (!appOnline) {
+        document.getElementById('main').innerHTML = `
+          <h2>直播状态</h2>
+          <div class="grid">
+            <div class="stat"><label>24小时直播助手</label><div style="color:#f4212e;font-weight:700">没运行</div></div>
+          </div>
+          <p class="hint" style="margin-top:16px">客户端未启动或未连上云端。启动 24小时直播助手 后会自动变为在线。</p>`;
+        return;
+      }
+      try {
+        const s = await api('GET', '/api/status');
+        document.getElementById('main').innerHTML = `
         <h2>直播状态</h2>
         <div class="grid">
+          <div class="stat"><label>24小时直播助手</label><div style="color:#00ba7c;font-weight:700">在线</div></div>
           <div class="stat"><label>抖音连接</label><div>${s.douyinOnline ? '在线' : '离线'} ${s.danmakuConnection || ''}</div></div>
-          <div class="stat"><label>酷狗连接</label><div>${s.kugouOnline ? '在线' : '离线'}</div></div>
-          <div class="stat"><label>管理员账号</label><div>${s.adminAccountStatus || '-'} (${s.adminNickname || '-'})</div></div>
+          <div class="stat"><label>酷狗</label><div>${s.kugouOnline ? (s.kugouLoginStatus || '在线') : '离线'}${s.kugouLoginPageUrl ? ` <a href="${s.kugouLoginPageUrl}" target="_blank" rel="noopener">扫码登录</a>` : ''}</div></div>
+          <div class="stat"><label>主播</label><div>${s.roomOwnerNickname || '-'}</div></div>
+          <div class="stat"><label>抖音登录</label><div>${s.douyinLoginNickname || s.adminNickname || '-'}</div></div>
           <div class="stat"><label>当前歌曲</label><div>${s.currentSong}</div></div>
           <div class="stat"><label>播放模式</label><div>${s.playbackMode}</div></div>
           <div class="stat"><label>队列数量</label><div>${s.queueCount}</div></div>
@@ -149,6 +280,20 @@
           <button onclick="api('POST','/api/playback/random/off')">关闭随机播放</button>
           <button onclick="api('POST','/api/playback/clear-queue')">清空队列</button>
         </div>`;
+      } catch (_) {
+        setRuntimeStatus(false);
+        document.getElementById('main').innerHTML = `
+          <h2>直播状态</h2>
+          <div class="grid">
+            <div class="stat"><label>24小时直播助手</label><div style="color:#f4212e;font-weight:700">没运行</div></div>
+          </div>`;
+      }
+    }
+
+    async function renderOfflineHint(title) {
+      await refreshRuntimeStatus();
+      document.getElementById('main').innerHTML = `<h2>${title}</h2>
+        <p class="hint" style="color:#f4212e">24小时直播助手没运行，无法操作。请先启动客户端。</p>`;
     }
 
     async function renderQueue() {
@@ -171,44 +316,129 @@
       renderQueue();
     }
 
+    const giftPresets = [
+      { name: '小心心', points: 1 },
+      { name: '玫瑰花', points: 10 },
+      { name: '大啤酒', points: 2 },
+      { name: '棒棒糖', points: 9 },
+      { name: '亲吻', points: 99 },
+      { name: '抖音', points: 1 },
+      { name: '人气票', points: 1 }
+    ];
+    let policyDraft = null;
+    let userSearchTimer = null;
+
+    function esc(s) {
+      return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+    }
+
+    let editingUserId = '';
+
+    function closeUserEdit() {
+      editingUserId = '';
+      const panel = document.getElementById('userEditPanel');
+      if (panel) panel.classList.add('hidden');
+    }
+
+    function openUserEdit(user) {
+      editingUserId = user.userId || '';
+      const panel = document.getElementById('userEditPanel');
+      panel.classList.remove('hidden');
+      panel.innerHTML = `<h3>编辑用户</h3>
+        <p class="hint">${esc(user.nickname)} <span style="font-size:11px">${esc(user.userId)}</span></p>
+        <div class="form-grid">
+          <div class="form-field"><label>积分（直接设置）</label><input id="uePoints" type="number" value="${user.points}"></div>
+          <div class="form-field"><label>等级</label><input id="ueLevel" type="number" value="${user.level}"></div>
+          <div class="form-field"><label>角色</label>
+            <select id="ueRole"><option>normal</option><option>admin</option><option>manager</option><option>blacklist</option></select></div>
+          <div class="form-field"><label>状态</label>
+            <select id="ueStatus"><option>active</option><option>muted</option><option>banned</option></select></div>
+        </div>
+        <div class="form-grid" style="margin-top:8px">
+          <div class="form-field"><label>或：增减积分（填此项则忽略上方积分框）</label><input id="ueDelta" type="number" placeholder="正数加/负数减"></div>
+        </div>
+        <div class="edit-actions">
+          <button onclick="saveUserEdit()">保存</button>
+          <button class="sec" onclick="closeUserEdit()">关闭</button>
+        </div>`;
+      document.getElementById('ueRole').value = user.role || 'normal';
+      document.getElementById('ueStatus').value = user.status || 'active';
+    }
+
+    async function saveUserEdit() {
+      if (!editingUserId) return;
+      const body = {
+        level: +document.getElementById('ueLevel').value,
+        role: document.getElementById('ueRole').value,
+        status: document.getElementById('ueStatus').value
+      };
+      const delta = document.getElementById('ueDelta').value.trim();
+      if (delta !== '' && !Number.isNaN(+delta) && +delta !== 0) {
+        body.pointsDelta = +delta;
+      } else {
+        body.points = +document.getElementById('uePoints').value;
+      }
+      await api('PUT', '/api/users/' + encodeURIComponent(editingUserId), body);
+      editingUserId = '';
+      closeUserEdit();
+      loadUserTable();
+    }
+
     async function renderUsers() {
-      const users = await api('GET', '/api/users');
-      document.getElementById('main').innerHTML = `<h2>用户管理</h2><table>
-        <tr><th>用户ID</th><th>昵称</th><th>积分</th><th>等级</th><th>角色</th><th>状态</th><th>操作</th></tr>
+      document.getElementById('main').innerHTML = `<h2>用户管理</h2>
+        <div class="panel">
+          <p class="hint">可搜索昵称或用户ID，手动调整积分和等级。观众发弹幕 <b>查积分</b> 可查询自己的积分。</p>
+          <div class="toolbar">
+            <input id="userSearch" placeholder="搜索昵称 / 用户ID" oninput="debounceUserSearch()">
+            <button class="sm" onclick="renderUsers()">刷新</button>
+          </div>
+        </div>
+        <div id="userTableWrap"><p class="hint">加载中...</p></div>`;
+      await loadUserTable();
+    }
+
+    function debounceUserSearch() {
+      clearTimeout(userSearchTimer);
+      userSearchTimer = setTimeout(loadUserTable, 250);
+    }
+
+    window._usersCache = {};
+
+    async function loadUserTable() {
+      const q = document.getElementById('userSearch')?.value?.trim() || '';
+      const path = q ? '/api/users?q=' + encodeURIComponent(q) : '/api/users';
+      const users = await api('GET', path);
+      const wrap = document.getElementById('userTableWrap');
+      if (!wrap) return;
+      users.forEach(u => { window._usersCache[u.userId] = u; });
+      wrap.innerHTML = `<table>
+        <tr><th>昵称</th><th>积分</th><th>等级</th><th>点歌次数</th><th>角色</th><th>状态</th><th>操作</th></tr>
         ${users.map(u => `<tr>
-          <td style="font-size:11px">${u.userId}</td><td>${u.nickname}</td><td>${u.points}</td><td>${u.level}</td>
-          <td>${u.role}</td><td>${u.status}</td>
-          <td><button class="sm" onclick="editUser('${u.userId}',${u.points},${u.level},'${u.role}')">编辑</button>
-          <button class="sm" onclick="blacklistUser('${u.userId}')">拉黑</button>
-          <button class="sm" onclick="unblacklistUser('${u.userId}')">解除</button></td></tr>`).join('')}
+          <td><div>${esc(u.nickname)}</div><div class="hint" style="font-size:11px">${esc(u.userId)}</div></td>
+          <td><b>${u.points}</b>${u.songPermissionUnlimited ? ' <span class="badge ok">无限点歌</span>' : (u.songPermissionCredits > 0 ? ` <span class="badge warn">次数${u.songPermissionCredits}</span>` : '')}</td>
+          <td>Lv${u.level}</td><td>${u.requestCount || 0}</td>
+          <td>${esc(u.role)}</td><td>${esc(u.status)}</td>
+          <td>
+            <button class="sm" onclick="openUserEditById('${esc(u.userId)}')">编辑</button>
+            <button class="sm" onclick="blacklistUser('${esc(u.userId)}')">拉黑</button>
+            <button class="sm" onclick="unblacklistUser('${esc(u.userId)}')">解除</button>
+          </td></tr>`).join('')}
       </table>`;
     }
 
-    async function editUser(id, pts, lvl, role) {
-      const action = prompt('操作: set=设置积分 | add=增加 | deduct=扣除', 'set');
-      if (!action) return;
-      const val = prompt('数值', pts);
-      if (val === null) return;
-      const level = prompt('等级', lvl);
-      if (level === null) return;
-      const newRole = prompt('角色 normal/admin/manager/blacklist', role);
-      if (newRole === null) return;
-      const body = { level: +level, role: newRole };
-      if (action === 'add') body.pointsDelta = +val;
-      else if (action === 'deduct') body.pointsDelta = -Math.abs(+val);
-      else body.points = +val;
-      await api('PUT', '/api/users/' + encodeURIComponent(id), body);
-      renderUsers();
+    function openUserEditById(userId) {
+      const user = window._usersCache[userId];
+      if (user) openUserEdit(user);
     }
 
     async function blacklistUser(id) {
       await api('PUT', '/api/users/' + encodeURIComponent(id), { role: 'blacklist', status: 'banned' });
-      renderUsers();
+      loadUserTable();
     }
 
     async function unblacklistUser(id) {
       await api('PUT', '/api/users/' + encodeURIComponent(id), { role: 'normal', status: 'active' });
-      renderUsers();
+      loadUserTable();
     }
 
     async function renderTemplates() {
@@ -270,55 +500,144 @@
 
     async function renderGiftRules() {
       const rules = await api('GET', '/api/gift-rules');
-      document.getElementById('main').innerHTML = `<h2>礼物积分规则</h2>
-        <p class="hint">礼物由管理员账号 Sidecar 采集统计</p>
-        <div class="row">
-          <input id="gId" placeholder="礼物ID" style="width:100px">
-          <input id="gName" placeholder="礼物名" style="width:120px">
-          <input id="gPts" placeholder="积分" style="width:80px" type="number">
-          <label><input type="checkbox" id="gAllow" checked> 允许点歌</label>
-          <button onclick="addGiftRule()">添加</button>
+      document.getElementById('main').innerHTML = `<h2>礼物积分</h2>
+        <div class="panel">
+          <h3>快捷添加常见礼物</h3>
+          <p class="hint">点击礼物名快速添加规则；未配置的礼物按「总钻石 × 1」自动算积分。</p>
+          <div class="chip-row" id="giftPresetRow"></div>
         </div>
-        <table><tr><th>ID</th><th>礼物</th><th>积分</th><th>允许点歌</th><th>状态</th><th>操作</th></tr>
-        ${rules.map(r => `<tr><td>${r.giftId || '-'}</td><td>${r.giftName}</td><td>${r.points}</td>
-        <td>${r.allowSongRequest ? '是' : '否'}</td><td>${r.enabled?'启用':'禁用'}</td>
-        <td><button class="sm" onclick="api('DELETE','/api/gift-rules/${r.id}').then(renderGiftRules)">删除</button></td></tr>`).join('')}
-        </table>`;
+        <div class="panel">
+          <h3>自定义礼物</h3>
+          <div class="form-grid">
+            <div class="form-field"><label>礼物名（必填）</label><input id="gName" placeholder="如：小心心"></div>
+            <div class="form-field"><label>礼物ID（可选）</label><input id="gId" placeholder="抖音礼物ID"></div>
+            <div class="form-field"><label>每个礼物积分</label><input id="gPts" type="number" value="1"></div>
+            <div class="form-field"><label>点歌次数赠送</label><input id="gPerm" type="number" value="0" placeholder="0=不送"></div>
+          </div>
+          <div class="row">
+            <label><input type="checkbox" id="gAllow"> 送礼物时赠送 1 次点歌资格</label>
+            <button onclick="addGiftRule()">添加规则</button>
+          </div>
+        </div>
+        <div class="panel">
+          <h3>已配置规则</h3>
+          <table><tr><th>礼物</th><th>礼物ID</th><th>积分/个</th><th>点歌次数</th><th>状态</th><th>操作</th></tr>
+          ${rules.map(r => `<tr>
+            <td><b>${esc(r.giftName)}</b></td>
+            <td>${esc(r.giftId || '-')}</td>
+            <td><input class="inline-input" id="gp_${r.id}" type="number" value="${r.points}"></td>
+            <td>${r.songPermissionCount || (r.allowSongRequest ? 1 : 0)}</td>
+            <td>${r.enabled ? '<span class="badge ok">启用</span>' : '禁用'}</td>
+            <td>
+              <button class="sm" onclick="saveGiftPoints(${r.id})">保存积分</button>
+              <button class="sm" onclick="api('DELETE','/api/gift-rules/${r.id}').then(renderGiftRules)">删除</button>
+            </td></tr>`).join('') || '<tr><td colspan="6" class="hint">暂无规则，使用上方快捷添加</td></tr>'}
+          </table>
+        </div>`;
+      const row = document.getElementById('giftPresetRow');
+      giftPresets.forEach(p => {
+        const btn = document.createElement('button');
+        btn.className = 'chip';
+        btn.textContent = `${p.name} = ${p.points}分`;
+        btn.onclick = () => quickAddGiftPreset(p.name, p.points);
+        row.appendChild(btn);
+      });
+    }
+
+    async function quickAddGiftPreset(name, points) {
+      await api('POST', '/api/gift-rules', { giftName: name, giftId: '', points, allowSongRequest: false, enabled: true });
+      renderGiftRules();
     }
 
     async function addGiftRule() {
+      const name = document.getElementById('gName').value.trim();
+      if (!name) { alert('请填写礼物名'); return; }
       await api('POST', '/api/gift-rules', {
-        giftId: document.getElementById('gId').value,
-        giftName: document.getElementById('gName').value,
-        points: +document.getElementById('gPts').value,
+        giftId: document.getElementById('gId').value.trim(),
+        giftName: name,
+        points: +document.getElementById('gPts').value || 0,
+        songPermissionCount: +document.getElementById('gPerm').value || 0,
         allowSongRequest: document.getElementById('gAllow').checked,
         enabled: true
       });
       renderGiftRules();
     }
 
+    async function saveGiftPoints(id) {
+      const rules = await api('GET', '/api/gift-rules');
+      const rule = rules.find(x => x.id === id);
+      if (!rule) return;
+      rule.points = +document.getElementById('gp_' + id).value || 0;
+      await api('PUT', '/api/gift-rules/' + id, rule);
+      alert('已保存');
+    }
+
+    function selectPolicyMode(mode) {
+      policyDraft = policyDraft || {};
+      policyDraft.mode = mode;
+      document.querySelectorAll('.option-card').forEach(el => {
+        el.classList.toggle('active', el.dataset.mode === mode);
+      });
+      document.getElementById('policyDetail').style.display = mode === 'Free' ? 'none' : 'block';
+      document.getElementById('policyPointsBlock').style.display = mode === 'Points' ? 'block' : 'none';
+      document.getElementById('policyGiftBlock').style.display = mode === 'GiftUnlock' ? 'block' : 'none';
+    }
+
     async function renderPolicy() {
       const p = await api('GET', '/api/song-request-policy');
-      document.getElementById('main').innerHTML = `<h2>点歌策略</h2>
-        <p class="hint">Free=免费 | Points=积分点歌 | GiftUnlock=礼物解锁</p>
-        <select id="pMode"><option>Free</option><option>Points</option><option>GiftUnlock</option></select>
-        <input id="pCost" placeholder="消耗积分" type="number" value="${p.pointsCost||10}">
-        <input id="pUnlock" placeholder="礼物解锁最低积分" type="number" value="${p.giftUnlockMinPoints||100}">
-        <input id="pMinLevel" placeholder="最低等级" type="number" value="${p.minLevel||0}">
-        <input id="pGift" placeholder="需要礼物名称" value="${p.requiredGiftName||''}">
-        <button onclick="savePolicy()">保存</button>`;
-      document.getElementById('pMode').value = p.mode || 'Free';
+      policyDraft = { ...p };
+      document.getElementById('main').innerHTML = `<h2>点歌设置</h2>
+        <div class="panel">
+          <h3>点歌模式</h3>
+          <p class="hint">选择观众如何获得点歌资格。保存后立即生效。</p>
+          <div class="card-grid">
+            <div class="option-card" data-mode="Free" onclick="selectPolicyMode('Free')">
+              <h4>免费点歌</h4><p>所有观众均可免费点歌，仅受冷却时间和队列限制。</p>
+            </div>
+            <div class="option-card" data-mode="Points" onclick="selectPolicyMode('Points')">
+              <h4>积分点歌</h4><p>每次点歌消耗积分，积分通过送礼物获得。</p>
+            </div>
+            <div class="option-card" data-mode="GiftUnlock" onclick="selectPolicyMode('GiftUnlock')">
+              <h4>礼物解锁</h4><p>送礼物累计达到门槛后解锁点歌权限。</p>
+            </div>
+          </div>
+          <div id="policyDetail" style="display:none;margin-top:12px">
+            <div id="policyPointsBlock" class="form-grid">
+              <div class="form-field"><label>每次点歌消耗积分</label>
+                <input id="pCost" type="number" value="${p.pointsCost || 10}"></div>
+            </div>
+            <div id="policyGiftBlock" class="form-grid">
+              <div class="form-field"><label>解锁所需累计积分</label>
+                <input id="pUnlock" type="number" value="${p.giftUnlockMinPoints || 100}"></div>
+              <div class="form-field"><label>必须送过的礼物名（可选）</label>
+                <input id="pGift" value="${esc(p.requiredGiftName || '')}" placeholder="留空则不限制礼物种类"></div>
+            </div>
+            <div class="form-grid">
+              <div class="form-field"><label>最低等级要求</label>
+                <input id="pMinLevel" type="number" value="${p.minLevel || 0}"></div>
+            </div>
+          </div>
+          <div class="row" style="margin-top:14px">
+            <button onclick="savePolicy()">保存点歌设置</button>
+          </div>
+        </div>
+        <div class="panel">
+          <h3>弹幕指令</h3>
+          <p class="hint">观众发送 <b>查积分</b> / <b>我的积分</b> 可查询自己的积分和等级。回复话术在「回复模板 → 查积分回复」中修改。</p>
+        </div>`;
+      selectPolicyMode(p.mode || 'Free');
     }
 
     async function savePolicy() {
+      const mode = policyDraft?.mode || 'Free';
       await api('PUT', '/api/song-request-policy', {
-        mode: document.getElementById('pMode').value,
-        pointsCost: +document.getElementById('pCost').value,
-        giftUnlockMinPoints: +document.getElementById('pUnlock').value,
-        minLevel: +document.getElementById('pMinLevel').value,
-        requiredGiftName: document.getElementById('pGift').value
+        mode,
+        pointsCost: +(document.getElementById('pCost')?.value || 10),
+        giftUnlockMinPoints: +(document.getElementById('pUnlock')?.value || 100),
+        minLevel: +(document.getElementById('pMinLevel')?.value || 0),
+        requiredGiftName: document.getElementById('pGift')?.value || ''
       });
-      alert('已保存');
+      alert('点歌设置已保存');
     }
 
     async function renderLevels() {
@@ -461,6 +780,8 @@
       renderNav(); showTab('dashboard');
       setInterval(() => currentTab === 'dashboard' && renderDashboard(), 3000);
     }
+    refreshRuntimeStatus();
+    setInterval(refreshRuntimeStatus, 5000);
   </script>
 </body>
 </html>

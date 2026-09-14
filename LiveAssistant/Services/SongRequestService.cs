@@ -80,6 +80,11 @@ public sealed class SongRequestService
             }
 
             var priority = _permission.GetQueuePriority(permission.User!);
+            if (track.IsPreview && _kugou.LoginSnapshot.LoggedIn)
+            {
+                _system.Add($"《{track.SongName}》只能试听：请点「酷狗登录」扫码，系统会自动领取试用会员");
+            }
+
             var added = _queue.AddWithPriority(new QueueItem
             {
                 UserId = item.UserId,
@@ -88,6 +93,8 @@ public sealed class SongRequestService
                 Artist = track.Artist,
                 SongId = track.SongId,
                 Hash = track.Hash,
+                AlbumId = track.AlbumId,
+                AlbumAudioId = track.AlbumAudioId,
                 PlayUrl = track.PlayUrl,
                 IsRandom = false
             }, priority);
@@ -95,8 +102,7 @@ public sealed class SongRequestService
             _permission.RecordSuccessfulRequest(item);
 
             var ahead = _queue.GetAheadCount(added.Id);
-            var queueTotal = _queue.TotalQueueCount;
-            _replyQueue.EnqueueSongRequestReply(webRid, item.UserId, item.Nickname, track.SongName, queueTotal);
+            _replyQueue.EnqueueSongRequestReply(webRid, item.UserId, item.Nickname, track.SongName, ahead);
 
             _system.Add($"已加入队列: {item.Nickname} - {track.SongName}（前面 {ahead} 首）");
             _log.LogSongRequest(displayUser, track.SongName, true);

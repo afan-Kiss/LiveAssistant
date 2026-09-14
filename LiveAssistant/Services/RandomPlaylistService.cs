@@ -44,6 +44,11 @@ public sealed class RandomPlaylistService
         return eligible[0];
     }
 
+    public bool WasRecentlyPlayed(string? songId, string? hash)
+        => WasRecentlyPlayed(
+            new RandomPlaylistItem { SongId = songId, Hash = hash },
+            _config.Settings.RandomPlaylist.NoRepeatMinutes);
+
     public void RecordPlayed(string? songId, string? hash)
     {
         using var conn = _db.Open();

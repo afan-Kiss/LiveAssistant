@@ -16,6 +16,11 @@ public sealed class ProcessWatchdogService
         _system = system;
     }
 
+    public IReadOnlyList<string> GetMissingRequiredFiles()
+        => SidecarLocator.GetMissingRequiredFiles(
+            _config.Settings.Douyin.DouyinExePath,
+            _config.Settings.Kugou.KugouExePath);
+
     public async Task EnsureSidecarsAsync(
         Func<Task<bool>> douyinHealth,
         Func<Task<bool>> kugouHealth,
@@ -23,9 +28,18 @@ public sealed class ProcessWatchdogService
     {
         try
         {
+            if (GetMissingRequiredFiles().Count > 0)
+            {
+                return;
+            }
+
             if (!await douyinHealth())
             {
-                await TryStartProcessAsync(_config.Settings.Douyin.DouyinExePath, "-api", "抖音", ct);
+                await TryStartProcessAsync(
+                    _config.Settings.Douyin.DouyinExePath,
+                    global::LiveAssistant.SidecarLocator.DouyinStartArgs(_config.Settings.Douyin.DouyinExePath),
+                    "抖音API",
+                    ct);
             }
 
             if (!await kugouHealth())
@@ -40,7 +54,12 @@ public sealed class ProcessWatchdogService
     }
 
     public Task RestartDouyinAsync(CancellationToken ct = default)
-        => TryStartProcessAsync(_config.Settings.Douyin.DouyinExePath, "-api", "抖音", ct, force: true);
+        => TryStartProcessAsync(
+            _config.Settings.Douyin.DouyinExePath,
+            global::LiveAssistant.SidecarLocator.DouyinStartArgs(_config.Settings.Douyin.DouyinExePath),
+            "抖音API",
+            ct,
+            force: true);
 
     public Task RestartKugouAsync(CancellationToken ct = default)
         => TryStartProcessAsync(_config.Settings.Kugou.KugouExePath, "", "酷狗", ct, force: true);
@@ -51,7 +70,10 @@ public sealed class ProcessWatchdogService
         {
             if (string.IsNullOrWhiteSpace(exePath) || !File.Exists(exePath))
             {
-                _system.Add($"{name}服务未配置或文件不存在: {exePath}");
+                var fileName = name.Contains("抖音", StringComparison.Ordinal)
+                    ? SidecarLocator.PreferredDouyinFileName
+                    : SidecarLocator.PreferredKugouFileName;
+                _system.Add($"缺少必要文件: {fileName}");
                 _log.Warn($"{name} exe 不存在: {exePath}");
                 return;
             }
@@ -91,8 +113,7 @@ public sealed class ProcessWatchdogService
                 FileName = exePath,
                 Arguments = args,
                 WorkingDirectory = Path.GetDirectoryName(exePath) ?? "",
-                UseShellExecute = false,
-                CreateNoWindow = true
+                UseShellExecute = true
             });
             _system.Add($"已启动{name}服务");
             _log.Info($"启动 {name}: {exePath} {args}");

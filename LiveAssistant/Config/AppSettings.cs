@@ -15,6 +15,7 @@ public sealed class AppSettings
     public ReplySettings Reply { get; set; } = new();
     public EmergencySettings Emergency { get; set; } = new();
     public AdminSettings Admin { get; set; } = new();
+    public AdminTunnelSettings AdminTunnel { get; set; } = new();
     public WelcomeSettings Welcome { get; set; } = new();
     public BanVoteSettings BanVote { get; set; } = new();
     public GiftSettings Gift { get; set; } = new();
@@ -40,6 +41,12 @@ public sealed class KugouSettings
     public string BaseUrl { get; set; } = "http://127.0.0.1:17888";
     public string ApiKey { get; set; } = "";
     public string KugouExePath { get; set; } = "";
+
+    /// <summary>已登录时拒绝 1 分钟试听链，换歌或提示重新登录。</summary>
+    public bool RequireFullPlayback { get; set; } = true;
+
+    /// <summary>每日自动领取概念版试用会员（对齐 MoeKoeMusic）。</summary>
+    public bool AutoClaimVip { get; set; } = true;
 }
 
 public sealed class PlaybackSettings
@@ -63,6 +70,9 @@ public sealed class RandomPlaylistItem
 
 public sealed class RandomPlaylistSettings
 {
+    /// <summary>kugou=酷狗曲库随机搜歌；fixed=使用 items / 后台随机池。</summary>
+    public string Source { get; set; } = "kugou";
+
     public int NoRepeatMinutes { get; set; } = 30;
     public bool Shuffle { get; set; } = true;
     public List<RandomPlaylistItem> Items { get; set; } = new();
@@ -95,14 +105,25 @@ public sealed class EmergencySettings
     public bool PauseSongRequest { get; set; }
 }
 
+public sealed class AdminAccount
+{
+    public string Username { get; set; } = "";
+    public string Password { get; set; } = "";
+}
+
 public sealed class AdminSettings
 {
     public bool Enabled { get; set; } = true;
     public int Port { get; set; } = 5088;
     public string Path { get; set; } = "/diangexitong";
-    public string Username { get; set; } = "admin";
+    /// <summary>已废弃：请用 Accounts。保留仅为兼容旧配置。</summary>
+    public string Username { get; set; } = "";
+    /// <summary>已废弃：请用 Accounts。</summary>
     public string Password { get; set; } = "";
-    public string? PasswordEnvVar { get; set; } = "LIVEASSISTANT_ADMIN_PASSWORD";
+    public string? PasswordEnvVar { get; set; }
+    public List<AdminAccount> Accounts { get; set; } = new();
+    /// <summary>云端 nginx 反代到本机时携带的隧道密钥。</summary>
+    public string TunnelSecret { get; set; } = "la-tunnel-9f3c2e8b7a1d4c6e";
 
     public string ResolvePassword()
     {
@@ -116,6 +137,69 @@ public sealed class AdminSettings
         }
         return Password;
     }
+
+    public bool ValidateCredentials(string? username, string? password)
+    {
+        if (string.IsNullOrWhiteSpace(username) || password is null)
+        {
+            return false;
+        }
+
+        foreach (var account in Accounts)
+        {
+            if (string.IsNullOrWhiteSpace(account.Username))
+            {
+                continue;
+            }
+
+            if (string.Equals(account.Username, username, StringComparison.Ordinal)
+                && account.Password == password)
+            {
+                return true;
+            }
+        }
+
+        // 兼容旧单账号配置
+        if (!string.IsNullOrWhiteSpace(Username))
+        {
+            var legacyPassword = ResolvePassword();
+            if (!string.IsNullOrEmpty(legacyPassword)
+                && string.Equals(Username, username, StringComparison.Ordinal)
+                && legacyPassword == password)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public bool HasAnyPasswordConfigured()
+    {
+        if (Accounts.Any(a => !string.IsNullOrWhiteSpace(a.Username) && a.Password != null))
+        {
+            return true;
+        }
+
+        return !string.IsNullOrWhiteSpace(Username) && !string.IsNullOrEmpty(ResolvePassword());
+    }
+}
+
+/// <summary>
+/// 软件启动后自动 SSH 反向隧道到云服务器（remotePort -> 本机 Admin.Port）。
+/// 密码优先从 DeployCredentials.local.json 读取，勿写入已跟踪的配置文件。
+/// </summary>
+public sealed class AdminTunnelSettings
+{
+    public bool Enabled { get; set; } = true;
+    public string Host { get; set; } = "";
+    public string User { get; set; } = "root";
+    public string Password { get; set; } = "";
+    public string CredentialsFile { get; set; } = "DeployCredentials.local.json";
+    public int RemotePort { get; set; } = 15088;
+    /// <summary>0 表示使用 Admin.Port。</summary>
+    public int LocalPort { get; set; }
+    public int ReconnectDelayMs { get; set; } = 5000;
 }
 
 public sealed class WelcomeSettings
@@ -190,13 +274,12 @@ public sealed class ConfigManager
 
     public ConfigManager()
     {
-        var baseDir = AppContext.BaseDirectory;
+        var baseDir = AppPaths.ExeDirectory;
         _configDir = Path.Combine(baseDir, "Config");
-        _dataDir = Path.Combine(Path.GetDirectoryName(baseDir.TrimEnd(Path.DirectorySeparatorChar)) ?? baseDir, "..", "data");
-        _dataDir = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "data"));
+        _dataDir = Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "..", "data"));
         if (!Directory.Exists(_dataDir))
         {
-            _dataDir = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "data"));
+            _dataDir = Path.GetFullPath(Path.Combine(baseDir, "data"));
         }
         if (!Directory.Exists(_dataDir))
         {
@@ -209,11 +292,13 @@ public sealed class ConfigManager
 
     public void Load()
     {
+        AppSettings? fileSettings = null;
         var appPath = Path.Combine(_configDir, "appsettings.json");
         if (File.Exists(appPath))
         {
             var json = File.ReadAllText(appPath);
-            Settings = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions) ?? new AppSettings();
+            fileSettings = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions);
+            Settings = fileSettings ?? new AppSettings();
         }
 
         var dataAppPath = Path.Combine(_dataDir, "appsettings.json");
@@ -223,9 +308,14 @@ public sealed class ConfigManager
             var dataSettings = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions);
             if (dataSettings != null)
             {
+                // 数据目录配置会整表覆盖；补回文件里的后台账号/云端隧道，避免被旧缓存清空
+                PreserveAdminRuntimeSettings(fileSettings, dataSettings);
                 Settings = dataSettings;
             }
         }
+
+        ApplyTunnelCredentialsFile();
+        ResolveSidecarPaths();
 
         var tplPath = Path.Combine(_configDir, "ReplyTemplates.json");
         if (File.Exists(tplPath))
@@ -240,6 +330,131 @@ public sealed class ConfigManager
             var json = File.ReadAllText(dataTplPath);
             ReplyTemplates = JsonSerializer.Deserialize<Dictionary<string, string>>(json, JsonOptions) ?? ReplyTemplates;
         }
+    }
+
+    private static void PreserveAdminRuntimeSettings(AppSettings? fileSettings, AppSettings dataSettings)
+    {
+        if (fileSettings == null)
+        {
+            return;
+        }
+
+        // 安装包内的账号/隧道密钥优先，避免 LocalAppData 旧缓存把新电脑配置冲掉
+        if (fileSettings.Admin.Accounts is { Count: > 0 })
+        {
+            dataSettings.Admin.Accounts = fileSettings.Admin.Accounts;
+        }
+
+        if (!string.IsNullOrWhiteSpace(fileSettings.Admin.TunnelSecret))
+        {
+            dataSettings.Admin.TunnelSecret = fileSettings.Admin.TunnelSecret;
+        }
+
+        if (!string.IsNullOrWhiteSpace(fileSettings.AdminTunnel.Host))
+        {
+            dataSettings.AdminTunnel.Host = fileSettings.AdminTunnel.Host;
+        }
+
+        if (!string.IsNullOrWhiteSpace(fileSettings.AdminTunnel.Password))
+        {
+            dataSettings.AdminTunnel.Password = fileSettings.AdminTunnel.Password;
+            if (!string.IsNullOrWhiteSpace(fileSettings.AdminTunnel.User))
+            {
+                dataSettings.AdminTunnel.User = fileSettings.AdminTunnel.User;
+            }
+
+            if (fileSettings.AdminTunnel.RemotePort > 0)
+            {
+                dataSettings.AdminTunnel.RemotePort = fileSettings.AdminTunnel.RemotePort;
+            }
+
+            if (fileSettings.AdminTunnel.LocalPort > 0)
+            {
+                dataSettings.AdminTunnel.LocalPort = fileSettings.AdminTunnel.LocalPort;
+            }
+
+            dataSettings.AdminTunnel.Enabled = fileSettings.AdminTunnel.Enabled;
+        }
+    }
+
+    /// <summary>
+    /// 从 DeployCredentials.local.json 填充云端隧道（有文件则补齐空字段）。
+    /// </summary>
+    private void ApplyTunnelCredentialsFile()
+    {
+        foreach (var path in new[]
+                 {
+                     Path.Combine(_configDir, "DeployCredentials.local.json"),
+                     Path.Combine(_dataDir, "DeployCredentials.local.json"),
+                     Path.Combine(AppPaths.ExeDirectory, "Config", "DeployCredentials.local.json")
+                 })
+        {
+            try
+            {
+                if (!File.Exists(path))
+                {
+                    continue;
+                }
+
+                using var doc = JsonDocument.Parse(File.ReadAllText(path));
+                if (!doc.RootElement.TryGetProperty("server", out var server))
+                {
+                    continue;
+                }
+
+                if (string.IsNullOrWhiteSpace(Settings.AdminTunnel.Host)
+                    && server.TryGetProperty("host", out var host))
+                {
+                    Settings.AdminTunnel.Host = host.GetString() ?? "";
+                }
+
+                if (string.IsNullOrWhiteSpace(Settings.AdminTunnel.User)
+                    && server.TryGetProperty("user", out var user))
+                {
+                    Settings.AdminTunnel.User = user.GetString() ?? "root";
+                }
+
+                if (string.IsNullOrWhiteSpace(Settings.AdminTunnel.Password)
+                    && server.TryGetProperty("password", out var password))
+                {
+                    Settings.AdminTunnel.Password = password.GetString() ?? "";
+                }
+
+                if (Settings.AdminTunnel.RemotePort <= 0
+                    && server.TryGetProperty("adminTunnelPort", out var remotePort)
+                    && remotePort.TryGetInt32(out var rp) && rp > 0)
+                {
+                    Settings.AdminTunnel.RemotePort = rp;
+                }
+
+                if (Settings.AdminTunnel.LocalPort <= 0
+                    && server.TryGetProperty("adminLocalPort", out var localPort)
+                    && localPort.TryGetInt32(out var lp) && lp > 0)
+                {
+                    Settings.AdminTunnel.LocalPort = lp;
+                }
+
+                Settings.AdminTunnel.Enabled = true;
+                if (!string.IsNullOrWhiteSpace(Settings.AdminTunnel.Host)
+                    && !string.IsNullOrWhiteSpace(Settings.AdminTunnel.Password))
+                {
+                    return;
+                }
+            }
+            catch
+            {
+                // ignore bad credential files
+            }
+        }
+    }
+
+    /// <summary>
+    /// 同目录 sidecar 优先于配置里的绝对路径，避免拷到一起仍去找旧目录。
+    /// </summary>
+    private void ResolveSidecarPaths()
+    {
+        Settings.Douyin.DouyinExePath = global::LiveAssistant.SidecarLocator.ResolveDouyin(Settings.Douyin.DouyinExePath);
+        Settings.Kugou.KugouExePath = global::LiveAssistant.SidecarLocator.ResolveKugou(Settings.Kugou.KugouExePath);
     }
 
     public void Save()

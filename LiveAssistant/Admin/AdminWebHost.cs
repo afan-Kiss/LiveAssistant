@@ -1,3 +1,4 @@
+using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -37,13 +38,12 @@ public sealed class AdminWebHost : IDisposable
         builder.WebHost.UseUrls($"http://127.0.0.1:{port}");
 
         _app = builder.Build();
-        _app.Use(async (context, next) =>
+        if (!string.IsNullOrWhiteSpace(pathBase))
         {
-            context.Request.PathBase = pathBase;
-            await next();
-        });
+            _app.UsePathBase(pathBase);
+        }
 
-        var wwwroot = Path.Combine(AppContext.BaseDirectory, "Admin", "wwwroot");
+        var wwwroot = Path.Combine(AppPaths.ExeDirectory, "Admin", "wwwroot");
         if (Directory.Exists(wwwroot))
         {
             _app.UseStaticFiles(new StaticFileOptions
@@ -53,6 +53,8 @@ public sealed class AdminWebHost : IDisposable
             });
         }
 
+        // 云端 health 探活用，无需登录
+        _app.MapGet("/api/ping", () => Results.Json(new { ok = true, ts = DateTimeOffset.UtcNow.ToUnixTimeSeconds() }));
         MapRoutes(_app, pathBase);
         _ = _app.RunAsync();
     }
@@ -62,17 +64,18 @@ public sealed class AdminWebHost : IDisposable
         app.MapPost("/api/auth/login", (LoginRequest req) =>
         {
             var admin = _ctx.Config.Settings.Admin;
-            var password = admin.ResolvePassword();
-            if (string.IsNullOrEmpty(password))
+            if (!admin.HasAnyPasswordConfigured())
             {
-                return Results.Json(new { ok = false, message = "未配置后台密码，请设置环境变量 LIVEASSISTANT_ADMIN_PASSWORD 或 appsettings admin.password" });
+                return Results.Json(new { ok = false, message = "未配置后台账号，请在 appsettings admin.accounts 中设置" });
             }
-            if (req.Username == admin.Username && req.Password == password)
+
+            if (admin.ValidateCredentials(req.Username, req.Password))
             {
                 var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
                 _sessions[token] = DateTime.Now.AddHours(12);
                 return Results.Json(new { ok = true, token });
             }
+
             return Results.Json(new { ok = false, message = "用户名或密码错误" });
         });
 
@@ -84,7 +87,13 @@ public sealed class AdminWebHost : IDisposable
             {
                 douyinOnline = status.DouyinOnline,
                 kugouOnline = status.KugouOnline,
+                kugouLoginStatus = status.KugouLoginStatus,
+                kugouVipLabel = status.KugouVipLabel,
+                kugouLoginPageUrl = status.KugouLoginPageUrl,
                 danmakuConnection = status.DanmakuConnection,
+                roomOwnerNickname = status.RoomOwnerNickname,
+                douyinLoginStatus = status.DouyinLoginStatus,
+                douyinLoginNickname = status.DouyinLoginNickname,
                 adminAccountStatus = status.AdminAccountStatus,
                 adminNickname = status.AdminNickname,
                 currentSong = status.CurrentSong,
@@ -226,13 +235,17 @@ public sealed class AdminWebHost : IDisposable
             return Results.Json(new { ok = true });
         }));
 
-        app.MapGet("/api/users", (HttpContext http) => Auth(http, () =>
+        app.MapGet("/api/users", (HttpContext http, string? q) => Auth(http, () =>
         {
-            var users = _ctx.Users.ListUsers(500).Select(u => new
-            {
-                u.UserId, u.Nickname, role = u.Role.ToString(), status = u.Status.ToString(),
-                u.Points, u.Level, u.RequestCount
-            });
+            var users = (string.IsNullOrWhiteSpace(q)
+                    ? _ctx.Users.ListUsers(500)
+                    : _ctx.Users.SearchUsers(q!, 200))
+                .Select(u => new
+                {
+                    u.UserId, u.Nickname, role = u.Role.ToString(), status = u.Status.ToString(),
+                    u.Points, u.Level, u.RequestCount,
+                    u.SongPermissionCredits, u.SongPermissionUnlimited
+                });
             return Results.Json(users);
         }));
 
@@ -373,6 +386,19 @@ public sealed class AdminWebHost : IDisposable
 
     private IResult Auth(HttpContext http, Func<IResult> action)
     {
+        // 云端 nginx 已校验登录态，经 SSH 隧道以本机回环 + 隧道密钥访问
+        var remote = http.Connection.RemoteIpAddress;
+        var isLoopback = remote != null && IPAddress.IsLoopback(remote);
+        var tunnelSecret = _ctx.Config.Settings.Admin.TunnelSecret;
+        var headerSecret = http.Request.Headers["X-LiveAssistant-Tunnel"].FirstOrDefault();
+        if (isLoopback
+            && !string.IsNullOrWhiteSpace(tunnelSecret)
+            && !string.IsNullOrWhiteSpace(headerSecret)
+            && string.Equals(headerSecret, tunnelSecret, StringComparison.Ordinal))
+        {
+            return action();
+        }
+
         var token = http.Request.Headers.Authorization.FirstOrDefault()?.Replace("Bearer ", "");
         if (string.IsNullOrWhiteSpace(token) || !_sessions.TryGetValue(token, out var exp) || exp < DateTime.Now)
         {
@@ -383,9 +409,42 @@ public sealed class AdminWebHost : IDisposable
 
     public void Dispose()
     {
-        if (_app != null)
+        var app = _app;
+        _app = null;
+        if (app == null)
         {
-            _app.StopAsync().GetAwaiter().GetResult();
+            return;
+        }
+
+        try
+        {
+            // 绝不能在 UI 线程上 StopAsync().GetResult()，会和 WinForms 同步上下文死锁导致关不掉
+            var stopTask = Task.Run(async () =>
+            {
+                try
+                {
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                    await app.StopAsync(cts.Token).ConfigureAwait(false);
+                }
+                catch
+                {
+                    // ignore
+                }
+
+                try
+                {
+                    await app.DisposeAsync().ConfigureAwait(false);
+                }
+                catch
+                {
+                    // ignore
+                }
+            });
+            stopTask.Wait(TimeSpan.FromSeconds(3));
+        }
+        catch
+        {
+            // ignore
         }
     }
 

@@ -163,11 +163,31 @@ public sealed class SettingsStore
 
     public void ApplyDbToMemory()
     {
+        var defaults = new Dictionary<string, string>(_config.ReplyTemplates, StringComparer.OrdinalIgnoreCase);
         var tpl = _templates.GetAll();
+        var changed = false;
+        foreach (var (key, value) in defaults)
+        {
+            if (!tpl.TryGetValue(key, out var existing) || string.IsNullOrWhiteSpace(existing))
+            {
+                tpl[key] = value;
+                changed = true;
+            }
+        }
+
         if (tpl.Count > 0)
         {
             _config.ApplyReplyTemplates(tpl);
+            if (changed)
+            {
+                _templates.SaveAll(tpl);
+            }
         }
+        else if (defaults.Count > 0)
+        {
+            _config.ApplyReplyTemplates(defaults);
+        }
+
         SyncRandomPoolToConfig();
     }
 
