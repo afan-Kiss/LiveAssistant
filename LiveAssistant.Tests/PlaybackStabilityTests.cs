@@ -49,6 +49,35 @@ public sealed class PlaybackStabilityTests : IDisposable
     }
 
     [Fact]
+    public async Task ResolveFreshTrack_Request_RejectsDjRemixAlternate()
+    {
+        var handler = new FakeKugouHandler(
+            urlByHash: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+            searchFirst: ("泡沫", "HASH_DJ", "https://search.example/dj.mp3"));
+        handler.ExtraSearchSongs.Add(("泡沫", "G.E.M.邓紫棋、DJ Wave", "HASH_DJ", "https://search.example/dj.mp3"));
+        handler.ExtraSearchSongs.Add(("泡沫", "G.E.M.邓紫棋", "HASH_ORIG", "https://search.example/orig.mp3"));
+
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://kugou.test/") };
+        var kugou = new KugouService(
+            new KugouSettings { BaseUrl = "http://kugou.test/", RequireFullPlayback = false },
+            new LogService(_dir),
+            http);
+
+        var track = await kugou.ResolveFreshTrackAsync(
+            hash: "HASH_SELECTED",
+            songName: "泡沫",
+            artist: "G.E.M.邓紫棋",
+            songId: "SELECTED_ONLY",
+            isRandom: false);
+
+        Assert.NotNull(track);
+        Assert.Equal("https://search.example/orig.mp3", track!.PlayUrl);
+        Assert.DoesNotContain(
+            handler.ResolvedHashes,
+            h => h.Equals("HASH_DJ", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public async Task ResolveFreshTrack_PrefersHash_IgnoresStaleUrlPath()
     {
         var handler = new FakeKugouHandler(

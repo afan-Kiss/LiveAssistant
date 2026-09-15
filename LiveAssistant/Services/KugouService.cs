@@ -998,8 +998,8 @@ public sealed class KugouService
                     continue;
                 }
 
-                if (!string.IsNullOrWhiteSpace(ctx.Artist)
-                    && !ArtistNameMatcher.IsSameArtist(ctx.Artist, song.Artist))
+                if (!SongEditionHelper.IsCompatibleAlternate(
+                        ctx.Keyword, ctx.Artist, song.SongName, song.Artist))
                 {
                     continue;
                 }
@@ -1260,6 +1260,7 @@ public sealed class KugouService
         var songs = await SearchAsync(keyword, 1, 30, ct);
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var list = new List<SongSearchCandidate>();
+        var keywordLooksDerivative = SongEditionHelper.LooksLikeDerivativeEdition(keyword, null);
         foreach (var song in songs)
         {
             if (string.IsNullOrWhiteSpace(song.Hash) && string.IsNullOrWhiteSpace(song.SongName))
@@ -1271,6 +1272,13 @@ public sealed class KugouService
             if (string.IsNullOrWhiteSpace(candidate.Artist))
             {
                 candidate.Artist = "未知歌手";
+            }
+
+            // 点歌关键词未带 DJ/Remix 时，跳过衍生版，避免自动选用第一条就是 DJ
+            if (!keywordLooksDerivative
+                && SongEditionHelper.LooksLikeDerivativeEdition(candidate.SongName, candidate.Artist))
+            {
+                continue;
             }
 
             if (!seen.Add(candidate.Artist))
@@ -1450,11 +1458,24 @@ public sealed class KugouService
             return null;
         }
 
+        var resolvedName = FirstNonEmpty(urlData.SongName, song.SongName, keyword);
+        var resolvedArtist = FirstNonEmpty(urlData.Artist, song.Artist);
+        // 取链结果元数据若变成 DJ/Remix，而搜索条目本身不是，则拒绝（避免标题干净、直链却是改版）
+        if (!isRandom
+            && SongEditionHelper.LooksLikeDerivativeEdition(resolvedName, resolvedArtist)
+            && !SongEditionHelper.LooksLikeDerivativeEdition(song.SongName, song.Artist)
+            && !SongEditionHelper.LooksLikeDerivativeEdition(keyword, null))
+        {
+            _log.KugouWarn(
+                $"拒绝衍生版取链结果: requested={keyword}/{song.Artist} resolved={resolvedName}/{resolvedArtist} hash={song.Hash}");
+            return null;
+        }
+
         return BuildTrackInfo(
             urlData,
             song.Hash ?? "",
-            FirstNonEmpty(urlData.SongName, song.SongName, keyword),
-            FirstNonEmpty(urlData.Artist, song.Artist),
+            resolvedName,
+            resolvedArtist,
             FirstNonEmpty(urlData.SongId, urlData.Id, song.SongId, song.Id),
             requester,
             isRandom,
@@ -1488,18 +1509,24 @@ public sealed class KugouService
             }
         }
 
-        // 同歌手同名备用：随机补位与点歌确认均可，避免主 hash 会话抖动时直接失败
+        // 同歌手同名备用：随机补位与点歌确认均可，避免主 hash 会话抖动时直接失败。
+        // 点歌路径拒绝 DJ/Remix 等衍生版，避免「原曲取链失败 → 误放 DJ」。
         if (!string.IsNullOrWhiteSpace(artist))
         {
             foreach (var song in songs)
             {
-                if (!ArtistNameMatcher.IsSameArtist(artist, song.Artist)
-                    || !SongNameMatches(song.SongName, songName))
+                if (SongIdentityMatches(song, hash, songId, albumAudioId))
                 {
                     continue;
                 }
 
-                if (SongIdentityMatches(song, hash, songId, albumAudioId))
+                var compatible = isRandom
+                    ? ArtistNameMatcher.IsSameArtist(artist, song.Artist)
+                      && SongNameMatches(song.SongName, songName)
+                    : SongEditionHelper.IsCompatibleAlternate(
+                        songName, artist, song.SongName, song.Artist);
+
+                if (!compatible)
                 {
                     continue;
                 }
