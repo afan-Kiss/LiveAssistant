@@ -87,6 +87,17 @@ public sealed class AiSpeechSettings
     public string GiftThankMode { get; set; } = "ai";
     public string GiftThankTemplate { get; set; } = "感谢 {nickname} 送的 {giftName}，谢谢支持。";
     public int SummaryMinDanmaku { get; set; } = 8;
+
+    /// <summary>可选：ollama.exe 路径；空则自动探测。</summary>
+    public string OllamaExePath { get; set; } = "";
+    /// <summary>可选：GPT-SoVITS 启动 bat；空则自动探测。</summary>
+    public string TtsStartScriptPath { get; set; } = "";
+    /// <summary>可选：GPT-SoVITS 工作目录（含 service/main.py）。</summary>
+    public string TtsWorkingDirectory { get; set; } = "";
+    /// <summary>可选：conda activate.bat 路径。</summary>
+    public string CondaActivateBat { get; set; } = "";
+    /// <summary>Conda 环境名，默认 GPTSoVits。</summary>
+    public string CondaEnvName { get; set; } = "GPTSoVits";
 }
 
 public sealed class DouyinSettings

@@ -26,6 +26,7 @@ public sealed class AiSpeechCoordinator : IDisposable
     private readonly AiReplyDuplicateGuard _replyDupGuard = new(20, TimeSpan.FromMinutes(5));
     private readonly AiPromptStore _prompts;
     private readonly AiSpeechHealthChecker _health;
+    private readonly AiSpeechServiceLauncher _launcher;
     private readonly UserConversationContext _userContext;
     private readonly RoomConversationContext _roomContext;
     private readonly RoomContextSummary _roomSummary;
@@ -112,6 +113,10 @@ public sealed class AiSpeechCoordinator : IDisposable
                 try { _log.AiInfo(msg); } catch { /* ignore */ }
             });
         _health.Updated += OnHealthUpdated;
+        _launcher = new AiSpeechServiceLauncher(msg =>
+        {
+            try { _log.AiInfo(msg); } catch { /* ignore */ }
+        });
 
         ApplySchedulerLimits();
         ApplyBufferIntervals();
@@ -243,6 +248,109 @@ public sealed class AiSpeechCoordinator : IDisposable
             _log.AiWarn($"health_fail {ex.GetType().Name}: {ex.Message}");
             NotifyStatus();
         }
+    }
+
+    /// <summary>
+    /// 用户点击「一键启动」：仅启动当前未就绪的 Ollama / GPT-SoVITS，不拉起软件启动期静默进程。
+    /// </summary>
+    public async Task<AiSpeechLaunchResult> StartMissingDependenciesAsync(CancellationToken ct = default)
+    {
+        _serviceHint = "正在一键启动 AI 服务…";
+        _healthSummary = "⏳ 正在启动缺失服务…";
+        NotifyStatus();
+
+        AiSpeechHealthReport before;
+        try
+        {
+            before = await _health.RefreshAsync(ct);
+            ApplyHealthReport(before);
+        }
+        catch
+        {
+            before = _health.Latest;
+        }
+
+        if (before.FullyReady)
+        {
+            var already = new AiSpeechLaunchResult
+            {
+                Success = true,
+                Message = "AI 服务已全部就绪，无需启动",
+                OllamaAlreadyRunning = true,
+                TtsAlreadyRunning = true
+            };
+            _serviceHint = "";
+            NotifyStatus();
+            return already;
+        }
+
+        var launch = await _launcher.StartMissingAsync(
+            before,
+            Settings.OllamaExePath,
+            Settings.TtsStartScriptPath,
+            Settings.TtsWorkingDirectory,
+            Settings.CondaActivateBat,
+            Settings.CondaEnvName,
+            ct);
+
+        // TTS 加载模型可能要 1～2 分钟；轮询等待就绪（最多约 90 秒）
+        var deadline = DateTime.UtcNow.AddSeconds(launch.TtsStarted ? 90 : 25);
+        AiSpeechHealthReport? latest = null;
+        while (DateTime.UtcNow < deadline && !ct.IsCancellationRequested)
+        {
+            try
+            {
+                latest = await _health.CheckOnceAsync("after_launch", ct);
+                ApplyHealthReport(latest);
+                if (latest.FullyReady)
+                {
+                    break;
+                }
+
+                // Ollama 起来了、只等 TTS 时继续等；两边都起不来则早点结束
+                if (!launch.TtsStarted && latest.OllamaAvailable)
+                {
+                    break;
+                }
+            }
+            catch
+            {
+                // ignore and retry
+            }
+
+            try
+            {
+                await Task.Delay(3000, ct);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+        }
+
+        latest ??= _health.Latest;
+        ApplyHealthReport(latest);
+
+        if (latest.FullyReady)
+        {
+            launch.Success = true;
+            launch.Message = (launch.Message ?? "") + "；已就绪，可以发言";
+            _serviceHint = "";
+        }
+        else
+        {
+            launch.Success = launch.OllamaStarted || launch.TtsStarted || latest.OllamaAvailable || latest.TtsAvailable;
+            var waitHint = launch.TtsStarted
+                ? "GPT-SoVITS 仍在加载模型，请稍后点「刷新AI状态」"
+                : (latest.ServiceHint ?? "部分服务未就绪");
+            launch.Message = string.IsNullOrWhiteSpace(launch.Message)
+                ? waitHint
+                : launch.Message + "；" + waitHint;
+            _serviceHint = waitHint;
+        }
+
+        NotifyStatus();
+        return launch;
     }
 
     private void OnHealthUpdated(AiSpeechHealthReport report)

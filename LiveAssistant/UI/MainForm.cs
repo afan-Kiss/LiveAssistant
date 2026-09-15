@@ -98,11 +98,13 @@ public sealed class MainForm : Form
     private readonly Label _lblAiModelStatus = new();
     private readonly Button _btnAiRefreshModels = new();
     private readonly Button _btnAiRefreshHealth = new();
+    private readonly Button _btnAiStartAll = new();
     private readonly Button _btnAiTestVoice = new();
     private readonly Button _btnAiTestAi = new();
     private readonly Button _btnAiStop = new();
     private readonly Button _btnAiEditPrompts = new();
     private bool _aiUiLoading;
+    private bool _aiStartAllBusy;
 
     private readonly System.Windows.Forms.Timer _uiTimer = new();
     private readonly HashSet<string> _seenDanmaku = new();
@@ -719,28 +721,31 @@ public sealed class MainForm : Form
 
         var btnRow = new TableLayoutPanel
         {
-            ColumnCount = 4,
+            ColumnCount = 5,
             RowCount = 1,
             Dock = DockStyle.Fill,
             Margin = new Padding(0)
         };
-        btnRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
-        btnRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
-        btnRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
-        btnRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+        for (var i = 0; i < 5; i++)
+        {
+            btnRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20));
+        }
+
+        StyleButton(_btnAiStartAll, "一键启动", 0);
         StyleButton(_btnAiTestAi, "测试AI", 0);
         StyleButton(_btnAiTestVoice, "测试声音", 0);
         StyleButton(_btnAiStop, "停止播放", 0);
         StyleButton(_btnAiRefreshHealth, "刷新AI状态", 0);
-        foreach (var b in new[] { _btnAiTestAi, _btnAiTestVoice, _btnAiStop, _btnAiRefreshHealth })
+        foreach (var b in new[] { _btnAiStartAll, _btnAiTestAi, _btnAiTestVoice, _btnAiStop, _btnAiRefreshHealth })
         {
             b.Dock = DockStyle.Fill;
             b.Margin = new Padding(2, 0, 2, 0);
         }
-        btnRow.Controls.Add(_btnAiTestAi, 0, 0);
-        btnRow.Controls.Add(_btnAiTestVoice, 1, 0);
-        btnRow.Controls.Add(_btnAiStop, 2, 0);
-        btnRow.Controls.Add(_btnAiRefreshHealth, 3, 0);
+        btnRow.Controls.Add(_btnAiStartAll, 0, 0);
+        btnRow.Controls.Add(_btnAiTestAi, 1, 0);
+        btnRow.Controls.Add(_btnAiTestVoice, 2, 0);
+        btnRow.Controls.Add(_btnAiStop, 3, 0);
+        btnRow.Controls.Add(_btnAiRefreshHealth, 4, 0);
 
         AddRow("", _chkAiEnabled, 28);
         AddRow("", _chkAiTestMode, 28);
@@ -1247,6 +1252,36 @@ public sealed class MainForm : Form
             finally
             {
                 _btnAiRefreshHealth.Enabled = true;
+            }
+        };
+
+        _btnAiStartAll.Click += async (_, _) =>
+        {
+            if (_aiStartAllBusy)
+            {
+                return;
+            }
+
+            _aiStartAllBusy = true;
+            _btnAiStartAll.Enabled = false;
+            try
+            {
+                AppendSystem("正在一键启动 AI 服务（Ollama / GPT-SoVITS）…");
+                var result = await _host.AiSpeech.StartMissingDependenciesAsync();
+                await RefreshAiModelsAsync();
+                RefreshAiSpeechStatus();
+                AppendSystem(result.Success
+                    ? ("一键启动完成：" + result.Message)
+                    : ("一键启动未完全就绪：" + result.Message));
+            }
+            catch (Exception ex)
+            {
+                AppendSystem("一键启动失败：" + ex.Message);
+            }
+            finally
+            {
+                _aiStartAllBusy = false;
+                _btnAiStartAll.Enabled = true;
             }
         };
 
