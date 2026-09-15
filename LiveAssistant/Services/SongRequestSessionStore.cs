@@ -13,9 +13,12 @@ public sealed class SongRequestSessionStore
         _ttl = ttl ?? TimeSpan.FromMinutes(5);
     }
 
-    public SongRequestSession? Get(string userId)
+    public SongRequestSession? Get(string webRid, string userId)
+        => Get(PendingSongKey.Create(webRid, userId));
+
+    public SongRequestSession? Get(PendingSongKey key)
     {
-        if (string.IsNullOrWhiteSpace(userId))
+        if (!key.IsValid)
         {
             return null;
         }
@@ -23,14 +26,14 @@ public sealed class SongRequestSessionStore
         lock (_gate)
         {
             PurgeExpiredLocked();
-            if (!_sessions.TryGetValue(userId, out var session))
+            if (!_sessions.TryGetValue(key.StorageKey, out var session))
             {
                 return null;
             }
 
             if (session.IsExpired)
             {
-                _sessions.Remove(userId);
+                _sessions.Remove(key.StorageKey);
                 return null;
             }
 
@@ -40,24 +43,33 @@ public sealed class SongRequestSessionStore
 
     public void Set(SongRequestSession session)
     {
+        var key = session.Key;
+        if (!key.IsValid)
+        {
+            return;
+        }
+
         session.ExpiresAt = DateTime.UtcNow.Add(_ttl);
         lock (_gate)
         {
             PurgeExpiredLocked();
-            _sessions[session.UserId] = session;
+            _sessions[key.StorageKey] = session;
         }
     }
 
-    public void Clear(string userId)
+    public void Clear(string webRid, string userId)
+        => Clear(PendingSongKey.Create(webRid, userId));
+
+    public void Clear(PendingSongKey key)
     {
-        if (string.IsNullOrWhiteSpace(userId))
+        if (!key.IsValid)
         {
             return;
         }
 
         lock (_gate)
         {
-            _sessions.Remove(userId);
+            _sessions.Remove(key.StorageKey);
             PurgeExpiredLocked();
         }
     }

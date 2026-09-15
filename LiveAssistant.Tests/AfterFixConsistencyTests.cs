@@ -105,10 +105,9 @@ public sealed class AfterFixConsistencyTests : IDisposable
         var points = ctx.Users.GetUser("u1")!.Points;
         var waiting = ctx.Queue.WaitingCount;
 
-        // 一致性不变量：不允许「歌在队列里且积分未扣」
-        var dirty = waiting > 0 && points == 100;
-        Assert.False(dirty,
-            $"入队后扣分异常导致脏状态：waiting={waiting} points={points} ex={boom?.GetType().Name}:{boom?.Message}");
+        Assert.Equal(0, waiting);
+        Assert.Equal(100, points);
+        Assert.Null(boom);
     }
 
     [Fact]

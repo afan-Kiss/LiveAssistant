@@ -9,6 +9,7 @@ public enum SongRequestSessionStep
 
 public sealed class SongRequestSession
 {
+    public required string WebRid { get; init; }
     public required string UserId { get; init; }
     public required string Nickname { get; init; }
     public required string Keyword { get; init; }
@@ -19,5 +20,6 @@ public sealed class SongRequestSession
     /// <summary>确认已消费，防止重复「确定」双扣积分/双入队。</summary>
     public bool ConfirmConsumed { get; set; }
 
+    public PendingSongKey Key => PendingSongKey.Create(WebRid, UserId);
     public bool IsExpired => DateTime.UtcNow >= ExpiresAt;
 }

@@ -53,10 +53,11 @@ public sealed class SongRequestService
             return false;
         }
 
+        var key = PendingSongKey.Create(webRid, item.UserId);
         var userGate = await _userGates.AcquireAsync(item.UserId, ct);
         using (userGate)
         {
-            var session = _sessions.Get(item.UserId);
+            var session = _sessions.Get(key);
             if (session != null)
             {
                 if (await HandleSessionAsync(item, webRid, session, ct))
@@ -65,7 +66,7 @@ public sealed class SongRequestService
                 }
 
                 // 会话仍在且不是新点歌：普通闲聊，不消费
-                if (_sessions.Get(item.UserId) != null && !SongNameParser.TryParse(item.Content, out _))
+                if (_sessions.Get(key) != null && !SongNameParser.TryParse(item.Content, out _))
                 {
                     return false;
                 }
@@ -90,7 +91,7 @@ public sealed class SongRequestService
                 return true;
             }
 
-            _sessions.Clear(item.UserId);
+            _sessions.Clear(key);
             await StartNewRequestAsync(item, webRid, songName, ct);
             return true;
         }
@@ -102,16 +103,17 @@ public sealed class SongRequestService
         SongRequestSession session,
         CancellationToken ct)
     {
+        var key = PendingSongKey.Create(webRid, item.UserId);
         if (SongRequestConfirmParser.IsCancel(item.Content))
         {
-            _sessions.Clear(item.UserId);
+            _sessions.Clear(key);
             SendReply(webRid, item.UserId, RenderOrFallback("songRequestCancelled", item.Nickname, "已取消点歌"));
             return true;
         }
 
         if (SongNameParser.TryParse(item.Content, out _))
         {
-            _sessions.Clear(item.UserId);
+            _sessions.Clear(key);
             return false;
         }
 
@@ -136,6 +138,7 @@ public sealed class SongRequestService
         SongRequestSession session,
         CancellationToken ct)
     {
+        var key = PendingSongKey.Create(webRid, item.UserId);
         if (!SongRequestConfirmParser.IsConfirm(item.Content))
         {
             // 待确认期间闲聊：保留会话，但不标记为点歌业务已消费
@@ -144,21 +147,21 @@ public sealed class SongRequestService
 
         if (session.ConfirmConsumed)
         {
-            _log.DouyinInfo($"点歌确认去重: {item.Nickname} user={item.UserId}");
+            _log.DouyinInfo($"点歌确认去重: {item.Nickname} user={item.UserId} webRid={webRid}");
             return true;
         }
 
         var selected = session.Selected;
         if (selected == null)
         {
-            _sessions.Clear(item.UserId);
+            _sessions.Clear(key);
             return true;
         }
 
         var permission = _permission.Evaluate(item);
         if (!permission.Allowed)
         {
-            _sessions.Clear(item.UserId);
+            _sessions.Clear(key);
             Reject(item, webRid, selected.SongName, item.Nickname, permission);
             return true;
         }
@@ -166,7 +169,7 @@ public sealed class SongRequestService
         var songPermission = _permission.EvaluateSong(selected.SongName, permission.User!, item);
         if (!songPermission.Allowed)
         {
-            _sessions.Clear(item.UserId);
+            _sessions.Clear(key);
             Reject(item, webRid, selected.SongName, item.Nickname, songPermission);
             return true;
         }
@@ -177,8 +180,8 @@ public sealed class SongRequestService
         var enqueued = await ResolveAndEnqueueAsync(item, webRid, selected, permission.User!, ct);
         if (enqueued)
         {
-            _sessions.Clear(item.UserId);
-            NoteRecentConfirmHandled(item.UserId);
+            _sessions.Clear(key);
+            NoteRecentConfirmHandled(webRid, item.UserId);
         }
         else
         {
@@ -229,6 +232,7 @@ public sealed class SongRequestService
 
         var confirmSession = new SongRequestSession
         {
+            WebRid = webRid,
             UserId = item.UserId,
             Nickname = item.Nickname,
             Keyword = songName,
@@ -330,6 +334,18 @@ public sealed class SongRequestService
             _system.Add($"《{track.SongName}》只能试听：请点「酷狗登录」扫码，系统会自动领取试用会员");
         }
 
+        LogSongTransaction(
+            "reserve_queue",
+            item.UserId,
+            track.SongName,
+            queueId: null,
+            pointsBefore,
+            pointsAfter: pointsBefore,
+            reason: null,
+            exception: null,
+            queueRemoved: null,
+            pointsRestored: null);
+
         if (!_queue.TryAddWithPriority(
                 new QueueItem
                 {
@@ -361,9 +377,62 @@ public sealed class SongRequestService
             return Task.FromResult(true);
         }
 
-        if (!_permission.RecordSuccessfulRequest(item, added.Id))
+        LogSongTransaction(
+            "deduct_points",
+            item.UserId,
+            track.SongName,
+            added.Id,
+            pointsBefore,
+            pointsAfter: pointsBefore,
+            reason: null,
+            exception: null,
+            queueRemoved: null,
+            pointsRestored: null);
+
+        SongRequestChargeResult charge;
+        try
         {
-            _queue.Remove(added.Id);
+            charge = _permission.TryCommitSuccessfulRequest(item, added.Id);
+        }
+        catch (Exception ex)
+        {
+            var removed = _queue.Remove(added.Id);
+            var pointsAfter = _permission.Evaluate(item).User?.Points ?? pointsBefore;
+            LogSongTransaction(
+                "rollback",
+                item.UserId,
+                track.SongName,
+                added.Id,
+                pointsBefore,
+                pointsAfter,
+                reason: "charge_exception",
+                exception: ex,
+                queueRemoved: removed,
+                pointsRestored: pointsAfter == pointsBefore);
+            _log.DouyinWarn(
+                $"SONG_REQUEST_ROLLBACK userId={item.UserId} song={track.SongName} queueItemId={added.Id} " +
+                $"exception={ex.GetType().Name}:{ex.Message} pointsBefore={pointsBefore} pointsAfter={pointsAfter}");
+            _system.Add($"{displayUser} 点歌入队失败：扣积分异常，已回滚队列");
+            _replyQueue.EnqueueMention(webRid, item.UserId, "点歌失败，请稍后再试");
+            _log.LogSongRequest(displayUser, track.SongName, false, "扣积分异常已回滚");
+            return Task.FromResult(true);
+        }
+
+        if (!charge.Success)
+        {
+            var removed = _queue.Remove(added.Id);
+            LogSongTransaction(
+                "rollback",
+                item.UserId,
+                track.SongName,
+                added.Id,
+                charge.PointsBefore,
+                charge.PointsAfter,
+                reason: charge.FailureReason ?? "charge_failed",
+                exception: null,
+                queueRemoved: removed,
+                pointsRestored: charge.PointsAfter == charge.PointsBefore);
+
             var cost = _permission.GetPointsCost(user);
             var msg = _reply.Render("songRequestInsufficientPoints", new Dictionary<string, string>
             {
@@ -381,24 +450,78 @@ public sealed class SongRequestService
             _log.DouyinInfo(
                 $"SONG_REQUEST userId={item.UserId} sessionStep=confirm song={track.SongName} " +
                 $"permission=insufficientPoints confirmConsumed=true queueBefore={queueBefore} queueAfter={_queue.WaitingCount} " +
-                $"queueItemId={added.Id} pointsBefore={pointsBefore} pointsAfter={user.Points} result=pointsFail");
+                $"queueItemId={added.Id} pointsBefore={pointsBefore} pointsAfter={charge.PointsAfter} result=pointsFail");
             _log.LogSongRequest(displayUser, track.SongName, false);
-            // 积分不足视为本轮结束，清会话；勿保留让用户空点「确定」
             return Task.FromResult(true);
         }
 
-        var pointsAfter = _permission.Evaluate(item).User?.Points ?? user.Points;
         var ahead = _queue.GetAheadCount(added.Id);
         _replyQueue.EnqueueSongRequestReply(webRid, item.UserId, item.Nickname, track.SongName, ahead);
 
         _system.Add($"已加入队列: {item.Nickname} - {track.SongName}（前面 {ahead} 首）");
+        LogSongTransaction(
+            "commit",
+            item.UserId,
+            track.SongName,
+            added.Id,
+            charge.PointsBefore,
+            charge.PointsAfter,
+            reason: null,
+            exception: null,
+            queueRemoved: null,
+            pointsRestored: null);
         _log.DouyinInfo(
             $"SONG_REQUEST userId={item.UserId} sessionStep=confirm song={track.SongName} " +
             $"permission=ok confirmConsumed=true queueBefore={queueBefore} queueAfter={_queue.WaitingCount} " +
-            $"queueItemId={added.Id} pointsBefore={pointsBefore} pointsAfter={pointsAfter} result=enqueued");
+            $"queueItemId={added.Id} pointsBefore={charge.PointsBefore} pointsAfter={charge.PointsAfter} result=enqueued");
         _log.LogSongRequest(displayUser, track.SongName, true);
         RequestHandled?.Invoke();
         return Task.FromResult(true);
+    }
+
+    private void LogSongTransaction(
+        string stage,
+        string userId,
+        string song,
+        long? queueId,
+        int pointsBefore,
+        int pointsAfter,
+        string? reason,
+        Exception? exception,
+        bool? queueRemoved,
+        bool? pointsRestored)
+    {
+        var parts = new List<string>
+        {
+            "SONG_REQUEST_TRANSACTION",
+            $"stage={stage}",
+            $"userId={userId}",
+            $"song={song}",
+            $"queueId={(queueId?.ToString() ?? "-")}",
+            $"pointsBefore={pointsBefore}",
+            $"pointsAfter={pointsAfter}"
+        };
+        if (!string.IsNullOrWhiteSpace(reason))
+        {
+            parts.Add($"reason={reason}");
+        }
+
+        if (exception != null)
+        {
+            parts.Add($"exception={exception.GetType().Name}:{exception.Message}");
+        }
+
+        if (queueRemoved.HasValue)
+        {
+            parts.Add($"queueRemoved={queueRemoved.Value.ToString().ToLowerInvariant()}");
+        }
+
+        if (pointsRestored.HasValue)
+        {
+            parts.Add($"pointsRestored={pointsRestored.Value.ToString().ToLowerInvariant()}");
+        }
+
+        _log.DouyinInfo(string.Join(" ", parts));
     }
 
     private bool IsTrackPlayable(TrackInfo? track) => _kugou.IsAcceptableForPlayback(track);
@@ -492,15 +615,16 @@ public sealed class SongRequestService
 
     private void TrySendOrphanConfirmHint(string webRid, string userId)
     {
+        var hintKey = PendingSongKey.Create(webRid, userId).StorageKey;
         var now = DateTime.UtcNow;
         lock (_orphanHintGate)
         {
-            if (_orphanHintAt.TryGetValue(userId, out var last) && now - last < TimeSpan.FromSeconds(30))
+            if (_orphanHintAt.TryGetValue(hintKey, out var last) && now - last < TimeSpan.FromSeconds(30))
             {
                 return;
             }
 
-            _orphanHintAt[userId] = now;
+            _orphanHintAt[hintKey] = now;
             foreach (var key in _orphanHintAt.Where(kv => now - kv.Value > TimeSpan.FromMinutes(10)).Select(kv => kv.Key).ToList())
             {
                 _orphanHintAt.Remove(key);
@@ -510,12 +634,13 @@ public sealed class SongRequestService
         SendReply(webRid, userId, "当前没有待确认的点歌，请重新发送：点歌 歌名");
     }
 
-    private void NoteRecentConfirmHandled(string userId)
+    private void NoteRecentConfirmHandled(string webRid, string userId)
     {
         // 成功入队后短窗内静默吞掉回放的「确定」，不回「没有待确认」
+        var hintKey = PendingSongKey.Create(webRid, userId).StorageKey;
         lock (_orphanHintGate)
         {
-            _orphanHintAt[userId] = DateTime.UtcNow;
+            _orphanHintAt[hintKey] = DateTime.UtcNow;
         }
     }
 }

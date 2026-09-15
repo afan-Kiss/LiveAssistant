@@ -69,6 +69,7 @@ public sealed class SongRequestFlowTests
         var store = new LiveAssistant.Services.SongRequestSessionStore(TimeSpan.FromMilliseconds(1));
         store.Set(new SongRequestSession
         {
+            WebRid = "room1",
             UserId = "u1",
             Nickname = "A",
             Keyword = "泡沫",
@@ -76,6 +77,6 @@ public sealed class SongRequestFlowTests
             Selected = new SongSearchCandidate { SongName = "泡沫", Artist = "邓紫棋" }
         });
         Thread.Sleep(20);
-        Assert.Null(store.Get("u1"));
+        Assert.Null(store.Get("room1", "u1"));
     }
 }

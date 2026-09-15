@@ -174,54 +174,104 @@ public sealed class SongRequestPermissionService
         return SongRequestPermissionResult.Permit(user);
     }
 
+    /// <summary>
+    /// 测试钩子：积分/点歌次卡已扣减之后、写请求记录之前触发。用于模拟「扣分成功但记请求失败」。
+    /// </summary>
+    internal Action<DanmakuItem, long?>? TestBeforeRecordRequest { get; set; }
+
     public bool RecordSuccessfulRequest(DanmakuItem item, long? queueItemId = null)
+        => TryCommitSuccessfulRequest(item, queueItemId).Success;
+
+    /// <summary>
+    /// 扣积分/次卡并写请求记录。任一步失败则尽量回滚已扣资源后返回失败或抛出（已回滚）。
+    /// </summary>
+    public SongRequestChargeResult TryCommitSuccessfulRequest(DanmakuItem item, long? queueItemId = null)
     {
         var user = _users.GetUser(item.UserId);
-        if (user != null && !IsPrivileged(user.Role))
+        var pointsBefore = user?.Points ?? 0;
+        var deducted = 0;
+        var creditConsumed = false;
+
+        try
         {
-            if (user.SongPermissionUnlimited)
+            if (user != null && !IsPrivileged(user.Role))
             {
-                _users.RecordSuccessfulRequest(item.UserId, item.Nickname);
-                _levels.RefreshUserLevel(item.UserId);
-                return true;
-            }
-
-            if (user.SongPermissionCredits > 0)
-            {
-                if (!_users.ConsumeSongPermissionCredit(item.UserId))
+                if (user.SongPermissionUnlimited)
                 {
-                    return false;
+                    // 仅记请求
                 }
-
-                _users.RecordSuccessfulRequest(item.UserId, item.Nickname);
-                _levels.RefreshUserLevel(item.UserId);
-                return true;
-            }
-
-            var policy = _config.Settings.SongRequestPolicy;
-            if (policy.Mode == SongRequestPolicyMode.Points)
-            {
-                var levelPerm = _levelPerms.GetForLevel(user.Level);
-                var cost = levelPerm?.PointsCostOverride >= 0
-                    ? levelPerm.PointsCostOverride
-                    : policy.PointsCost;
-                if (cost > 0 && !_users.TryDeductPoints(
-                        item.UserId,
-                        item.Nickname,
-                        cost,
-                        PointsTransactionType.SongRequest,
-                        "点歌扣积分",
-                        queueItemId?.ToString(),
-                        out _))
+                else if (user.SongPermissionCredits > 0)
                 {
-                    return false;
+                    if (!_users.ConsumeSongPermissionCredit(item.UserId))
+                    {
+                        return SongRequestChargeResult.Fail(pointsBefore, pointsBefore, 0, false, "credit_consume_failed");
+                    }
+
+                    creditConsumed = true;
+                }
+                else
+                {
+                    var policy = _config.Settings.SongRequestPolicy;
+                    if (policy.Mode == SongRequestPolicyMode.Points)
+                    {
+                        var levelPerm = _levelPerms.GetForLevel(user.Level);
+                        var cost = levelPerm?.PointsCostOverride >= 0
+                            ? levelPerm.PointsCostOverride
+                            : policy.PointsCost;
+                        if (cost > 0)
+                        {
+                            if (!_users.TryDeductPoints(
+                                    item.UserId,
+                                    item.Nickname,
+                                    cost,
+                                    PointsTransactionType.SongRequest,
+                                    "点歌扣积分",
+                                    queueItemId?.ToString(),
+                                    out _))
+                            {
+                                return SongRequestChargeResult.Fail(
+                                    pointsBefore, pointsBefore, 0, false, "insufficient_points");
+                            }
+
+                            deducted = cost;
+                        }
+                    }
                 }
             }
+
+            TestBeforeRecordRequest?.Invoke(item, queueItemId);
+
+            _users.RecordSuccessfulRequest(item.UserId, item.Nickname);
+            _levels.RefreshUserLevel(item.UserId);
+
+            var pointsAfter = _users.GetUser(item.UserId)?.Points ?? (pointsBefore - deducted);
+            return SongRequestChargeResult.Ok(pointsBefore, pointsAfter, deducted, creditConsumed);
+        }
+        catch
+        {
+            RestoreCharge(item.UserId, item.Nickname, deducted, creditConsumed);
+            throw;
+        }
+    }
+
+    private void RestoreCharge(string userId, string nickname, int deducted, bool creditConsumed)
+    {
+        if (deducted > 0)
+        {
+            _users.TryChangePoints(
+                userId,
+                nickname,
+                deducted,
+                PointsTransactionType.Refund,
+                "点歌扣积分失败回滚",
+                null,
+                out _);
         }
 
-        _users.RecordSuccessfulRequest(item.UserId, item.Nickname);
-        _levels.RefreshUserLevel(item.UserId);
-        return true;
+        if (creditConsumed)
+        {
+            _users.AddSongPermissionCredits(userId, 1);
+        }
     }
 
     private int GetCooldownSeconds(UserProfile user, LevelPermission? levelPerm)
