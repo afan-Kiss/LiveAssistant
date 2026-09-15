@@ -267,7 +267,7 @@ public sealed class ReplyQueue : IDisposable
                     {
                         _idempotency.MarkSucceeded(job.ReplyId);
                         RecordSent();
-                        _outboundTracker?.Track(job.ReplyId, job.Content);
+                        _outboundTracker?.Track(job.ReplyId, job.Content, detail.PlatformMessageId);
                         _log.DouyinInfo(
                             $"REPLY_QUEUE replyId={job.ReplyId} type={(job.IsSongRequestBatch ? "song_request_batch" : "mention")} " +
                             $"enqueueAt={job.EnqueuedAtUtc:O} sendAt={sentAt:O} retry={job.RetryCount} success=true " +
@@ -345,7 +345,7 @@ public sealed class ReplyQueue : IDisposable
         {
             _idempotency.MarkSucceeded(job.ReplyId);
             RecordSent();
-            _outboundTracker?.Track(job.ReplyId, job.Content);
+            _outboundTracker?.Track(job.ReplyId, job.Content, detail.PlatformMessageId);
             _log.DouyinInfo(
                 $"REPLY_QUEUE replyId={job.ReplyId} type={(job.IsSongRequestBatch ? "song_request_batch" : "mention")} " +
                 $"sendAt={DateTime.UtcNow:O} retry={job.RetryCount} success=true result=ok_likely_sent error={reason}");

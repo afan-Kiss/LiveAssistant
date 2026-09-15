@@ -1,12 +1,14 @@
-using System.Net.Http.Json;
 using LiveAssistant.Services.AiSpeech;
 using Xunit;
 
 namespace LiveAssistant.Tests;
 
 /// <summary>
-/// 依赖本机已启动的 Ollama(:11434) 与 GPT-SoVITS(:9880)。不可用时跳过。
+/// 依赖本机 Ollama(:11434) 与 GPT-SoVITS(:9880)。
+/// Category=LiveIntegration：默认单元测试用 Category!=LiveIntegration 排除。
+/// health 不可用 → NOT RUN（return + Probe）；health 正常但业务失败 → FAIL。
 /// </summary>
+[Trait("Category", "LiveIntegration")]
 public class AiSpeechLiveIntegrationTests
 {
     private static async Task<bool> IsUpAsync(string url)
@@ -28,19 +30,16 @@ public class AiSpeechLiveIntegrationTests
     {
         if (!await IsUpAsync("http://127.0.0.1:9880/health"))
         {
-            return; // 环境未就绪则跳过，不让 CI/离线失败
+            LiveIntegrationProbe.MarkNotRun("TTS health unavailable");
+            return;
         }
 
         using var client = new GptSovitsClient("http://127.0.0.1:9880", TimeSpan.FromSeconds(60));
         var result = await client.SynthesizeAsync("你好，现在测试一下我的人工智能语音。", "my_voice");
-        if (!result.Success)
-        {
-            // health 可达但合成失败（设备/模型忙）时跳过，不阻断业务测试
-            return;
-        }
-
+        Assert.True(result.Success, result.Error ?? "TTS 合成失败（health 可达）");
         Assert.True(result.AudioWav.Length > 1000);
-        Assert.Equal((byte)'R', result.AudioWav[0]); // RIFF
+        Assert.Equal((byte)'R', result.AudioWav[0]);
+        LiveIntegrationProbe.MarkExecuted("TTS");
     }
 
     [Fact]
@@ -48,13 +47,13 @@ public class AiSpeechLiveIntegrationTests
     {
         if (!await IsUpAsync("http://127.0.0.1:11434/api/tags"))
         {
+            LiveIntegrationProbe.MarkNotRun("Ollama tags unavailable");
             return;
         }
 
         using var client = new OllamaClient("http://127.0.0.1:11434", TimeSpan.FromSeconds(90));
         var models = await client.ListModelsAsync();
         Assert.NotEmpty(models);
-        // 优先推荐互动模型，避免误选 27b 导致 CUDA_HOST 失败
         var model = AiSpeechModelsCatalog.ResolveDefault(
             models.FirstOrDefault(m => m.Equals(AiSpeechModelsCatalog.DefaultModel, StringComparison.OrdinalIgnoreCase)),
             models.ToList());
@@ -67,15 +66,38 @@ public class AiSpeechLiveIntegrationTests
             model,
             AiSpeechCoordinator.DefaultSystemPrompt,
             "观众昵称：测试用户\n观众说：主播这个功能是你自己做的吗？");
-        if (!gen.Success && (gen.ResourceError || string.IsNullOrWhiteSpace(gen.Text)))
-        {
-            // 与 GPT-SoVITS 同卡显存争用 / 空回复时跳过；不阻断发布
-            return;
-        }
-
-        Assert.True(gen.Success, gen.Error);
+        Assert.True(gen.Success, gen.Error ?? "Ollama health 可达但生成失败");
         var cleaned = SpeechTextCleaner.Clean(gen.Text, 50);
         Assert.False(string.IsNullOrWhiteSpace(cleaned));
         Assert.True(SpeechTextCleaner.CountSpeechChars(cleaned) <= 60);
+        LiveIntegrationProbe.MarkExecuted("Ollama");
+    }
+}
+
+/// <summary>供报告区分 Live NOT RUN / EXECUTED。</summary>
+internal static class LiveIntegrationProbe
+{
+    private static readonly object Gate = new();
+    private static readonly List<string> NotRun = new();
+    private static readonly List<string> Executed = new();
+
+    public static void MarkNotRun(string reason)
+    {
+        lock (Gate) { NotRun.Add(reason); }
+        Console.WriteLine("[LIVE NOT RUN] " + reason);
+    }
+
+    public static void MarkExecuted(string name)
+    {
+        lock (Gate) { Executed.Add(name); }
+        Console.WriteLine("[LIVE EXECUTED] " + name);
+    }
+
+    public static string Snapshot()
+    {
+        lock (Gate)
+        {
+            return $"executed=[{string.Join(",", Executed)}] notRun=[{string.Join(",", NotRun)}]";
+        }
     }
 }

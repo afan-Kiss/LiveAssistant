@@ -258,10 +258,10 @@ public sealed class AiSpeechCoordinator : IDisposable
                 return;
             }
 
-            if (_outboundTracker.IsRecentOutbound(item!.MsgId, item.Content))
+            if (_outboundTracker.MatchesTrackedMessageId(item!.MsgId))
             {
                 _log.AiInfo(
-                    $"AI_SELF_MESSAGE_SKIP reason=outbound_reply nick={item.Nickname} len={item.Content.Length} score={scored.Score} enter_ai=0");
+                    $"AI_SELF_MESSAGE_SKIP reason=outbound_msg_id nick={item.Nickname} len={item.Content.Length} score={scored.Score} enter_ai=0");
                 return;
             }
 
@@ -390,7 +390,14 @@ public sealed class AiSpeechCoordinator : IDisposable
             Interlocked.CompareExchange(ref _activePlayCts, null, playCts);
             try { playCts.Dispose(); } catch { /* ignore */ }
             SetPhase(AiSpeechPhase.Idle);
-            _executionGate.Release();
+            try
+            {
+                _executionGate.Release();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Dispose 与活动任务并发时闸门可能已释放
+            }
         }
     }
 
@@ -697,7 +704,14 @@ public sealed class AiSpeechCoordinator : IDisposable
             Interlocked.CompareExchange(ref _activePlayCts, null, playCts);
             try { playCts.Dispose(); } catch { /* ignore */ }
             SetPhase(AiSpeechPhase.Idle);
-            _executionGate.Release();
+            try
+            {
+                _executionGate.Release();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Dispose 与活动任务并发时闸门可能已释放
+            }
         }
     }
 
@@ -880,23 +894,24 @@ public sealed class AiSpeechCoordinator : IDisposable
         try { _cts.Cancel(); } catch { /* ignore */ }
         try { Volatile.Read(ref _activePlayCts)?.Cancel(); } catch { /* ignore */ }
         try { _player.Stop(); } catch { /* ignore */ }
-        try { _player.Dispose(); } catch { /* ignore */ }
-        try { _executionGate.Dispose(); } catch { /* ignore */ }
-        try { _ollama.Dispose(); } catch { /* ignore */ }
-        try { _tts.Dispose(); } catch { /* ignore */ }
-        try { _cts.Dispose(); } catch { /* ignore */ }
 
         try
         {
             if (_worker != null)
             {
-                _ = _worker.Wait(TimeSpan.FromSeconds(2));
+                _ = _worker.Wait(TimeSpan.FromSeconds(5));
             }
         }
         catch
         {
             // ignore
         }
+
+        try { _player.Dispose(); } catch { /* ignore */ }
+        try { _executionGate.Dispose(); } catch { /* ignore */ }
+        try { _ollama.Dispose(); } catch { /* ignore */ }
+        try { _tts.Dispose(); } catch { /* ignore */ }
+        try { _cts.Dispose(); } catch { /* ignore */ }
 
         try
         {

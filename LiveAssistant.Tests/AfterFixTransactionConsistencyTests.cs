@@ -60,7 +60,7 @@ public sealed class AfterFixTransactionConsistencyTests : IDisposable
         ctx.Users.EnsureUser("u1", "观众");
         ctx.Users.TryChangePoints("u1", "观众", 100, PointsTransactionType.AdminAdjust, "seed", null, out _);
 
-        ctx.Permission.TestBeforeRecordRequest = (_, _) =>
+        ctx.Users.TestAfterPointsDeductedBeforeRequestCount = () =>
             throw new InvalidOperationException("simulated record failure");
 
         Assert.True(await ctx.Song.HandleDanmakuAsync(

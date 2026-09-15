@@ -22,9 +22,12 @@ public sealed class BusinessStabilityTests : IDisposable
         var tracker = new OutboundReplyTracker(TimeSpan.FromMinutes(1));
         tracker.Track("reply-42", "点歌成功《泡沫》\n前面还有0首");
 
+        // 仅 msg_id / reply_id 命中才算出站回显；正文相同不再单独过滤
         Assert.True(tracker.IsRecentOutbound("reply-42", "任意内容"));
-        Assert.True(tracker.IsRecentOutbound("other", "点歌成功《泡沫》\n前面还有0首"));
-        Assert.True(tracker.IsRecentOutbound("other", "点歌成功《泡沫》前面还有0首"));
+        Assert.False(tracker.IsRecentOutbound("other", "点歌成功《泡沫》\n前面还有0首"));
+        Assert.False(tracker.IsRecentOutbound("other", "点歌成功《泡沫》前面还有0首"));
+        Assert.False(tracker.IsRecentOutbound(null, "点歌成功《泡沫》前面还有0首"));
+        Assert.True(tracker.HasRecentOutboundContent("点歌成功《泡沫》前面还有0首"));
         Assert.False(tracker.IsRecentOutbound("other", "点歌 晴天"));
         Assert.False(tracker.IsRecentOutbound("other", "点歌成功《泡沫》前面还有1首"));
     }

@@ -428,8 +428,80 @@ public sealed class DouyinService
             Ok = ok,
             HttpStatus = (int)response.StatusCode,
             ErrorReason = reason,
-            ReplyType = "mention"
+            ReplyType = "mention",
+            PlatformMessageId = TryExtractPlatformMessageId(text)
         };
+    }
+
+    /// <summary>尽力从侧车响应提取平台 msg_id；字段缺失时返回 null。</summary>
+    internal static string? TryExtractPlatformMessageId(string rawJson)
+    {
+        if (string.IsNullOrWhiteSpace(rawJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(rawJson);
+            var root = doc.RootElement;
+            if (TryReadMsgId(root, out var id))
+            {
+                return id;
+            }
+
+            if (root.TryGetProperty("data", out var data))
+            {
+                if (TryReadMsgId(data, out id))
+                {
+                    return id;
+                }
+
+                if (data.ValueKind == JsonValueKind.Object
+                    && data.TryGetProperty("message", out var message)
+                    && TryReadMsgId(message, out id))
+                {
+                    return id;
+                }
+            }
+        }
+        catch
+        {
+            // ignore parse failures
+        }
+
+        return null;
+    }
+
+    private static bool TryReadMsgId(JsonElement el, out string? id)
+    {
+        id = null;
+        if (el.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        foreach (var name in new[] { "msg_id", "message_id", "msgId", "messageId" })
+        {
+            if (!el.TryGetProperty(name, out var prop))
+            {
+                continue;
+            }
+
+            id = prop.ValueKind switch
+            {
+                JsonValueKind.String => prop.GetString(),
+                JsonValueKind.Number => prop.GetRawText(),
+                _ => null
+            };
+            if (!string.IsNullOrWhiteSpace(id))
+            {
+                id = id.Trim();
+                return true;
+            }
+        }
+
+        return false;
     }
 
     internal static DouyinUser? ParseLookupUser(JsonElement data)

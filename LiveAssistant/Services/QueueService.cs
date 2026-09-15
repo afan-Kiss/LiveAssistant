@@ -11,6 +11,12 @@ public sealed class QueueService
     private QueueItem? _nowPlaying;
     private readonly List<QueueItem> _waiting = new();
 
+    /// <summary>测试钩子：入队事务 Commit 前调用，可抛异常模拟失败。</summary>
+    internal Action? TestBeforeAddTransactionCommit;
+
+    /// <summary>测试钩子：Remove 事务内 UpdateStatus 前调用，可抛异常模拟失败。</summary>
+    internal Action? TestBeforeRemoveStatusUpdate;
+
     public event Action? QueueChanged;
 
     public QueueService(AppDatabase db)
@@ -95,10 +101,26 @@ public sealed class QueueService
                 return idx == 0;
             }
 
-            var item = _waiting[idx];
-            _waiting.RemoveAt(idx);
-            _waiting.Insert(0, item);
-            ReindexWaiting();
+            var working = new List<QueueItem>(_waiting);
+            var item = working[idx];
+            working.RemoveAt(idx);
+            working.Insert(0, item);
+
+            using var conn = _db.Open();
+            using var tx = conn.BeginTransaction();
+            try
+            {
+                ReindexWaiting(conn, tx, working);
+                tx.Commit();
+            }
+            catch
+            {
+                try { tx.Rollback(); } catch { /* ignore */ }
+                throw;
+            }
+
+            _waiting.Clear();
+            _waiting.AddRange(working);
             NotifyChanged();
             return true;
         }
@@ -130,20 +152,36 @@ public sealed class QueueService
             }
 
             item.Status = QueueItemStatus.Waiting;
-            item.Id = InsertItem(item);
-            if (queuePriority <= 0 || _waiting.Count == 0)
+            var working = new List<QueueItem>(_waiting);
+            if (queuePriority <= 0 || working.Count == 0)
             {
-                item.SortOrder = _waiting.Count;
-                _waiting.Add(item);
+                item.SortOrder = working.Count;
+                working.Add(item);
             }
             else
             {
-                var insertIndex = Math.Max(0, _waiting.Count - (queuePriority / 5 + 1));
-                insertIndex = Math.Min(insertIndex, _waiting.Count);
-                _waiting.Insert(insertIndex, item);
-                ReindexWaiting();
+                var insertIndex = Math.Max(0, working.Count - (queuePriority / 5 + 1));
+                insertIndex = Math.Min(insertIndex, working.Count);
+                working.Insert(insertIndex, item);
             }
 
+            using var conn = _db.Open();
+            using var tx = conn.BeginTransaction();
+            try
+            {
+                item.Id = InsertItem(conn, tx, item);
+                ReindexWaiting(conn, tx, working);
+                TestBeforeAddTransactionCommit?.Invoke();
+                tx.Commit();
+            }
+            catch
+            {
+                try { tx.Rollback(); } catch { /* ignore */ }
+                throw;
+            }
+
+            _waiting.Clear();
+            _waiting.AddRange(working);
             NotifyChanged();
             added = item;
             return true;
@@ -154,19 +192,31 @@ public sealed class QueueService
     {
         lock (_lock)
         {
-            if (_nowPlaying != null && _nowPlaying.Id > 0)
+            using var conn = _db.Open();
+            using var tx = conn.BeginTransaction();
+            try
             {
-                UpdateStatus(_nowPlaying.Id, QueueItemStatus.Finished);
-            }
+                if (_nowPlaying != null && _nowPlaying.Id > 0)
+                {
+                    UpdateStatus(conn, tx, _nowPlaying.Id, QueueItemStatus.Finished);
+                }
 
-            item.Status = QueueItemStatus.Playing;
-            if (item.Id <= 0)
-            {
-                item.Id = InsertItem(item);
+                item.Status = QueueItemStatus.Playing;
+                if (item.Id <= 0)
+                {
+                    item.Id = InsertItem(conn, tx, item);
+                }
+                else
+                {
+                    UpdateStatus(conn, tx, item.Id, QueueItemStatus.Playing);
+                }
+
+                tx.Commit();
             }
-            else
+            catch
             {
-                UpdateStatus(item.Id, QueueItemStatus.Playing);
+                try { tx.Rollback(); } catch { /* ignore */ }
+                throw;
             }
 
             _nowPlaying = item;
@@ -181,7 +231,20 @@ public sealed class QueueService
         {
             if (_nowPlaying?.Id == id)
             {
-                UpdateStatus(id, QueueItemStatus.Deleted);
+                using var conn = _db.Open();
+                using var tx = conn.BeginTransaction();
+                try
+                {
+                    TestBeforeRemoveStatusUpdate?.Invoke();
+                    UpdateStatus(conn, tx, id, QueueItemStatus.Deleted);
+                    tx.Commit();
+                }
+                catch
+                {
+                    try { tx.Rollback(); } catch { /* ignore */ }
+                    throw;
+                }
+
                 _nowPlaying = null;
                 NotifyChanged();
                 return true;
@@ -193,9 +256,28 @@ public sealed class QueueService
                 return false;
             }
 
-            _waiting.RemoveAt(idx);
-            UpdateStatus(id, QueueItemStatus.Deleted);
-            ReindexWaiting();
+            var working = new List<QueueItem>(_waiting);
+            working.RemoveAt(idx);
+
+            using (var conn = _db.Open())
+            using (var tx = conn.BeginTransaction())
+            {
+                try
+                {
+                    TestBeforeRemoveStatusUpdate?.Invoke();
+                    UpdateStatus(conn, tx, id, QueueItemStatus.Deleted);
+                    ReindexWaiting(conn, tx, working);
+                    tx.Commit();
+                }
+                catch
+                {
+                    try { tx.Rollback(); } catch { /* ignore */ }
+                    throw;
+                }
+            }
+
+            _waiting.Clear();
+            _waiting.AddRange(working);
             NotifyChanged();
             return true;
         }
@@ -205,10 +287,26 @@ public sealed class QueueService
     {
         lock (_lock)
         {
-            foreach (var item in _waiting)
+            if (_waiting.Count > 0)
             {
-                UpdateStatus(item.Id, QueueItemStatus.Deleted);
+                using var conn = _db.Open();
+                using var tx = conn.BeginTransaction();
+                try
+                {
+                    foreach (var item in _waiting)
+                    {
+                        UpdateStatus(conn, tx, item.Id, QueueItemStatus.Deleted);
+                    }
+
+                    tx.Commit();
+                }
+                catch
+                {
+                    try { tx.Rollback(); } catch { /* ignore */ }
+                    throw;
+                }
             }
+
             _waiting.Clear();
             NotifyChanged();
         }
@@ -218,12 +316,31 @@ public sealed class QueueService
     {
         lock (_lock)
         {
-            if (_nowPlaying != null)
+            using var conn = _db.Open();
+            using var tx = conn.BeginTransaction();
+            try
             {
-                UpdateStatus(_nowPlaying.Id, QueueItemStatus.Deleted);
-                _nowPlaying = null;
+                if (_nowPlaying != null)
+                {
+                    UpdateStatus(conn, tx, _nowPlaying.Id, QueueItemStatus.Deleted);
+                }
+
+                foreach (var item in _waiting)
+                {
+                    UpdateStatus(conn, tx, item.Id, QueueItemStatus.Deleted);
+                }
+
+                tx.Commit();
             }
-            ClearWaiting();
+            catch
+            {
+                try { tx.Rollback(); } catch { /* ignore */ }
+                throw;
+            }
+
+            _nowPlaying = null;
+            _waiting.Clear();
+            NotifyChanged();
         }
     }
 
@@ -237,10 +354,29 @@ public sealed class QueueService
             }
 
             var next = _waiting[0];
-            _waiting.RemoveAt(0);
-            ReindexWaiting();
+            var working = new List<QueueItem>(_waiting.Count - 1);
+            for (var i = 1; i < _waiting.Count; i++)
+            {
+                working.Add(_waiting[i]);
+            }
+
+            using var conn = _db.Open();
+            using var tx = conn.BeginTransaction();
+            try
+            {
+                UpdateStatus(conn, tx, next.Id, QueueItemStatus.Playing);
+                ReindexWaiting(conn, tx, working);
+                tx.Commit();
+            }
+            catch
+            {
+                try { tx.Rollback(); } catch { /* ignore */ }
+                throw;
+            }
+
             next.Status = QueueItemStatus.Playing;
-            UpdateStatus(next.Id, QueueItemStatus.Playing);
+            _waiting.Clear();
+            _waiting.AddRange(working);
             _nowPlaying = next;
             NotifyChanged();
             return next;
@@ -317,9 +453,26 @@ public sealed class QueueService
 
     private long InsertItem(QueueItem item)
     {
-        var now = DateTime.Now.ToString("O");
         using var conn = _db.Open();
+        using var tx = conn.BeginTransaction();
+        try
+        {
+            var id = InsertItem(conn, tx, item);
+            tx.Commit();
+            return id;
+        }
+        catch
+        {
+            try { tx.Rollback(); } catch { /* ignore */ }
+            throw;
+        }
+    }
+
+    private long InsertItem(SqliteConnection conn, SqliteTransaction tx, QueueItem item)
+    {
+        var now = DateTime.Now.ToString("O");
         using var cmd = conn.CreateCommand();
+        cmd.Transaction = tx;
         cmd.CommandText = """
             INSERT INTO queue_items (user_id, nickname, song_name, artist, song_id, hash, is_random, sort_order, status, created_at, updated_at)
             VALUES ($uid, $nick, $song, $artist, $sid, $hash, $random, $order, $status, $created, $updated)
@@ -338,6 +491,7 @@ public sealed class QueueService
         cmd.ExecuteNonQuery();
 
         using var idCmd = conn.CreateCommand();
+        idCmd.Transaction = tx;
         idCmd.CommandText = "SELECT last_insert_rowid()";
         return (long)(idCmd.ExecuteScalar() ?? 0L);
     }
@@ -345,7 +499,23 @@ public sealed class QueueService
     private void UpdateStatus(long id, QueueItemStatus status)
     {
         using var conn = _db.Open();
+        using var tx = conn.BeginTransaction();
+        try
+        {
+            UpdateStatus(conn, tx, id, status);
+            tx.Commit();
+        }
+        catch
+        {
+            try { tx.Rollback(); } catch { /* ignore */ }
+            throw;
+        }
+    }
+
+    private void UpdateStatus(SqliteConnection conn, SqliteTransaction tx, long id, QueueItemStatus status)
+    {
         using var cmd = conn.CreateCommand();
+        cmd.Transaction = tx;
         cmd.CommandText = """
             UPDATE queue_items
             SET status = $status, updated_at = $updated
@@ -384,15 +554,32 @@ public sealed class QueueService
 
     private void ReindexWaiting()
     {
-        for (var i = 0; i < _waiting.Count; i++)
+        using var conn = _db.Open();
+        using var tx = conn.BeginTransaction();
+        try
         {
-            _waiting[i].SortOrder = i;
-            using var conn = _db.Open();
+            ReindexWaiting(conn, tx, _waiting);
+            tx.Commit();
+        }
+        catch
+        {
+            try { tx.Rollback(); } catch { /* ignore */ }
+            throw;
+        }
+    }
+
+    private void ReindexWaiting(SqliteConnection conn, SqliteTransaction tx, List<QueueItem> items)
+    {
+        var now = DateTime.Now.ToString("O");
+        for (var i = 0; i < items.Count; i++)
+        {
+            items[i].SortOrder = i;
             using var cmd = conn.CreateCommand();
+            cmd.Transaction = tx;
             cmd.CommandText = "UPDATE queue_items SET sort_order = $order, updated_at = $updated WHERE id = $id";
             cmd.Parameters.AddWithValue("$order", i);
-            cmd.Parameters.AddWithValue("$updated", DateTime.Now.ToString("O"));
-            cmd.Parameters.AddWithValue("$id", _waiting[i].Id);
+            cmd.Parameters.AddWithValue("$updated", now);
+            cmd.Parameters.AddWithValue("$id", items[i].Id);
             cmd.ExecuteNonQuery();
         }
     }

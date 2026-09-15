@@ -14,6 +14,7 @@ public sealed class SongRequestPermissionService
     private readonly UserLevelService _levels;
     private readonly GiftRepository? _gifts;
     private readonly SongRequestControlService? _control;
+    private readonly LogService? _log;
 
     public SongRequestPermissionService(
         ConfigManager config,
@@ -23,7 +24,8 @@ public sealed class SongRequestPermissionService
         LevelPermissionRepository levelPerms,
         UserLevelService levels,
         GiftRepository? gifts = null,
-        SongRequestControlService? control = null)
+        SongRequestControlService? control = null,
+        LogService? log = null)
     {
         _config = config;
         _users = users;
@@ -33,7 +35,17 @@ public sealed class SongRequestPermissionService
         _levels = levels;
         _gifts = gifts;
         _control = control;
+        _log = log;
     }
+
+    /// <summary>测试：强制退款失败。</summary>
+    internal Func<bool>? TestForceRefundFailure { get; set; }
+
+    /// <summary>测试：强制次卡恢复失败。</summary>
+    internal Func<bool>? TestForceCreditRestoreFailure { get; set; }
+
+    /// <summary>测试：扣费事务成功后、等级刷新前抛异常（派生失败，不应回滚核心事务）。</summary>
+    internal Action? TestAfterCommitBeforeLevelRefresh { get; set; }
 
     public SongRequestPermissionResult Evaluate(DanmakuItem item)
     {
@@ -174,104 +186,151 @@ public sealed class SongRequestPermissionService
         return SongRequestPermissionResult.Permit(user);
     }
 
-    /// <summary>
-    /// 测试钩子：积分/点歌次卡已扣减之后、写请求记录之前触发。用于模拟「扣分成功但记请求失败」。
-    /// </summary>
-    internal Action<DanmakuItem, long?>? TestBeforeRecordRequest { get; set; }
-
     public bool RecordSuccessfulRequest(DanmakuItem item, long? queueItemId = null)
         => TryCommitSuccessfulRequest(item, queueItemId).Success;
 
     /// <summary>
-    /// 扣积分/次卡并写请求记录。任一步失败则尽量回滚已扣资源后返回失败或抛出（已回滚）。
+    /// 核心事务：扣积分/次卡 + request_count 同一 SQLite 提交。
+    /// RefreshUserLevel 为派生刷新，失败不回滚核心事务。
     /// </summary>
     public SongRequestChargeResult TryCommitSuccessfulRequest(DanmakuItem item, long? queueItemId = null)
     {
         var user = _users.GetUser(item.UserId);
         var pointsBefore = user?.Points ?? 0;
-        var deducted = 0;
-        var creditConsumed = false;
 
-        try
+        if (user != null && IsPrivileged(user.Role))
         {
-            if (user != null && !IsPrivileged(user.Role))
+            // 特权：只记请求次数（cost=0）
+            if (!_users.TryCommitSongRequestCharge(
+                    item.UserId, item.Nickname, 0, false, queueItemId?.ToString(),
+                    out pointsBefore, out var afterPriv, out _, out var failPriv))
             {
-                if (user.SongPermissionUnlimited)
-                {
-                    // 仅记请求
-                }
-                else if (user.SongPermissionCredits > 0)
-                {
-                    if (!_users.ConsumeSongPermissionCredit(item.UserId))
-                    {
-                        return SongRequestChargeResult.Fail(pointsBefore, pointsBefore, 0, false, "credit_consume_failed");
-                    }
-
-                    creditConsumed = true;
-                }
-                else
-                {
-                    var policy = _config.Settings.SongRequestPolicy;
-                    if (policy.Mode == SongRequestPolicyMode.Points)
-                    {
-                        var levelPerm = _levelPerms.GetForLevel(user.Level);
-                        var cost = levelPerm?.PointsCostOverride >= 0
-                            ? levelPerm.PointsCostOverride
-                            : policy.PointsCost;
-                        if (cost > 0)
-                        {
-                            if (!_users.TryDeductPoints(
-                                    item.UserId,
-                                    item.Nickname,
-                                    cost,
-                                    PointsTransactionType.SongRequest,
-                                    "点歌扣积分",
-                                    queueItemId?.ToString(),
-                                    out _))
-                            {
-                                return SongRequestChargeResult.Fail(
-                                    pointsBefore, pointsBefore, 0, false, "insufficient_points");
-                            }
-
-                            deducted = cost;
-                        }
-                    }
-                }
+                return SongRequestChargeResult.Fail(pointsBefore, pointsBefore, 0, false, failPriv ?? "record_failed");
             }
 
-            TestBeforeRecordRequest?.Invoke(item, queueItemId);
-
-            _users.RecordSuccessfulRequest(item.UserId, item.Nickname);
-            _levels.RefreshUserLevel(item.UserId);
-
-            var pointsAfter = _users.GetUser(item.UserId)?.Points ?? (pointsBefore - deducted);
-            return SongRequestChargeResult.Ok(pointsBefore, pointsAfter, deducted, creditConsumed);
+            TryRefreshLevelBestEffort(item.UserId);
+            return SongRequestChargeResult.Ok(pointsBefore, afterPriv, 0, false);
         }
-        catch
+
+        var consumeCredit = user is { SongPermissionUnlimited: false, SongPermissionCredits: > 0 };
+        var unlimited = user?.SongPermissionUnlimited == true;
+        var cost = 0;
+        if (!unlimited && !consumeCredit && user != null)
         {
-            RestoreCharge(item.UserId, item.Nickname, deducted, creditConsumed);
-            throw;
+            cost = GetPointsCost(user);
+        }
+
+        if (!_users.TryCommitSongRequestCharge(
+                item.UserId,
+                item.Nickname,
+                unlimited || consumeCredit ? 0 : cost,
+                consumeCredit,
+                queueItemId?.ToString(),
+                out pointsBefore,
+                out var pointsAfter,
+                out var creditConsumed,
+                out var failureReason))
+        {
+            return SongRequestChargeResult.Fail(
+                pointsBefore, pointsBefore, 0, false, failureReason ?? "charge_failed");
+        }
+
+        TryRefreshLevelBestEffort(item.UserId);
+        return SongRequestChargeResult.Ok(pointsBefore, pointsAfter, cost, creditConsumed);
+    }
+
+    private void TryRefreshLevelBestEffort(string userId)
+    {
+        try
+        {
+            TestAfterCommitBeforeLevelRefresh?.Invoke();
+            _levels.RefreshUserLevel(userId);
+        }
+        catch (Exception ex)
+        {
+            _log?.Error("song_request", $"RefreshUserLevel 派生失败（核心事务已提交） user={userId}", ex);
         }
     }
 
-    private void RestoreCharge(string userId, string nickname, int deducted, bool creditConsumed)
+    /// <summary>补偿退款；返回值必须检查，禁止忽略。</summary>
+    public SongRequestRestoreResult RestoreCharge(string userId, string nickname, int deducted, bool creditConsumed)
     {
+        var pointsRestored = true;
+        var creditRestored = true;
+        Exception? firstEx = null;
+        var reasons = new List<string>();
+
         if (deducted > 0)
         {
-            _users.TryChangePoints(
-                userId,
-                nickname,
-                deducted,
-                PointsTransactionType.Refund,
-                "点歌扣积分失败回滚",
-                null,
-                out _);
+            try
+            {
+                if (TestForceRefundFailure?.Invoke() == true)
+                {
+                    pointsRestored = false;
+                    reasons.Add("refund_forced_fail");
+                }
+                else if (!_users.TryChangePoints(
+                             userId,
+                             nickname,
+                             deducted,
+                             PointsTransactionType.Refund,
+                             "点歌扣积分失败回滚",
+                             null,
+                             out _))
+                {
+                    pointsRestored = false;
+                    reasons.Add("refund_try_change_false");
+                    _log?.Error("song_request",
+                        $"SONG_REQUEST_COMPENSATION_FAILED userId={userId} pointsDeducted={deducted} pointsRestored=false");
+                }
+            }
+            catch (Exception ex)
+            {
+                pointsRestored = false;
+                firstEx ??= ex;
+                reasons.Add("refund_exception");
+                _log?.Error("song_request",
+                    $"SONG_REQUEST_COMPENSATION_FAILED userId={userId} pointsDeducted={deducted} exception={ex.Message}", ex);
+            }
         }
 
         if (creditConsumed)
         {
-            _users.AddSongPermissionCredits(userId, 1);
+            try
+            {
+                if (TestForceCreditRestoreFailure?.Invoke() == true)
+                {
+                    creditRestored = false;
+                    reasons.Add("credit_restore_forced_fail");
+                }
+                else if (!_users.AddSongPermissionCredits(userId, 1))
+                {
+                    creditRestored = false;
+                    reasons.Add("credit_restore_false");
+                    _log?.Error("song_request",
+                        $"SONG_REQUEST_COMPENSATION_FAILED userId={userId} creditRestored=false");
+                }
+            }
+            catch (Exception ex)
+            {
+                creditRestored = false;
+                firstEx ??= ex;
+                reasons.Add("credit_restore_exception");
+                _log?.Error("song_request",
+                    $"SONG_REQUEST_COMPENSATION_FAILED userId={userId} creditRestored=false exception={ex.Message}", ex);
+            }
         }
+
+        if (pointsRestored && creditRestored)
+        {
+            return SongRequestRestoreResult.Ok(deducted > 0, creditConsumed);
+        }
+
+        return SongRequestRestoreResult.Fail(
+            pointsRestored,
+            creditRestored,
+            string.Join(",", reasons),
+            firstEx);
     }
 
     private int GetCooldownSeconds(UserProfile user, LevelPermission? levelPerm)

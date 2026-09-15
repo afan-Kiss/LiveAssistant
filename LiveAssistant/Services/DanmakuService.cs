@@ -357,25 +357,38 @@ public sealed class DanmakuService : IDisposable
                || content.StartsWith("禁言", StringComparison.OrdinalIgnoreCase);
     }
 
-    private bool ShouldIgnoreBotMessage(string msgId, string nickname, string content)
+    /// <summary>
+    /// 机器人回显过滤：msg_id 精确命中，或登录账号昵称命中。
+    /// 禁止仅因正文相同过滤真人。
+    /// </summary>
+    internal bool ShouldIgnoreBotMessage(string msgId, string nickname, string content)
     {
-        // 优先：真实出站记录
-        if (_outboundTracker?.IsRecentOutbound(msgId, content) == true)
+        if (_outboundTracker?.MatchesTrackedMessageId(msgId) == true)
         {
             return true;
         }
 
-        // 其次：登录账号自身消息（机器人回显）
-        if (!string.IsNullOrWhiteSpace(DouyinLoginNickname)
+        var isLoginAccount = !string.IsNullOrWhiteSpace(DouyinLoginNickname)
             && !DouyinLoginNickname.Equals("-", StringComparison.Ordinal)
-            && nickname.Equals(DouyinLoginNickname, StringComparison.OrdinalIgnoreCase))
+            && nickname.Equals(DouyinLoginNickname, StringComparison.OrdinalIgnoreCase);
+
+        if (isLoginAccount)
         {
+            // 登录号自身消息一律视为机器人；内容匹配仅作旁证日志
+            if (_outboundTracker?.HasRecentOutboundContent(content) == true)
+            {
+                return true;
+            }
+
             return true;
         }
 
-        // 文字模板启发式不得单独误杀真实观众弹幕
+        // 内容相同但身份不是登录号：必须放行真人
         return false;
     }
+
+    internal void SetDouyinLoginNicknameForTests(string nickname)
+        => DouyinLoginNickname = string.IsNullOrWhiteSpace(nickname) ? "-" : nickname.Trim();
 
     private static string ResolveMsgId(DouyinDanmakuMessage msg)
     {

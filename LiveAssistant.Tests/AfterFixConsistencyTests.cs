@@ -169,11 +169,23 @@ public sealed class AfterFixConsistencyTests : IDisposable
 
         const string text = "点歌成功《泡沫》前面还有0首";
         queue.EnqueueMention("rid", "bot-user", text);
-        Assert.True(await WaitUntil(() => tracker.IsRecentOutbound(null, text), TimeSpan.FromSeconds(2)));
+        Assert.True(await WaitUntil(() => tracker.HasRecentOutboundContent(text), TimeSpan.FromSeconds(2)));
 
-        // 模拟抖音立即回显相同文本
-        Assert.True(tracker.IsRecentOutbound(null, text));
-        Assert.True(tracker.IsRecentOutbound(null, "@某人 " + text));
+        // Track 使用 replyId：仅靠正文不能再判定为出站回显
+        Assert.False(tracker.IsRecentOutbound(null, text));
+        Assert.False(tracker.IsRecentOutbound(null, "@某人 " + text));
+
+        var danmaku = new DanmakuService(
+            new DouyinService(new DouyinSettings(), log),
+            log,
+            new SystemMessageService(20),
+            outboundTracker: tracker);
+        danmaku.SetDouyinLoginNicknameForTests("机器人账号");
+
+        // 登录号回显应过滤；真人同文案必须放行
+        Assert.True(danmaku.ShouldIgnoreBotMessage("bot-echo-1", "机器人账号", text));
+        Assert.False(danmaku.ShouldIgnoreBotMessage("audience-1", "真实观众", text));
+        Assert.False(danmaku.ShouldIgnoreBotMessage("audience-2", "真实观众", "@某人 " + text));
     }
 
     [Fact]

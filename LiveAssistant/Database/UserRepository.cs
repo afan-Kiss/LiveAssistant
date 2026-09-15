@@ -8,6 +8,9 @@ public sealed class UserRepository
     private readonly AppDatabase _db;
     private readonly PointsLedgerRepository _ledger;
 
+    /// <summary>测试钩子：在事务内扣费完成后、更新 request_count 之前触发。</summary>
+    internal Action? TestAfterPointsDeductedBeforeRequestCount;
+
     public UserRepository(AppDatabase db, PointsLedgerRepository? ledger = null)
     {
         _db = db;
@@ -208,6 +211,154 @@ public sealed class UserRepository
         cmd.Parameters.AddWithValue("$nick", nickname);
         cmd.Parameters.AddWithValue("$now", now);
         cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// 在同一 SQLite 事务中完成点歌扣费（次卡或积分）并写入请求统计。
+    /// </summary>
+    public bool TryCommitSongRequestCharge(
+        string userId,
+        string nickname,
+        int pointsCost,
+        bool consumeCredit,
+        string? refId,
+        out int pointsBefore,
+        out int pointsAfter,
+        out bool creditConsumed,
+        out string? failureReason)
+    {
+        pointsBefore = 0;
+        pointsAfter = 0;
+        creditConsumed = false;
+        failureReason = null;
+
+        if (string.IsNullOrWhiteSpace(userId))
+        {
+            failureReason = "invalid_user";
+            return false;
+        }
+
+        EnsureUser(userId, nickname);
+        var now = DateTime.Now.ToString("O");
+
+        using var conn = _db.Open();
+        using var tx = conn.BeginTransaction();
+        try
+        {
+            using (var readCmd = conn.CreateCommand())
+            {
+                readCmd.Transaction = tx;
+                readCmd.CommandText = "SELECT points FROM users WHERE user_id = $uid";
+                readCmd.Parameters.AddWithValue("$uid", userId);
+                pointsBefore = Convert.ToInt32(readCmd.ExecuteScalar() ?? 0);
+                pointsAfter = pointsBefore;
+            }
+
+            if (consumeCredit)
+            {
+                int creditRows;
+                using (var cmd = conn.CreateCommand())
+                {
+                    cmd.Transaction = tx;
+                    cmd.CommandText = """
+                        UPDATE users
+                        SET song_permission_credits = song_permission_credits - 1,
+                            updated_at = $now
+                        WHERE user_id = $uid AND song_permission_credits > 0
+                        """;
+                    cmd.Parameters.AddWithValue("$uid", userId);
+                    cmd.Parameters.AddWithValue("$now", now);
+                    creditRows = cmd.ExecuteNonQuery();
+                }
+
+                if (creditRows == 0)
+                {
+                    failureReason = "credit_consume_failed";
+                    tx.Rollback();
+                    return false;
+                }
+
+                creditConsumed = true;
+            }
+            else if (pointsCost > 0)
+            {
+                int pointRows;
+                using (var cmd = conn.CreateCommand())
+                {
+                    cmd.Transaction = tx;
+                    cmd.CommandText = """
+                        UPDATE users
+                        SET points = points - $pts,
+                            updated_at = $now
+                        WHERE user_id = $uid AND points >= $pts
+                        """;
+                    cmd.Parameters.AddWithValue("$uid", userId);
+                    cmd.Parameters.AddWithValue("$pts", pointsCost);
+                    cmd.Parameters.AddWithValue("$now", now);
+                    pointRows = cmd.ExecuteNonQuery();
+                }
+
+                if (pointRows == 0)
+                {
+                    failureReason = "insufficient_points";
+                    tx.Rollback();
+                    return false;
+                }
+
+                using (var readCmd = conn.CreateCommand())
+                {
+                    readCmd.Transaction = tx;
+                    readCmd.CommandText = "SELECT points FROM users WHERE user_id = $uid";
+                    readCmd.Parameters.AddWithValue("$uid", userId);
+                    pointsAfter = Convert.ToInt32(readCmd.ExecuteScalar() ?? 0);
+                }
+
+                _ledger.Insert(
+                    conn,
+                    tx,
+                    userId,
+                    -pointsCost,
+                    pointsAfter,
+                    PointsTransactionType.SongRequest,
+                    "点歌扣积分",
+                    refId);
+            }
+
+            TestAfterPointsDeductedBeforeRequestCount?.Invoke();
+
+            using (var cmd = conn.CreateCommand())
+            {
+                cmd.Transaction = tx;
+                cmd.CommandText = """
+                    UPDATE users
+                    SET nickname = $nick,
+                        request_count = request_count + 1,
+                        last_request_at = $now,
+                        updated_at = $now
+                    WHERE user_id = $uid
+                    """;
+                cmd.Parameters.AddWithValue("$uid", userId);
+                cmd.Parameters.AddWithValue("$nick", nickname);
+                cmd.Parameters.AddWithValue("$now", now);
+                cmd.ExecuteNonQuery();
+            }
+
+            tx.Commit();
+            return true;
+        }
+        catch
+        {
+            try
+            {
+                tx.Rollback();
+            }
+            catch
+            {
+                // ignore rollback errors
+            }
+
+            throw;
+        }
     }
 
     public bool DeductPoints(string userId, int points)
@@ -544,11 +695,11 @@ public sealed class UserRepository
         cmd.ExecuteNonQuery();
     }
 
-    public void AddSongPermissionCredits(string userId, int credits)
+    public bool AddSongPermissionCredits(string userId, int credits)
     {
         if (string.IsNullOrWhiteSpace(userId) || credits <= 0)
         {
-            return;
+            return true;
         }
 
         EnsureUser(userId, "");
@@ -562,7 +713,7 @@ public sealed class UserRepository
         cmd.Parameters.AddWithValue("$uid", userId);
         cmd.Parameters.AddWithValue("$credits", credits);
         cmd.Parameters.AddWithValue("$now", now);
-        cmd.ExecuteNonQuery();
+        return cmd.ExecuteNonQuery() > 0;
     }
 
     public void SetSongPermissionUnlimited(string userId, bool unlimited)

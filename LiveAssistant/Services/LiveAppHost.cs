@@ -142,7 +142,7 @@ public sealed class LiveAppHost : IDisposable
         _giftCollector = new GiftCollectorService(_config, _douyin, _gift, _log, giftRepo: _giftRepo);
         _banVote = new BanVoteService(_config, _banVoteRepo, _users, _douyin, _replyQueue, _reply, _system, _log);
         _welcome = new WelcomeService(_config, _reply, _replyQueue, _system, _welcomeCooldownRepo);
-        _keywordReply = new KeywordReplyService(_config, _keywordReplyRepo, new NullAIReplyService(), _log);
+        _keywordReply = new KeywordReplyService(_config, _keywordReplyRepo, _log);
         _pointsQuery = new PointsQueryService(_users, pointsLedgerRepo);
         _skipSong = new SkipSongService(
             _config, _users, _playback, _queue, _engine, _reply, _replyQueue, _system, _log);

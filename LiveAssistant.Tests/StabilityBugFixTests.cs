@@ -222,8 +222,10 @@ public sealed class StabilityBugFixTests : IDisposable
 
         queue.EnqueueMention("rid", "bot", "已切歌，消耗20积分");
         Assert.True(await WaitUntil(
-            () => tracker.IsRecentOutbound(null, "已切歌，消耗20积分"),
+            () => tracker.HasRecentOutboundContent("已切歌，消耗20积分"),
             TimeSpan.FromSeconds(2)));
+        // 仅正文不能命中 IsRecentOutbound；需 msg_id
+        Assert.False(tracker.IsRecentOutbound(null, "已切歌，消耗20积分"));
     }
 
     [Fact]
