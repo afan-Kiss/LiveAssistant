@@ -118,7 +118,8 @@ AI语音 Tab：总开关、回复弹幕/感谢礼物/欢迎/点赞/自动总结�
 
 ## 【Git commit】
 
-见本轮提交（若推送成功会写在下方）。
+- `8d9d887` — `feat: upgrade AI speech with live prompts context and event voices`
+- 已推送：`origin/main`（https://github.com/afan-Kiss/LiveAssistant.git）
 
 ## 【仍需要我人工做的事情】
 
