@@ -136,6 +136,17 @@ public class SpeechTextCleanerTests
     }
 
     [Fact]
+    public void Clean_StripsThinkBlocksAndAiPersonaLeak()
+    {
+        var raw = "<think>内部推理不要读出来</think>对，这个基本都是自己慢慢做出来的。作为AI我很高兴。";
+        var cleaned = SpeechTextCleaner.Clean(raw, 50);
+        Assert.DoesNotContain("think", cleaned, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("内部推理", cleaned);
+        Assert.DoesNotContain("作为AI", cleaned);
+        Assert.Contains("自己慢慢做出来", cleaned);
+    }
+
+    [Fact]
     public void Clean_TruncatesBySentence()
     {
         var raw = "第一句话就到这里。第二句会更长一些而且继续往后面写很多很多内容。第三句不该出现。";

@@ -64,10 +64,26 @@ public sealed class OllamaClient : IDisposable
         }
     }
 
-    public async Task<OllamaGenerateResult> GenerateAsync(
+    public Task<OllamaGenerateResult> GenerateAsync(
         string model,
         string systemPrompt,
         string userPrompt,
+        CancellationToken ct = default)
+    {
+        var messages = new List<(string Role, string Content)>
+        {
+            ("system", systemPrompt ?? ""),
+            ("user", userPrompt ?? "")
+        };
+        return GenerateChatAsync(model, messages, ct);
+    }
+
+    /// <summary>
+    /// 多轮 chat；强制 think=false。只取 message.content / response，绝不把 thinking 当朗读文本。
+    /// </summary>
+    public async Task<OllamaGenerateResult> GenerateChatAsync(
+        string model,
+        IReadOnlyList<(string Role, string Content)> messages,
         CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(model))
@@ -75,16 +91,33 @@ public sealed class OllamaClient : IDisposable
             return OllamaGenerateResult.Fail("未选择 Ollama 模型");
         }
 
+        if (messages == null || messages.Count == 0)
+        {
+            return OllamaGenerateResult.Fail("聊天消息为空");
+        }
+
+        var payloadMessages = messages
+            .Where(m => !string.IsNullOrWhiteSpace(m.Content))
+            .Select(m => new
+            {
+                role = NormalizeRole(m.Role),
+                content = m.Content.Trim()
+            })
+            .ToArray();
+
+        if (payloadMessages.Length == 0)
+        {
+            return OllamaGenerateResult.Fail("聊天消息为空");
+        }
+
+        // qwen3 默认会把 token 花在 message.thinking 上，content 常为空；关闭 think 才能稳定出可朗读回复。
         var payload = new
         {
             model,
             stream = false,
+            think = false,
             options = new { temperature = 0.7, num_predict = 120 },
-            messages = new object[]
-            {
-                new { role = "system", content = systemPrompt },
-                new { role = "user", content = userPrompt }
-            }
+            messages = payloadMessages
         };
 
         try
@@ -104,18 +137,7 @@ public sealed class OllamaClient : IDisposable
             }
 
             using var doc = JsonDocument.Parse(body);
-            var text = "";
-            if (doc.RootElement.TryGetProperty("message", out var message)
-                && message.TryGetProperty("content", out var contentEl))
-            {
-                text = contentEl.GetString() ?? "";
-            }
-
-            if (string.IsNullOrWhiteSpace(text)
-                && doc.RootElement.TryGetProperty("response", out var responseEl))
-            {
-                text = responseEl.GetString() ?? "";
-            }
+            var text = ExtractFinalContent(doc.RootElement);
 
             if (string.IsNullOrWhiteSpace(text))
             {
@@ -132,6 +154,42 @@ public sealed class OllamaClient : IDisposable
         {
             return OllamaGenerateResult.Fail($"{ex.GetType().Name}: {ex.Message}");
         }
+    }
+
+    /// <summary>只取最终 content；忽略 thinking / reasoning 字段。</summary>
+    private static string ExtractFinalContent(JsonElement root)
+    {
+        if (root.TryGetProperty("message", out var message))
+        {
+            if (message.TryGetProperty("content", out var contentEl))
+            {
+                var text = contentEl.GetString() ?? "";
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    return text;
+                }
+            }
+
+            // 明确忽略 thinking / reasoning，绝不作为兜底朗读文本
+        }
+
+        if (root.TryGetProperty("response", out var responseEl))
+        {
+            return responseEl.GetString() ?? "";
+        }
+
+        return "";
+    }
+
+    private static string NormalizeRole(string? role)
+    {
+        var r = (role ?? "user").Trim().ToLowerInvariant();
+        return r switch
+        {
+            "system" => "system",
+            "assistant" => "assistant",
+            _ => "user"
+        };
     }
 
     private static bool IsResourceError(System.Net.HttpStatusCode code, string body)

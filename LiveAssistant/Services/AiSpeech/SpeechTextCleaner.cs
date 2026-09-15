@@ -11,6 +11,12 @@ public static partial class SpeechTextCleaner
     [GeneratedRegex(@"```[\s\S]*?```")]
     private static partial Regex CodeBlockPattern();
 
+    [GeneratedRegex(@"<think>[\s\S]*?</think>", RegexOptions.IgnoreCase)]
+    private static partial Regex ThinkBlockPattern();
+
+    [GeneratedRegex(@"</?think>", RegexOptions.IgnoreCase)]
+    private static partial Regex ThinkTagPattern();
+
     [GeneratedRegex("`[^`]*`")]
     private static partial Regex InlineCodePattern();
 
@@ -40,6 +46,8 @@ public static partial class SpeechTextCleaner
         }
 
         var s = text.Trim();
+        s = ThinkBlockPattern().Replace(s, " ");
+        s = ThinkTagPattern().Replace(s, " ");
         s = CodeBlockPattern().Replace(s, " ");
         s = InlineCodePattern().Replace(s, " ");
         s = UrlPattern().Replace(s, " ");
@@ -51,7 +59,7 @@ public static partial class SpeechTextCleaner
         s = s.Replace('\r', ' ').Replace('\n', ' ').Replace('\t', ' ');
         s = MultiSpacePattern().Replace(s, " ").Trim();
 
-        // 去掉常见 AI 前缀
+        // 去掉常见 AI 前缀 / 破功话术
         foreach (var prefix in new[] { "主播：", "主播:", "回复：", "回复:", "答：" })
         {
             if (s.StartsWith(prefix, StringComparison.Ordinal))
@@ -59,6 +67,12 @@ public static partial class SpeechTextCleaner
                 s = s[prefix.Length..].Trim();
             }
         }
+
+        foreach (var bad in new[] { "作为AI", "作为人工智能", "作为语言模型" })
+        {
+            s = s.Replace(bad, "", StringComparison.OrdinalIgnoreCase);
+        }
+        s = MultiSpacePattern().Replace(s, " ").Trim();
 
         if (maxChars > 0 && CountSpeechChars(s) > maxChars)
         {

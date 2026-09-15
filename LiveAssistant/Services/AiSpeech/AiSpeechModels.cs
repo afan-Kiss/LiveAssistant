@@ -4,8 +4,63 @@ public enum AiSpeechPhase
 {
     Idle,
     Thinking,
+    GeneratingGift,
+    GeneratingWelcome,
+    GeneratingSummary,
     Synthesizing,
     Playing
+}
+
+public enum AiSpeechEventKind
+{
+    Danmaku,
+    Gift,
+    Welcome,
+    Like,
+    Summary,
+    System
+}
+
+/// <summary>优先级：数值越小越优先。Gift=P1 … Like=P5。</summary>
+public enum AiSpeechPriority
+{
+    P0 = 0,
+    Gift = 1,
+    DanmakuImportant = 2,
+    Summary = 3,
+    Welcome = 4,
+    Like = 5
+}
+
+public enum AiContextMode
+{
+    Auto,
+    None,
+    User,
+    Room
+}
+
+public static class AiContextModeHelper
+{
+    public static AiContextMode Parse(string? mode)
+    {
+        var m = (mode ?? "").Trim().ToLowerInvariant();
+        return m switch
+        {
+            "none" => AiContextMode.None,
+            "user" => AiContextMode.User,
+            "room" => AiContextMode.Room,
+            _ => AiContextMode.Auto
+        };
+    }
+
+    public static string ToConfigString(AiContextMode mode) => mode switch
+    {
+        AiContextMode.None => "none",
+        AiContextMode.User => "user",
+        AiContextMode.Room => "room",
+        _ => "auto"
+    };
 }
 
 public sealed class AiSpeechTask
@@ -19,6 +74,17 @@ public sealed class AiSpeechTask
     public string ScoreDetail { get; init; } = "";
     public DateTime EnqueuedAt { get; init; } = DateTime.UtcNow;
     public DateTime ReceivedAt { get; init; } = DateTime.Now;
+
+    public AiSpeechEventKind Kind { get; init; } = AiSpeechEventKind.Danmaku;
+    public AiSpeechPriority Priority { get; init; } = AiSpeechPriority.DanmakuImportant;
+    public string EmotionRequested { get; init; } = "auto";
+    public string EmotionUsed { get; set; } = "";
+    public double Speed { get; init; } = 1.0;
+    /// <summary>已有成稿时跳过 LLM（如礼物模板感谢）。</summary>
+    public string? PrebuiltText { get; init; }
+    public string PromptVersion { get; init; } = "";
+    public IReadOnlyList<(string Role, string Content)>? ContextUserMessages { get; init; }
+    public IReadOnlyList<(string Role, string Content)>? ContextRoomMessages { get; init; }
 }
 
 /// <summary>模型下拉项：显示推荐标记，保存真实模型名。</summary>
@@ -55,6 +121,12 @@ public sealed class AiSpeechStatusSnapshot
     public long LastOllamaMs { get; init; }
     public long LastTtsMs { get; init; }
     public long LastTotalMs { get; init; }
+
+    public AiSpeechEventKind TaskKind { get; init; } = AiSpeechEventKind.Danmaku;
+    public string Emotion { get; init; } = "";
+    public double Speed { get; init; } = 1.0;
+    public DateTime? PromptLoadedAt { get; init; }
+    public string PromptVersion { get; init; } = "";
 }
 
 public sealed class AiSpeechTestResult
@@ -74,4 +146,18 @@ public sealed class AudioOutputDeviceInfo
     public int DeviceNumber { get; init; }
     public string Name { get; init; } = "";
     public override string ToString() => DeviceNumber < 0 ? $"系统默认 ({Name})" : $"{DeviceNumber}: {Name}";
+}
+
+public static class AiSpeechPhaseText
+{
+    public static string ToText(AiSpeechPhase phase) => phase switch
+    {
+        AiSpeechPhase.Thinking => "正在思考",
+        AiSpeechPhase.GeneratingGift => "正在生成礼物感谢",
+        AiSpeechPhase.GeneratingWelcome => "正在生成欢迎语",
+        AiSpeechPhase.GeneratingSummary => "正在生成总结",
+        AiSpeechPhase.Synthesizing => "正在合成声音",
+        AiSpeechPhase.Playing => "正在播放",
+        _ => "空闲"
+    };
 }

@@ -56,11 +56,24 @@ public sealed class MainForm : Form
     // AI 语音互动
     private readonly CheckBox _chkAiEnabled = new();
     private readonly CheckBox _chkAiTestMode = new();
+    private readonly CheckBox _chkAiReplyDanmaku = new();
+    private readonly CheckBox _chkAiThankGift = new();
+    private readonly CheckBox _chkAiWelcome = new();
+    private readonly CheckBox _chkAiThankLike = new();
+    private readonly CheckBox _chkAiAutoSummary = new();
     private readonly ComboBox _cmbAiModel = new();
     private readonly ComboBox _cmbAiDevice = new();
     private readonly NumericUpDown _numAiInterval = new();
     private readonly NumericUpDown _numAiQueue = new();
     private readonly NumericUpDown _numAiMaxChars = new();
+    private readonly NumericUpDown _numAiGiftMerge = new();
+    private readonly NumericUpDown _numAiWelcomeInterval = new();
+    private readonly NumericUpDown _numAiLikeInterval = new();
+    private readonly NumericUpDown _numAiSummaryInterval = new();
+    private readonly ComboBox _cmbAiContext = new();
+    private readonly ComboBox _cmbAiEmotion = new();
+    private readonly ComboBox _cmbAiSpeed = new();
+    private readonly ComboBox _cmbAiGiftMode = new();
     private readonly Label _lblAiVoice = new();
     private readonly Label _lblAiTtsUrl = new();
     private readonly Label _lblAiOllamaStatus = new();
@@ -73,10 +86,14 @@ public sealed class MainForm : Form
     private readonly Label _lblAiReply = new();
     private readonly Label _lblAiHint = new();
     private readonly Label _lblAiTestStats = new();
+    private readonly Label _lblAiPromptInfo = new();
+    private readonly Label _lblAiEmotionSpeed = new();
+    private readonly Label _lblAiTaskKind = new();
     private readonly Button _btnAiRefreshModels = new();
     private readonly Button _btnAiTestVoice = new();
     private readonly Button _btnAiTestAi = new();
     private readonly Button _btnAiStop = new();
+    private readonly Button _btnAiEditPrompts = new();
     private bool _aiUiLoading;
 
     private readonly System.Windows.Forms.Timer _uiTimer = new();
@@ -540,6 +557,25 @@ public sealed class MainForm : Form
         _chkAiTestMode.Text = "AI语音测试模式（真实弹幕，按间隔挑一条）";
         _chkAiTestMode.Checked = s.TestMode;
 
+        _chkAiReplyDanmaku.Text = "回复弹幕";
+        _chkAiReplyDanmaku.Checked = s.ReplyDanmaku;
+        _chkAiThankGift.Text = "感谢礼物";
+        _chkAiThankGift.Checked = s.ThankGift;
+        _chkAiWelcome.Text = "欢迎进房";
+        _chkAiWelcome.Checked = s.WelcomeUser;
+        _chkAiThankLike.Text = "感谢点赞";
+        _chkAiThankLike.Checked = s.ThankLike;
+        _chkAiAutoSummary.Text = "自动总结";
+        _chkAiAutoSummary.Checked = s.AutoRoomSummary;
+        foreach (var chk in new[]
+                 {
+                     _chkAiReplyDanmaku, _chkAiThankGift, _chkAiWelcome, _chkAiThankLike, _chkAiAutoSummary
+                 })
+        {
+            chk.AutoSize = true;
+            chk.Margin = new Padding(0, 2, 12, 2);
+        }
+
         _cmbAiModel.DropDownStyle = ComboBoxStyle.DropDownList;
         _cmbAiDevice.DropDownStyle = ComboBoxStyle.DropDownList;
 
@@ -548,9 +584,10 @@ public sealed class MainForm : Form
         _lblAiTtsUrl.Text = string.IsNullOrWhiteSpace(s.TtsUrl) ? "127.0.0.1:9880" : s.TtsUrl.Replace("http://", "");
         _lblAiTtsUrl.TextAlign = ContentAlignment.MiddleLeft;
 
+        var replyInterval = s.ReplyIntervalSeconds > 0 ? s.ReplyIntervalSeconds : s.MinIntervalSeconds;
         _numAiInterval.Minimum = 3;
         _numAiInterval.Maximum = 60;
-        _numAiInterval.Value = Math.Clamp(s.MinIntervalSeconds, 3, 60);
+        _numAiInterval.Value = Math.Clamp(replyInterval, 3, 60);
         _numAiQueue.Minimum = 1;
         _numAiQueue.Maximum = 20;
         _numAiQueue.Value = Math.Clamp(s.MaxQueueSize, 1, 20);
@@ -558,10 +595,52 @@ public sealed class MainForm : Form
         _numAiMaxChars.Maximum = 120;
         _numAiMaxChars.Value = Math.Clamp(s.MaxReplyLength, 10, 120);
 
+        _numAiGiftMerge.Minimum = 1;
+        _numAiGiftMerge.Maximum = 30;
+        _numAiGiftMerge.Value = Math.Clamp(s.GiftMergeSeconds, 1, 30);
+        _numAiWelcomeInterval.Minimum = 5;
+        _numAiWelcomeInterval.Maximum = 300;
+        _numAiWelcomeInterval.Value = Math.Clamp(s.WelcomeIntervalSeconds, 5, 300);
+        _numAiLikeInterval.Minimum = 20;
+        _numAiLikeInterval.Maximum = 600;
+        _numAiLikeInterval.Value = Math.Clamp(Math.Max(20, s.LikeIntervalSeconds), 20, 600);
+        _numAiSummaryInterval.Minimum = 30;
+        _numAiSummaryInterval.Maximum = 900;
+        _numAiSummaryInterval.Value = Math.Clamp(s.SummaryIntervalSeconds, 30, 900);
+
+        FillAiNamedCombo(_cmbAiContext, new[]
+        {
+            ("自动", "auto"),
+            ("无上下文", "none"),
+            ("仅当前用户", "user"),
+            ("全直播间", "room")
+        }, s.ContextMode);
+
+        FillAiNamedCombo(_cmbAiEmotion, new[]
+        {
+            ("自动", "auto"),
+            ("自然", "neutral"),
+            ("开心", "happy"),
+            ("热情", "excited"),
+            ("认真", "calm"),
+            ("温柔", "warm"),
+            ("平静", "calm")
+        }, string.IsNullOrWhiteSpace(s.Emotion) ? "auto" : s.Emotion, preferLastDuplicate: true);
+
+        FillAiSpeedCombo(_cmbAiSpeed, s.Speed);
+        FillAiNamedCombo(_cmbAiGiftMode, new[]
+        {
+            ("AI自然感谢", "ai"),
+            ("固定模板", "template")
+        }, string.IsNullOrWhiteSpace(s.GiftThankMode) ? "ai" : s.GiftThankMode);
+
+        StyleButton(_btnAiEditPrompts, "编辑提示词", 0);
+
         foreach (var lbl in new[]
                  {
                      _lblAiOllamaStatus, _lblAiTtsStatus, _lblAiVoiceStatus, _lblAiPhase, _lblAiQueue,
-                     _lblAiLatestUser, _lblAiLatestContent, _lblAiReply, _lblAiHint, _lblAiTestStats
+                     _lblAiLatestUser, _lblAiLatestContent, _lblAiReply, _lblAiHint, _lblAiTestStats,
+                     _lblAiPromptInfo, _lblAiEmotionSpeed, _lblAiTaskKind
                  })
         {
             lbl.TextAlign = ContentAlignment.MiddleLeft;
@@ -578,8 +657,12 @@ public sealed class MainForm : Form
         _lblAiReply.Text = "-";
         _lblAiHint.Text = "";
         _lblAiTestStats.Text = "";
+        _lblAiTaskKind.Text = "-";
+        _lblAiEmotionSpeed.Text = "-";
+        _lblAiPromptInfo.Text = "提示词未加载";
         _lblAiHint.ForeColor = Color.FromArgb(160, 80, 0);
         _lblAiTestStats.ForeColor = Color.DimGray;
+        _lblAiPromptInfo.ForeColor = Color.DimGray;
 
         var modelRow = new TableLayoutPanel { ColumnCount = 2, RowCount = 1, Dock = DockStyle.Fill, Margin = new Padding(0) };
         modelRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -590,6 +673,29 @@ public sealed class MainForm : Form
         _btnAiRefreshModels.Margin = new Padding(4, 0, 0, 0);
         modelRow.Controls.Add(_cmbAiModel, 0, 0);
         modelRow.Controls.Add(_btnAiRefreshModels, 1, 0);
+
+        var featureRow = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = true,
+            AutoSize = false,
+            Margin = new Padding(0)
+        };
+        featureRow.Controls.Add(_chkAiReplyDanmaku);
+        featureRow.Controls.Add(_chkAiThankGift);
+        featureRow.Controls.Add(_chkAiWelcome);
+        featureRow.Controls.Add(_chkAiThankLike);
+        featureRow.Controls.Add(_chkAiAutoSummary);
+
+        var promptRow = new TableLayoutPanel { ColumnCount = 2, RowCount = 1, Dock = DockStyle.Fill, Margin = new Padding(0) };
+        promptRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
+        promptRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _btnAiEditPrompts.Dock = DockStyle.Fill;
+        _btnAiEditPrompts.Margin = new Padding(0, 0, 8, 0);
+        _lblAiPromptInfo.Dock = DockStyle.Fill;
+        promptRow.Controls.Add(_btnAiEditPrompts, 0, 0);
+        promptRow.Controls.Add(_lblAiPromptInfo, 1, 0);
 
         var btnRow = new TableLayoutPanel { ColumnCount = 3, RowCount = 1, Dock = DockStyle.Fill, Margin = new Padding(0) };
         btnRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.33f));
@@ -609,10 +715,11 @@ public sealed class MainForm : Form
 
         AddRow("", _chkAiEnabled, 28);
         AddRow("", _chkAiTestMode, 28);
+        AddRow("功能开关", featureRow, 52);
         AddRow("AI模型", modelRow, 32);
         var modelHint = new Label
         {
-            Text = "推荐 qwen3:8b；可选 qwen2.5:7b / qwen3.5:27b。人格：Config/ai_personality.txt",
+            Text = "推荐 qwen3:8b；可选 qwen2.5:7b / qwen3.5:27b。提示词：Config/AiSpeech/",
             Dock = DockStyle.Fill,
             TextAlign = ContentAlignment.MiddleLeft,
             ForeColor = Color.DimGray,
@@ -628,8 +735,19 @@ public sealed class MainForm : Form
         AddRow("回复间隔", _numAiInterval, 30);
         AddRow("最大排队", _numAiQueue, 30);
         AddRow("最大字数", _numAiMaxChars, 30);
+        AddRow("礼物合并秒", _numAiGiftMerge, 30);
+        AddRow("欢迎间隔", _numAiWelcomeInterval, 30);
+        AddRow("点赞间隔", _numAiLikeInterval, 30);
+        AddRow("总结间隔", _numAiSummaryInterval, 30);
+        AddRow("上下文", _cmbAiContext, 32);
+        AddRow("情绪", _cmbAiEmotion, 32);
+        AddRow("语速", _cmbAiSpeed, 32);
+        AddRow("礼物模式", _cmbAiGiftMode, 32);
+        AddRow("提示词", promptRow, 36);
         AddRow("操作", btnRow, 36);
         AddRow("当前状态", _lblAiPhase, 24);
+        AddRow("任务类型", _lblAiTaskKind, 24);
+        AddRow("情绪语速", _lblAiEmotionSpeed, 24);
         AddRow("队列", _lblAiQueue, 24);
         AddRow("最新弹幕", _lblAiLatestUser, 24);
         AddRow("", _lblAiLatestContent, 24);
@@ -1010,6 +1128,22 @@ public sealed class MainForm : Form
             });
         };
 
+        void SaveAiFeatureFlags()
+        {
+            if (_aiUiLoading)
+            {
+                return;
+            }
+
+            PersistAiSettingsFromControls();
+        }
+
+        _chkAiReplyDanmaku.CheckedChanged += (_, _) => SaveAiFeatureFlags();
+        _chkAiThankGift.CheckedChanged += (_, _) => SaveAiFeatureFlags();
+        _chkAiWelcome.CheckedChanged += (_, _) => SaveAiFeatureFlags();
+        _chkAiThankLike.CheckedChanged += (_, _) => SaveAiFeatureFlags();
+        _chkAiAutoSummary.CheckedChanged += (_, _) => SaveAiFeatureFlags();
+
         void SaveNumeric()
         {
             if (_aiUiLoading)
@@ -1017,17 +1151,33 @@ public sealed class MainForm : Form
                 return;
             }
 
-            _host.AiSpeech.SaveSettingsFromUi(s =>
-            {
-                s.MinIntervalSeconds = (int)_numAiInterval.Value;
-                s.MaxQueueSize = (int)_numAiQueue.Value;
-                s.MaxReplyLength = (int)_numAiMaxChars.Value;
-            });
+            PersistAiSettingsFromControls();
         }
 
         _numAiInterval.ValueChanged += (_, _) => SaveNumeric();
         _numAiQueue.ValueChanged += (_, _) => SaveNumeric();
         _numAiMaxChars.ValueChanged += (_, _) => SaveNumeric();
+        _numAiGiftMerge.ValueChanged += (_, _) => SaveNumeric();
+        _numAiWelcomeInterval.ValueChanged += (_, _) => SaveNumeric();
+        _numAiLikeInterval.ValueChanged += (_, _) => SaveNumeric();
+        _numAiSummaryInterval.ValueChanged += (_, _) => SaveNumeric();
+
+        void SaveCombo()
+        {
+            if (_aiUiLoading)
+            {
+                return;
+            }
+
+            PersistAiSettingsFromControls();
+        }
+
+        _cmbAiContext.SelectedIndexChanged += (_, _) => SaveCombo();
+        _cmbAiEmotion.SelectedIndexChanged += (_, _) => SaveCombo();
+        _cmbAiSpeed.SelectedIndexChanged += (_, _) => SaveCombo();
+        _cmbAiGiftMode.SelectedIndexChanged += (_, _) => SaveCombo();
+
+        _btnAiEditPrompts.Click += (_, _) => ShowAiPromptEditor();
 
         _btnAiRefreshModels.Click += async (_, _) =>
         {
@@ -1134,6 +1284,7 @@ public sealed class MainForm : Form
         _aiUiLoading = true;
         try
         {
+            LoadAiSpeechSettingsToControls();
             LoadAiDevices();
             await RefreshAiModelsAsync();
             await _host.AiSpeech.RefreshHealthAsync();
@@ -1143,6 +1294,32 @@ public sealed class MainForm : Form
         {
             _aiUiLoading = false;
         }
+    }
+
+    private void LoadAiSpeechSettingsToControls()
+    {
+        var s = _host.Config.Settings.AiSpeech;
+        _chkAiEnabled.Checked = s.Enabled;
+        _chkAiTestMode.Checked = s.TestMode;
+        _chkAiReplyDanmaku.Checked = s.ReplyDanmaku;
+        _chkAiThankGift.Checked = s.ThankGift;
+        _chkAiWelcome.Checked = s.WelcomeUser;
+        _chkAiThankLike.Checked = s.ThankLike;
+        _chkAiAutoSummary.Checked = s.AutoRoomSummary;
+
+        var replyInterval = s.ReplyIntervalSeconds > 0 ? s.ReplyIntervalSeconds : s.MinIntervalSeconds;
+        _numAiInterval.Value = Math.Clamp(replyInterval, (int)_numAiInterval.Minimum, (int)_numAiInterval.Maximum);
+        _numAiQueue.Value = Math.Clamp(s.MaxQueueSize, (int)_numAiQueue.Minimum, (int)_numAiQueue.Maximum);
+        _numAiMaxChars.Value = Math.Clamp(s.MaxReplyLength, (int)_numAiMaxChars.Minimum, (int)_numAiMaxChars.Maximum);
+        _numAiGiftMerge.Value = Math.Clamp(s.GiftMergeSeconds, (int)_numAiGiftMerge.Minimum, (int)_numAiGiftMerge.Maximum);
+        _numAiWelcomeInterval.Value = Math.Clamp(s.WelcomeIntervalSeconds, (int)_numAiWelcomeInterval.Minimum, (int)_numAiWelcomeInterval.Maximum);
+        _numAiLikeInterval.Value = Math.Clamp(Math.Max(20, s.LikeIntervalSeconds), (int)_numAiLikeInterval.Minimum, (int)_numAiLikeInterval.Maximum);
+        _numAiSummaryInterval.Value = Math.Clamp(s.SummaryIntervalSeconds, (int)_numAiSummaryInterval.Minimum, (int)_numAiSummaryInterval.Maximum);
+
+        SelectAiNamedCombo(_cmbAiContext, s.ContextMode);
+        SelectAiNamedCombo(_cmbAiEmotion, string.IsNullOrWhiteSpace(s.Emotion) ? "auto" : s.Emotion, preferLastDuplicate: true);
+        SelectAiSpeedCombo(_cmbAiSpeed, s.Speed);
+        SelectAiNamedCombo(_cmbAiGiftMode, string.IsNullOrWhiteSpace(s.GiftThankMode) ? "ai" : s.GiftThankMode);
     }
 
     private void LoadAiDevices()
@@ -1238,9 +1415,27 @@ public sealed class MainForm : Form
         {
             s.Enabled = _chkAiEnabled.Checked;
             s.TestMode = _chkAiTestMode.Checked;
-            s.MinIntervalSeconds = (int)_numAiInterval.Value;
+            s.ReplyDanmaku = _chkAiReplyDanmaku.Checked;
+            s.ThankGift = _chkAiThankGift.Checked;
+            s.WelcomeUser = _chkAiWelcome.Checked;
+            s.ThankLike = _chkAiThankLike.Checked;
+            s.AutoRoomSummary = _chkAiAutoSummary.Checked;
+
+            var replyInterval = (int)_numAiInterval.Value;
+            s.ReplyIntervalSeconds = replyInterval;
+            s.MinIntervalSeconds = replyInterval;
             s.MaxQueueSize = (int)_numAiQueue.Value;
             s.MaxReplyLength = (int)_numAiMaxChars.Value;
+            s.GiftMergeSeconds = (int)_numAiGiftMerge.Value;
+            s.WelcomeIntervalSeconds = (int)_numAiWelcomeInterval.Value;
+            s.LikeIntervalSeconds = (int)_numAiLikeInterval.Value;
+            s.SummaryIntervalSeconds = (int)_numAiSummaryInterval.Value;
+
+            s.ContextMode = ResolveAiNamedCombo(_cmbAiContext, "auto");
+            s.Emotion = ResolveAiNamedCombo(_cmbAiEmotion, "auto");
+            s.Speed = ResolveAiSpeedCombo(_cmbAiSpeed, 1.0);
+            s.GiftThankMode = ResolveAiNamedCombo(_cmbAiGiftMode, "ai");
+
             var model = ResolveSelectedAiModel();
             if (!string.IsNullOrWhiteSpace(model))
             {
@@ -1264,6 +1459,28 @@ public sealed class MainForm : Form
 
         var status = _host.AiSpeech.GetStatus();
         _lblAiPhase.Text = status.PhaseText;
+        _lblAiTaskKind.Text = FormatAiTaskKind(status.TaskKind);
+        var emotion = string.IsNullOrWhiteSpace(status.Emotion) ? "-" : status.Emotion;
+        _lblAiEmotionSpeed.Text = $"{emotion} / {status.Speed:0.00}x";
+        if (!string.IsNullOrWhiteSpace(status.Emotion)
+            && !status.Emotion.Equals(EmotionPresets.Neutral, StringComparison.OrdinalIgnoreCase)
+            && !status.Emotion.Equals(EmotionPresets.Auto, StringComparison.OrdinalIgnoreCase)
+            && !EmotionPresets.IsConfigured(status.Emotion, status.VoiceName))
+        {
+            _lblAiEmotionSpeed.Text += "（情感参考音未配置，将回退中性）";
+        }
+
+        if (status.PromptLoadedAt is { } loadedAt)
+        {
+            var local = loadedAt.Kind == DateTimeKind.Utc ? loadedAt.ToLocalTime() : loadedAt;
+            var ver = string.IsNullOrWhiteSpace(status.PromptVersion) ? "" : $" v{status.PromptVersion}";
+            _lblAiPromptInfo.Text = $"提示词已加载：{local:HH:mm:ss}{ver}";
+        }
+        else
+        {
+            _lblAiPromptInfo.Text = "提示词未加载";
+        }
+
         _lblAiQueue.Text = $"{status.QueueCount} / {status.MaxQueueSize}";
         _lblAiOllamaStatus.Text = status.OllamaOk ? "● Ollama正常" : "● Ollama不可用";
         _lblAiOllamaStatus.ForeColor = status.OllamaOk ? Color.ForestGreen : Color.Firebrick;
@@ -1290,6 +1507,209 @@ public sealed class MainForm : Form
         }
 
         _lblAiHint.Text = status.ServiceHint;
+    }
+
+    private void ShowAiPromptEditor()
+    {
+        var form = new Form
+        {
+            Text = "编辑 AI 提示词",
+            Width = 760,
+            Height = 580,
+            StartPosition = FormStartPosition.CenterParent,
+            Font = Font,
+            MinimizeBox = false,
+            ShowInTaskbar = false
+        };
+
+        var tabs = new TabControl { Dock = DockStyle.Fill };
+        var kinds = new (string Title, AiPromptStore.PromptKind Kind)[]
+        {
+            ("人格", AiPromptStore.PromptKind.Personality),
+            ("弹幕", AiPromptStore.PromptKind.Danmaku),
+            ("礼物", AiPromptStore.PromptKind.Gift),
+            ("欢迎", AiPromptStore.PromptKind.Welcome),
+            ("总结", AiPromptStore.PromptKind.Summary),
+            ("点赞", AiPromptStore.PromptKind.Like)
+        };
+
+        var boxes = new Dictionary<AiPromptStore.PromptKind, TextBox>();
+        foreach (var (title, kind) in kinds)
+        {
+            var page = new TabPage(title);
+            var box = new TextBox
+            {
+                Dock = DockStyle.Fill,
+                Multiline = true,
+                ScrollBars = ScrollBars.Both,
+                AcceptsReturn = true,
+                AcceptsTab = true,
+                Font = new Font("Consolas", 10F),
+                Text = _host.AiSpeech.Prompts.Get(kind)
+            };
+            boxes[kind] = box;
+            page.Controls.Add(box);
+            tabs.TabPages.Add(page);
+        }
+
+        var bottom = new Panel { Dock = DockStyle.Bottom, Height = 52, Padding = new Padding(8, 8, 8, 8) };
+        var btnSave = new Button();
+        StyleButton(btnSave, "保存", 100);
+        btnSave.Dock = DockStyle.Right;
+        btnSave.Click += (_, _) =>
+        {
+            try
+            {
+                foreach (var kv in boxes)
+                {
+                    _host.AiSpeech.Prompts.SavePrompt(kv.Key, kv.Value.Text);
+                }
+
+                var loaded = _host.AiSpeech.Prompts.GetLoadedAt();
+                var local = loaded.Kind == DateTimeKind.Utc ? loaded.ToLocalTime() : loaded;
+                var ver = _host.AiSpeech.Prompts.GetVersion();
+                _lblAiPromptInfo.Text = $"提示词已加载：{local:HH:mm:ss} v{ver}";
+                MessageBox.Show(form, "提示词已保存并热重载。", AppBranding.DisplayName,
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(form, $"保存失败：{ex.Message}", AppBranding.DisplayName,
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        };
+        bottom.Controls.Add(btnSave);
+
+        form.Controls.Add(bottom);
+        form.Controls.Add(tabs);
+        form.ShowDialog(this);
+    }
+
+    private static string FormatAiTaskKind(AiSpeechEventKind kind) => kind switch
+    {
+        AiSpeechEventKind.Danmaku => "弹幕回复",
+        AiSpeechEventKind.Gift => "礼物感谢",
+        AiSpeechEventKind.Welcome => "进房欢迎",
+        AiSpeechEventKind.Like => "点赞感谢",
+        AiSpeechEventKind.Summary => "直播间总结",
+        AiSpeechEventKind.System => "系统",
+        _ => kind.ToString()
+    };
+
+    private static void FillAiNamedCombo(
+        ComboBox cmb,
+        (string Name, string Value)[] items,
+        string selected,
+        bool preferLastDuplicate = false)
+    {
+        cmb.DropDownStyle = ComboBoxStyle.DropDownList;
+        cmb.Items.Clear();
+        foreach (var (name, value) in items)
+        {
+            cmb.Items.Add(new AiNamedOption(name, value));
+        }
+
+        SelectAiNamedCombo(cmb, selected, preferLastDuplicate);
+        if (cmb.Items.Count > 0 && cmb.SelectedIndex < 0)
+        {
+            cmb.SelectedIndex = 0;
+        }
+    }
+
+    private static void SelectAiNamedCombo(ComboBox cmb, string selected, bool preferLastDuplicate = false)
+    {
+        var selectedIdx = -1;
+        for (var i = 0; i < cmb.Items.Count; i++)
+        {
+            if (cmb.Items[i] is AiNamedOption opt
+                && opt.Value.Equals(selected ?? "", StringComparison.OrdinalIgnoreCase))
+            {
+                selectedIdx = i;
+                if (!preferLastDuplicate)
+                {
+                    break;
+                }
+            }
+        }
+
+        if (selectedIdx >= 0)
+        {
+            cmb.SelectedIndex = selectedIdx;
+        }
+        else if (cmb.Items.Count > 0 && cmb.SelectedIndex < 0)
+        {
+            cmb.SelectedIndex = 0;
+        }
+    }
+
+    private static string ResolveAiNamedCombo(ComboBox cmb, string fallback)
+    {
+        return cmb.SelectedItem is AiNamedOption opt && !string.IsNullOrWhiteSpace(opt.Value)
+            ? opt.Value
+            : fallback;
+    }
+
+    private static void FillAiSpeedCombo(ComboBox cmb, double speed)
+    {
+        cmb.DropDownStyle = ComboBoxStyle.DropDownList;
+        cmb.Items.Clear();
+        double[] speeds = [0.85, 0.90, 0.95, 1.00, 1.05, 1.10, 1.15, 1.20];
+        var selectedIdx = 3; // 1.00
+        for (var i = 0; i < speeds.Length; i++)
+        {
+            cmb.Items.Add(new AiSpeedOption(speeds[i]));
+            if (Math.Abs(speeds[i] - speed) < 0.001)
+            {
+                selectedIdx = i;
+            }
+        }
+
+        if (cmb.Items.Count > 0)
+        {
+            cmb.SelectedIndex = selectedIdx;
+        }
+    }
+
+    private static void SelectAiSpeedCombo(ComboBox cmb, double speed)
+    {
+        for (var i = 0; i < cmb.Items.Count; i++)
+        {
+            if (cmb.Items[i] is AiSpeedOption opt && Math.Abs(opt.Speed - speed) < 0.001)
+            {
+                cmb.SelectedIndex = i;
+                return;
+            }
+        }
+
+        if (cmb.Items.Count > 0 && cmb.SelectedIndex < 0)
+        {
+            cmb.SelectedIndex = 0;
+        }
+    }
+
+    private static double ResolveAiSpeedCombo(ComboBox cmb, double fallback)
+    {
+        return cmb.SelectedItem is AiSpeedOption opt ? opt.Speed : fallback;
+    }
+
+    private sealed class AiNamedOption
+    {
+        public string Name { get; }
+        public string Value { get; }
+        public AiNamedOption(string name, string value)
+        {
+            Name = name;
+            Value = value;
+        }
+
+        public override string ToString() => Name;
+    }
+
+    private sealed class AiSpeedOption
+    {
+        public double Speed { get; }
+        public AiSpeedOption(double speed) => Speed = speed;
+        public override string ToString() => Speed.ToString("0.00");
     }
 
     private void RefreshStatusPanels()

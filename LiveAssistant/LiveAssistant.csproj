@@ -38,6 +38,9 @@
     <None Update="Config\ai_personality.txt">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Update="Config\AiSpeech\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <Content Include="Admin\wwwroot\**">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
@@ -53,6 +56,24 @@
     </EmbeddedResource>
     <EmbeddedResource Include="Config\ai_personality.txt">
       <LogicalName>LiveAssistant.Packaged.Config.ai_personality.txt</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Config\AiSpeech\personality.txt">
+      <LogicalName>LiveAssistant.Packaged.Config.AiSpeech.personality.txt</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Config\AiSpeech\danmaku_prompt.txt">
+      <LogicalName>LiveAssistant.Packaged.Config.AiSpeech.danmaku_prompt.txt</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Config\AiSpeech\gift_prompt.txt">
+      <LogicalName>LiveAssistant.Packaged.Config.AiSpeech.gift_prompt.txt</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Config\AiSpeech\welcome_prompt.txt">
+      <LogicalName>LiveAssistant.Packaged.Config.AiSpeech.welcome_prompt.txt</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Config\AiSpeech\summary_prompt.txt">
+      <LogicalName>LiveAssistant.Packaged.Config.AiSpeech.summary_prompt.txt</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Config\AiSpeech\like_prompt.txt">
+      <LogicalName>LiveAssistant.Packaged.Config.AiSpeech.like_prompt.txt</LogicalName>
     </EmbeddedResource>
     <EmbeddedResource Include="Admin\wwwroot\index.html">
       <LogicalName>LiveAssistant.Packaged.Admin.wwwroot.index.html</LogicalName>

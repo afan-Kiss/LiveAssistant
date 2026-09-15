@@ -188,7 +188,12 @@ public sealed class LiveAppHost : IDisposable
         _playbackCommands.Playback.StateChanged += OnPlaybackStateChanged;
         _queue.QueueChanged += () => NotifyStateChanged();
         _log.ErrorRecorded += () => _health.RecordError();
-        _gift.GiftReceived += _ => _health.RecordGift();
+        _gift.GiftReceived += g =>
+        {
+            _health.RecordGift();
+            try { _aiSpeech.TryEnqueueGift(g); }
+            catch (Exception ex) { _log.Error("ai_speech", "礼物投递 AI 模块异常（已隔离）", ex); }
+        };
 
         _adminWeb.Start();
         _adminTunnel.Start();
@@ -381,11 +386,20 @@ public sealed class LiveAppHost : IDisposable
         if (item.MsgType == "member")
         {
             _welcome.HandleMemberJoin(item, webRid);
+            try { _aiSpeech.TryEnqueueMemberJoin(item); }
+            catch (Exception ex) { _log.Error("ai_speech", "进房投递 AI 模块异常（已隔离）", ex); }
             return;
         }
 
         if (item.MsgType == "gift")
         {
+            return;
+        }
+
+        if (item.MsgType is "like" or "digg")
+        {
+            try { _aiSpeech.TryEnqueueLike(item); }
+            catch (Exception ex) { _log.Error("ai_speech", "点赞投递 AI 模块异常（已隔离）", ex); }
             return;
         }
 

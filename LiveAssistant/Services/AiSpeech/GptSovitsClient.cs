@@ -56,9 +56,22 @@ public sealed class GptSovitsClient : IDisposable
         }
     }
 
+    public Task<GptSovitsSynthesizeResult> SynthesizeAsync(
+        string text,
+        string voice)
+        => SynthesizeAsync(text, voice, 1.0, null, CancellationToken.None);
+
+    public Task<GptSovitsSynthesizeResult> SynthesizeAsync(
+        string text,
+        string voice,
+        CancellationToken ct)
+        => SynthesizeAsync(text, voice, 1.0, null, ct);
+
     public async Task<GptSovitsSynthesizeResult> SynthesizeAsync(
         string text,
         string voice,
+        double speedFactor,
+        string? referWav = null,
         CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(text))
@@ -66,7 +79,21 @@ public sealed class GptSovitsClient : IDisposable
             return GptSovitsSynthesizeResult.Fail("TTS 文本为空");
         }
 
-        var payload = new { text, voice = string.IsNullOrWhiteSpace(voice) ? "my_voice" : voice };
+        speedFactor = speedFactor <= 0 || double.IsNaN(speedFactor) || double.IsInfinity(speedFactor)
+            ? 1.0
+            : Math.Clamp(speedFactor, 0.5, 2.0);
+
+        var payload = new Dictionary<string, object?>
+        {
+            ["text"] = text,
+            ["voice"] = string.IsNullOrWhiteSpace(voice) ? "my_voice" : voice.Trim(),
+            ["speed_factor"] = speedFactor
+        };
+        if (!string.IsNullOrWhiteSpace(referWav))
+        {
+            payload["refer_wav"] = referWav.Trim();
+        }
+
         try
         {
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);

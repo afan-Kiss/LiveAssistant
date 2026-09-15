@@ -39,6 +39,7 @@ public sealed class AiSpeechSettings
     public string Voice { get; set; } = "my_voice";
     public int OutputDeviceNumber { get; set; } = -1;
     public string OutputDeviceName { get; set; } = "";
+    /// <summary>兼容旧字段；与 ReplyIntervalSeconds 同步。</summary>
     public int MinIntervalSeconds { get; set; } = 8;
     public int MaxQueueSize { get; set; } = 5;
     public int MaxReplyLength { get; set; } = 50;
@@ -47,8 +48,41 @@ public sealed class AiSpeechSettings
     public int MaxAgeSeconds { get; set; } = 30;
     /// <summary>弹幕评分阈值；低于此分不进入 AI。</summary>
     public int ScoreThreshold { get; set; } = 2;
-    /// <summary>兼容旧配置的回退人格；优先使用 Config/ai_personality.txt。</summary>
+    /// <summary>兼容旧配置的回退人格；优先使用 Config/AiSpeech/personality.txt。</summary>
     public string SystemPrompt { get; set; } = "";
+
+    // ---- V2 开关 ----
+    public bool ReplyDanmaku { get; set; } = true;
+    public bool ThankGift { get; set; } = true;
+    public bool WelcomeUser { get; set; }
+    public bool ThankLike { get; set; }
+    public bool AutoRoomSummary { get; set; }
+
+    /// <summary>弹幕回复最小间隔（秒）；与 MinIntervalSeconds 保持同步。</summary>
+    public int ReplyIntervalSeconds { get; set; } = 8;
+    public int GiftMergeSeconds { get; set; } = 3;
+    public int WelcomeIntervalSeconds { get; set; } = 20;
+    public int LikeIntervalSeconds { get; set; } = 60;
+    public int SummaryIntervalSeconds { get; set; } = 60;
+    public int GlobalMinGapSeconds { get; set; } = 2;
+    public int WelcomeMaxNames { get; set; } = 3;
+
+    /// <summary>上下文模式：auto / none / user / room。</summary>
+    public string ContextMode { get; set; } = "auto";
+    public int UserContextCount { get; set; } = 8;
+    public int HostReplyContextCount { get; set; } = 4;
+    public int RoomContextCount { get; set; } = 40;
+    public int ContextTtlMinutes { get; set; } = 15;
+    public int RoomWindowSeconds { get; set; } = 60;
+
+    /// <summary>情感预设 id；auto 表示按事件类型选择。</summary>
+    public string Emotion { get; set; } = "auto";
+    public double Speed { get; set; } = 1.0;
+
+    /// <summary>礼物感谢：ai / template。</summary>
+    public string GiftThankMode { get; set; } = "ai";
+    public string GiftThankTemplate { get; set; } = "感谢 {nickname} 送的 {giftName}，谢谢支持。";
+    public int SummaryMinDanmaku { get; set; } = 8;
 }
 
 public sealed class DouyinSettings
@@ -337,7 +371,7 @@ public sealed class ConfigManager
     }
 
     /// <summary>
-    /// 空模型补默认推荐；评分阈值校正。人格以 ai_personality.txt 为准。
+    /// 空模型补默认推荐；评分阈值校正；同步间隔字段；确保提示词默认文件。
     /// </summary>
     private void MigrateAiSpeechDefaults()
     {
@@ -355,8 +389,58 @@ public sealed class ConfigManager
             changed = true;
         }
 
+        // ReplyIntervalSeconds ↔ MinIntervalSeconds 兼容同步
+        if (ai.ReplyIntervalSeconds <= 0 && ai.MinIntervalSeconds > 0)
+        {
+            ai.ReplyIntervalSeconds = ai.MinIntervalSeconds;
+            changed = true;
+        }
+        else if (ai.MinIntervalSeconds <= 0 && ai.ReplyIntervalSeconds > 0)
+        {
+            ai.MinIntervalSeconds = ai.ReplyIntervalSeconds;
+            changed = true;
+        }
+        else if (ai.ReplyIntervalSeconds > 0 && ai.MinIntervalSeconds > 0
+                 && ai.ReplyIntervalSeconds != ai.MinIntervalSeconds)
+        {
+            // 优先新字段
+            ai.MinIntervalSeconds = ai.ReplyIntervalSeconds;
+            changed = true;
+        }
+
+        if (string.IsNullOrWhiteSpace(ai.ContextMode))
+        {
+            ai.ContextMode = "auto";
+            changed = true;
+        }
+
+        if (string.IsNullOrWhiteSpace(ai.Emotion))
+        {
+            ai.Emotion = "auto";
+            changed = true;
+        }
+
+        if (string.IsNullOrWhiteSpace(ai.GiftThankMode))
+        {
+            ai.GiftThankMode = "ai";
+            changed = true;
+        }
+
+        if (string.IsNullOrWhiteSpace(ai.GiftThankTemplate))
+        {
+            ai.GiftThankTemplate = "感谢 {nickname} 送的 {giftName}，谢谢支持。";
+            changed = true;
+        }
+
+        if (ai.Speed <= 0 || ai.Speed > 3)
+        {
+            ai.Speed = 1.0;
+            changed = true;
+        }
+
         try
         {
+            Services.AiSpeech.AiPromptStore.EnsureDefaults();
             Services.AiSpeech.AiPersonalityLoader.EnsureDefaultFileExists();
         }
         catch
