@@ -1,10 +1,14 @@
 using System.Diagnostics;
+using System.Net.Http;
 using LiveAssistant.Config;
 
 namespace LiveAssistant.Services;
 
 public sealed class ProcessWatchdogService
 {
+    private static readonly HttpClient KgapiHealthClient = new() { Timeout = TimeSpan.FromSeconds(2) };
+    private static bool _kgapijsStartAttempted;
+
     private readonly ConfigManager _config;
     private readonly LogService _log;
     private readonly SystemMessageService _system;
@@ -49,11 +53,77 @@ public sealed class ProcessWatchdogService
             {
                 await TryStartProcessAsync(_config.Settings.Kugou.KugouExePath, "", "酷狗", ct);
             }
+
+            if (await kugouHealth())
+            {
+                await EnsureKgapiJsAsync(ct);
+            }
         }
         catch (Exception ex)
         {
             _log.Error("app", "Sidecar 守护检查异常", ex);
         }
+    }
+
+    private async Task EnsureKgapiJsAsync(CancellationToken ct)
+    {
+        if (await IsKgapiJsHealthyAsync(ct))
+        {
+            return;
+        }
+
+        if (_kgapijsStartAttempted)
+        {
+            return;
+        }
+
+        var kgDir = Path.Combine(AppPaths.ExeDirectory, SidecarLocator.KugouJsFolderName);
+        var appJs = Path.Combine(kgDir, "app.js");
+        if (!File.Exists(appJs))
+        {
+            return;
+        }
+
+        _kgapijsStartAttempted = true;
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                Arguments = "/c set PORT=16521&& set HOST=127.0.0.1&& node app.js",
+                WorkingDirectory = kgDir,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            });
+            _log.Info("已启动 kgapijs 协议服务 (127.0.0.1:16521)");
+            await Task.Delay(2500, ct);
+        }
+        catch (Exception ex)
+        {
+            _kgapijsStartAttempted = false;
+            _log.Warn($"启动 kgapijs 失败: {ex.Message}");
+        }
+    }
+
+    private static async Task<bool> IsKgapiJsHealthyAsync(CancellationToken ct)
+    {
+        foreach (var port in new[] { 16521, 3000 })
+        {
+            try
+            {
+                using var response = await KgapiHealthClient.GetAsync($"http://127.0.0.1:{port}/", ct);
+                if (response.IsSuccessStatusCode)
+                {
+                    return true;
+                }
+            }
+            catch
+            {
+                // try next port
+            }
+        }
+
+        return false;
     }
 
     public Task RestartDouyinAsync(CancellationToken ct = default)

@@ -8,21 +8,26 @@ public sealed class MainForm : Form
 {
     private readonly LiveAppHost _host;
 
+    private readonly Label _lblAlertBar = new();
     private readonly Label _lblAccount = new();
     private readonly Label _lblRoom = new();
     private readonly Label _lblConnection = new();
     private readonly Label _lblMode = new();
-    private readonly Label _lblDouyinSidecar = new();
-    private readonly Label _lblKugouSidecar = new();
-    private readonly Label _lblRuntimeSong = new();
-    private readonly Label _lblRuntimeQueue = new();
+    private readonly Label _lblDouyinConn = new();
+    private readonly Label _lblKugouConn = new();
+    private readonly Label _lblHealthSong = new();
+    private readonly Label _lblHealthArtist = new();
+    private readonly Label _lblHealthProgress = new();
+    private readonly Label _lblQueueWaiting = new();
+    private readonly Label _lblStartedAt = new();
     private readonly Label _lblUptime = new();
-    private readonly Label _lblAdminAccount = new();
-    private readonly Label _lblCurrentTask = new();
-    private readonly Label _lblLastError = new();
+    private readonly Label _lblTodaySongs = new();
+    private readonly Label _lblTodayDanmaku = new();
+    private readonly Label _lblTodayGifts = new();
+    private readonly Label _lblTodayRequests = new();
+    private readonly Label _lblRecentErrors = new();
 
     private readonly ListBox _lstDanmaku = new();
-    private readonly ListBox _lstSystem = new();
     private readonly ListView _lvQueue = new();
     private readonly ColumnHeader _colQueuePos = new();
     private readonly ColumnHeader _colQueueUser = new();
@@ -30,11 +35,15 @@ public sealed class MainForm : Form
 
     private readonly Label _lblNowSong = new();
     private readonly Label _lblNowArtist = new();
-    private readonly Label _lblNowRequester = new();
-    private readonly Label _lblProgress = new();
+    private readonly Label _lblNowState = new();
+    private readonly Label _lblNowSource = new();
+    private readonly Label _lblNowRemaining = new();
     private readonly TrackBar _volumeBar = new();
     private readonly Button _btnPause = new();
+    private readonly Button _btnResume = new();
     private readonly Button _btnNext = new();
+    private readonly Button _btnKugouRelogin = new();
+    private readonly Button _btnToggleRequest = new();
     private readonly Button _btnConnect = new();
     private readonly Button _btnKugouLogin = new();
     private readonly TextBox _txtWebRid = new();
@@ -59,9 +68,9 @@ public sealed class MainForm : Form
         Text = AppBranding.DisplayName;
         Width = 1280;
         Height = 820;
-        MinimumSize = new Size(1100, 720);
+        MinimumSize = new Size(1100, 700);
         StartPosition = FormStartPosition.CenterScreen;
-        Font = new Font("Microsoft YaHei UI", 9F);
+        Font = new Font("Microsoft YaHei UI", 10F);
         BackColor = Color.FromArgb(245, 247, 250);
 
         var root = new TableLayoutPanel
@@ -72,64 +81,38 @@ public sealed class MainForm : Form
             Padding = new Padding(10),
             BackColor = Color.FromArgb(245, 247, 250)
         };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 210));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+        // GroupBox 标题 + 内边距 + 34px 按钮行，64px 会在高 DPI 下裁切顶部控件
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 92));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
         Controls.Add(root);
 
-        root.Controls.Add(BuildHeaderPanel(), 0, 0);
+        root.Controls.Add(BuildAlertBar(), 0, 0);
         root.Controls.Add(BuildMainPanel(), 0, 1);
         root.Controls.Add(BuildConnectPanel(), 0, 2);
         root.Controls.Add(BuildBottomPanel(), 0, 3);
     }
 
-    private Control BuildHeaderPanel()
+    private Control BuildAlertBar()
     {
-        var wrap = new TableLayoutPanel
+        _lblAlertBar.Dock = DockStyle.Fill;
+        _lblAlertBar.TextAlign = ContentAlignment.MiddleLeft;
+        _lblAlertBar.Padding = new Padding(12, 0, 12, 0);
+        _lblAlertBar.AutoEllipsis = true;
+        _lblAlertBar.BackColor = Color.FromArgb(255, 248, 230);
+        _lblAlertBar.ForeColor = Color.FromArgb(120, 80, 0);
+        _lblAlertBar.Text = "状态加载中…";
+        _lblAlertBar.Margin = new Padding(0, 0, 0, 4);
+
+        var wrap = new Panel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            RowCount = 2,
-            Margin = new Padding(0)
+            BackColor = Color.FromArgb(255, 248, 230),
+            Padding = new Padding(0)
         };
-        wrap.RowStyles.Add(new RowStyle(SizeType.Percent, 40));
-        wrap.RowStyles.Add(new RowStyle(SizeType.Percent, 60));
-
-        wrap.Controls.Add(BuildLiveStatusBox(), 0, 0);
-        wrap.Controls.Add(BuildRuntimeStatusBox(), 0, 1);
+        wrap.Controls.Add(_lblAlertBar);
         return wrap;
-    }
-
-    private Control BuildLiveStatusBox()
-    {
-        var box = MakeGroup("直播状态");
-        var grid = MakeGrid(4, 1, 6);
-        grid.Controls.Add(MakeStatusCell("主播", _lblAccount), 0, 0);
-        grid.Controls.Add(MakeStatusCell("直播间", _lblRoom), 1, 0);
-        grid.Controls.Add(MakeStatusCell("连接状态", _lblConnection), 2, 0);
-        grid.Controls.Add(MakeStatusCell("播放模式", _lblMode), 3, 0);
-        box.Controls.Add(grid);
-        return box;
-    }
-
-    private Control BuildRuntimeStatusBox()
-    {
-        var box = MakeGroup("运行状态");
-        var grid = MakeGrid(4, 2, 4);
-        grid.RowStyles.Clear();
-        grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
-        grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
-        grid.Controls.Add(MakeStatusCell("抖音", _lblDouyinSidecar), 0, 0);
-        grid.Controls.Add(MakeStatusCell("酷狗", _lblKugouSidecar), 1, 0);
-        grid.Controls.Add(MakeStatusCell("抖音登录", _lblAdminAccount), 2, 0);
-        grid.Controls.Add(MakeStatusCell("运行时间", _lblUptime), 3, 0);
-        grid.Controls.Add(MakeStatusCell("当前歌曲", _lblRuntimeSong), 0, 1);
-        grid.Controls.Add(MakeStatusCell("队列数量", _lblRuntimeQueue), 1, 1);
-        grid.Controls.Add(MakeStatusCell("当前任务", _lblCurrentTask), 2, 1);
-        grid.Controls.Add(MakeStatusCell("最后错误", _lblLastError), 3, 1);
-        box.Controls.Add(grid);
-        return box;
     }
 
     private static GroupBox MakeGroup(string title)
@@ -206,7 +189,7 @@ public sealed class MainForm : Form
             SplitterWidth = 6,
             BackColor = Color.FromArgb(245, 247, 250)
         };
-        BindSplitRatio(split, vertical: true, ratio: 0.72, min1: 420, min2: 240);
+        BindSplitRatio(split, vertical: true, ratio: 0.60, min1: 400, min2: 380);
 
         var leftSplit = new SplitContainer
         {
@@ -214,21 +197,10 @@ public sealed class MainForm : Form
             Orientation = Orientation.Horizontal,
             SplitterWidth = 6
         };
-        BindSplitRatio(leftSplit, vertical: false, ratio: 0.38, min1: 100, min2: 180);
-
-        var leftBottom = new SplitContainer
-        {
-            Dock = DockStyle.Fill,
-            Orientation = Orientation.Horizontal,
-            SplitterWidth = 6
-        };
-        BindSplitRatio(leftBottom, vertical: false, ratio: 0.45, min1: 80, min2: 120);
+        BindSplitRatio(leftSplit, vertical: false, ratio: 0.50, min1: 120, min2: 160);
 
         leftSplit.Panel1.Controls.Add(BuildListGroup("实时弹幕", _lstDanmaku));
-        leftBottom.Panel1.Controls.Add(BuildListGroup("系统消息", _lstSystem));
-        leftBottom.Panel2.Controls.Add(BuildQueueGroup());
-        leftSplit.Panel2.Controls.Add(leftBottom);
-
+        leftSplit.Panel2.Controls.Add(BuildQueueGroup());
         split.Panel1.Controls.Add(leftSplit);
         split.Panel2.Controls.Add(BuildSidePanel());
         return split;
@@ -290,17 +262,6 @@ public sealed class MainForm : Form
     private Control BuildQueueGroup()
     {
         var group = MakeGroup("点歌队列");
-        var layout = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            RowCount = 2,
-            Margin = new Padding(0),
-            Padding = new Padding(0)
-        };
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-
         _lvQueue.Dock = DockStyle.Fill;
         _lvQueue.View = View.Details;
         _lvQueue.FullRowSelect = true;
@@ -318,29 +279,7 @@ public sealed class MainForm : Form
             _lvQueue.Columns.AddRange(new[] { _colQueuePos, _colQueueUser, _colQueueSong });
         }
 
-        var buttons = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 4,
-            RowCount = 1,
-            Margin = new Padding(0, 6, 0, 0),
-            Padding = new Padding(0)
-        };
-        buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 88));
-        buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 88));
-        buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 88));
-        buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-
-        StyleButton(_btnSkipQueue, "跳过", 80);
-        StyleButton(_btnRemoveQueue, "删除", 80);
-        StyleButton(_btnClearQueue, "清空", 80);
-        buttons.Controls.Add(_btnSkipQueue, 0, 0);
-        buttons.Controls.Add(_btnRemoveQueue, 1, 0);
-        buttons.Controls.Add(_btnClearQueue, 2, 0);
-
-        layout.Controls.Add(_lvQueue, 0, 0);
-        layout.Controls.Add(buttons, 0, 1);
-        group.Controls.Add(layout);
+        group.Controls.Add(_lvQueue);
         return group;
     }
 
@@ -350,33 +289,36 @@ public sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 2,
+            RowCount = 4,
             Margin = new Padding(0),
             Padding = new Padding(0)
         };
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 55));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 45));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 28));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 26));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 46));
 
         var info = MakeGroup("当前播放");
         var infoGrid = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 4,
+            RowCount = 5,
             Margin = new Padding(0),
             Padding = new Padding(4)
         };
-        for (var i = 0; i < 4; i++)
+        for (var i = 0; i < 5; i++)
         {
-            infoGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 25));
+            infoGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 20));
         }
 
-        foreach (var lbl in new[] { _lblNowSong, _lblNowArtist, _lblNowRequester, _lblProgress })
+        _lblNowSong.Text = "歌曲: -";
+        _lblNowArtist.Text = "歌手: -";
+        _lblNowState.Text = "状态: -";
+        _lblNowSource.Text = "来源: -";
+        _lblNowRemaining.Text = "剩余: -";
+        foreach (var lbl in new[] { _lblNowSong, _lblNowArtist, _lblNowState, _lblNowSource, _lblNowRemaining })
         {
-            lbl.Text = lbl == _lblNowSong ? "歌曲: -"
-                : lbl == _lblNowArtist ? "歌手: -"
-                : lbl == _lblNowRequester ? "点歌: -"
-                : "进度: -";
             lbl.Dock = DockStyle.Fill;
             lbl.TextAlign = ContentAlignment.MiddleLeft;
             lbl.AutoEllipsis = true;
@@ -385,8 +327,9 @@ public sealed class MainForm : Form
 
         infoGrid.Controls.Add(_lblNowSong, 0, 0);
         infoGrid.Controls.Add(_lblNowArtist, 0, 1);
-        infoGrid.Controls.Add(_lblNowRequester, 0, 2);
-        infoGrid.Controls.Add(_lblProgress, 0, 3);
+        infoGrid.Controls.Add(_lblNowState, 0, 2);
+        infoGrid.Controls.Add(_lblNowSource, 0, 3);
+        infoGrid.Controls.Add(_lblNowRemaining, 0, 4);
         info.Controls.Add(infoGrid);
 
         var controls = MakeGroup("播放控制");
@@ -394,39 +337,53 @@ public sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 3,
+            RowCount = 2,
             Margin = new Padding(0),
             Padding = new Padding(4)
         };
-        ctrlGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-        ctrlGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-        ctrlGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        ctrlGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+        ctrlGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
 
-        var btnRow = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 2,
-            RowCount = 1,
-            Margin = new Padding(0)
-        };
-        btnRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        btnRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        StyleButton(_btnPause, "暂停", 0);
+        var btnRow1 = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1, Margin = new Padding(0) };
+        btnRow1.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.33f));
+        btnRow1.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.33f));
+        btnRow1.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.34f));
         StyleButton(_btnNext, "下一首", 0);
-        _btnPause.Dock = DockStyle.Fill;
-        _btnNext.Dock = DockStyle.Fill;
-        _btnPause.Margin = new Padding(0, 0, 4, 0);
-        _btnNext.Margin = new Padding(4, 0, 0, 0);
-        btnRow.Controls.Add(_btnPause, 0, 0);
-        btnRow.Controls.Add(_btnNext, 1, 0);
-
-        var volLabel = new Label
+        StyleButton(_btnPause, "暂停", 0);
+        StyleButton(_btnResume, "恢复", 0);
+        foreach (var btn in new[] { _btnNext, _btnPause, _btnResume })
         {
-            Text = "音量",
+            btn.Dock = DockStyle.Fill;
+            btn.Margin = new Padding(2);
+        }
+        btnRow1.Controls.Add(_btnNext, 0, 0);
+        btnRow1.Controls.Add(_btnPause, 1, 0);
+        btnRow1.Controls.Add(_btnResume, 2, 0);
+
+        var btnRow2 = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = new Padding(0) };
+        btnRow2.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        btnRow2.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        StyleButton(_btnKugouRelogin, "酷狗重登", 0);
+        StyleButton(_btnToggleRequest, "关闭点歌", 0);
+        _btnKugouRelogin.Dock = DockStyle.Fill;
+        _btnToggleRequest.Dock = DockStyle.Fill;
+        _btnKugouRelogin.Margin = new Padding(2);
+        _btnToggleRequest.Margin = new Padding(2);
+        btnRow2.Controls.Add(_btnKugouRelogin, 0, 0);
+        btnRow2.Controls.Add(_btnToggleRequest, 1, 0);
+
+        ctrlGrid.Controls.Add(btnRow1, 0, 0);
+        ctrlGrid.Controls.Add(btnRow2, 0, 1);
+        controls.Controls.Add(ctrlGrid);
+
+        var volumeGroup = MakeGroup("音量");
+        var volLayout = new TableLayoutPanel
+        {
             Dock = DockStyle.Fill,
-            TextAlign = ContentAlignment.BottomLeft,
-            ForeColor = Color.Gray,
-            Margin = new Padding(0)
+            ColumnCount = 1,
+            RowCount = 1,
+            Margin = new Padding(0),
+            Padding = new Padding(8, 4, 8, 4)
         };
         _volumeBar.Dock = DockStyle.Fill;
         _volumeBar.Minimum = 0;
@@ -434,38 +391,82 @@ public sealed class MainForm : Form
         _volumeBar.Value = Math.Clamp(_host.Config.Settings.Playback.Volume, 0, 100);
         _volumeBar.TickFrequency = 10;
         _volumeBar.TickStyle = TickStyle.None;
-        _volumeBar.Margin = new Padding(0, 0, 0, 4);
+        _volumeBar.Margin = new Padding(0);
+        volLayout.Controls.Add(_volumeBar, 0, 0);
+        volumeGroup.Controls.Add(volLayout);
 
-        ctrlGrid.Controls.Add(btnRow, 0, 0);
-        ctrlGrid.Controls.Add(volLabel, 0, 1);
-        ctrlGrid.Controls.Add(_volumeBar, 0, 2);
-        controls.Controls.Add(ctrlGrid);
+        var quick = MakeGroup("快捷操作");
+        var quickGrid = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 3,
+            RowCount = 2,
+            Margin = new Padding(0),
+            Padding = new Padding(4)
+        };
+        for (var c = 0; c < 3; c++)
+        {
+            quickGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.33f));
+        }
+        quickGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        quickGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+
+        StyleButton(_btnSkipQueue, "跳过", 0);
+        StyleButton(_btnRemoveQueue, "删除", 0);
+        StyleButton(_btnClearQueue, "清空", 0);
+        foreach (var btn in new[] { _btnSkipQueue, _btnRemoveQueue, _btnClearQueue })
+        {
+            btn.Dock = DockStyle.Fill;
+            btn.Margin = new Padding(2);
+        }
+        quickGrid.Controls.Add(_btnSkipQueue, 0, 0);
+        quickGrid.Controls.Add(_btnRemoveQueue, 1, 0);
+        quickGrid.Controls.Add(_btnClearQueue, 2, 0);
+
+        var modePanel = new Panel { Dock = DockStyle.Fill, Margin = new Padding(2) };
+        _cmbMode.Dock = DockStyle.Fill;
+        _cmbMode.DropDownStyle = ComboBoxStyle.DropDownList;
+        if (_cmbMode.Items.Count == 0)
+        {
+            _cmbMode.Items.AddRange(new object[] { "点歌+随机补位", "点歌优先", "随机播放" });
+        }
+        _cmbMode.SelectedIndex = ModeToIndex(_host.Config.Settings.Playback.Mode);
+        modePanel.Controls.Add(_cmbMode);
+        quickGrid.SetColumnSpan(modePanel, 2);
+        quickGrid.Controls.Add(modePanel, 0, 1);
+
+        var btnAdminQuick = new Button { Dock = DockStyle.Fill, Margin = new Padding(2) };
+        StyleButton(btnAdminQuick, "管理后台", 0);
+        btnAdminQuick.Click += (_, _) => OpenAdminPage();
+        quickGrid.Controls.Add(btnAdminQuick, 2, 1);
+        quick.Controls.Add(quickGrid);
 
         layout.Controls.Add(info, 0, 0);
         layout.Controls.Add(controls, 0, 1);
+        layout.Controls.Add(volumeGroup, 0, 2);
+        layout.Controls.Add(quick, 0, 3);
         return layout;
     }
 
     private Control BuildConnectPanel()
     {
-        var box = MakeGroup("连接与模式");
-        box.Margin = new Padding(0, 6, 0, 0);
+        var box = MakeGroup("连接");
+        box.Margin = new Padding(0, 4, 0, 0);
+        box.Padding = new Padding(10, 4, 10, 6);
 
         var row = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 6,
+            ColumnCount = 4,
             RowCount = 1,
             Margin = new Padding(0),
-            Padding = new Padding(4, 2, 4, 2)
+            Padding = new Padding(4, 0, 4, 0)
         };
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 88));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 52));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
+        row.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
 
         var lblRid = new Label
         {
@@ -475,39 +476,21 @@ public sealed class MainForm : Form
             Margin = new Padding(0)
         };
         _txtWebRid.Dock = DockStyle.Fill;
-        _txtWebRid.Margin = new Padding(0, 6, 8, 6);
+        _txtWebRid.Margin = new Padding(0, 2, 8, 2);
         _txtWebRid.Text = _host.Config.Settings.Douyin.WebRid;
 
         StyleButton(_btnConnect, "连接", 0);
         _btnConnect.Dock = DockStyle.Fill;
-        _btnConnect.Margin = new Padding(0, 4, 8, 4);
+        _btnConnect.Margin = new Padding(0, 2, 8, 2);
 
         StyleButton(_btnKugouLogin, "酷狗登录", 0);
         _btnKugouLogin.Dock = DockStyle.Fill;
-        _btnKugouLogin.Margin = new Padding(0, 4, 12, 4);
-
-        var lblMode = new Label
-        {
-            Text = "模式",
-            Dock = DockStyle.Fill,
-            TextAlign = ContentAlignment.MiddleLeft,
-            Margin = new Padding(0)
-        };
-        _cmbMode.Dock = DockStyle.Fill;
-        _cmbMode.DropDownStyle = ComboBoxStyle.DropDownList;
-        _cmbMode.Margin = new Padding(0, 6, 0, 6);
-        if (_cmbMode.Items.Count == 0)
-        {
-            _cmbMode.Items.AddRange(new object[] { "点歌+随机补位", "点歌优先", "随机播放" });
-        }
-        _cmbMode.SelectedIndex = ModeToIndex(_host.Config.Settings.Playback.Mode);
+        _btnKugouLogin.Margin = new Padding(0, 2, 0, 2);
 
         row.Controls.Add(lblRid, 0, 0);
         row.Controls.Add(_txtWebRid, 1, 0);
         row.Controls.Add(_btnConnect, 2, 0);
         row.Controls.Add(_btnKugouLogin, 3, 0);
-        row.Controls.Add(lblMode, 4, 0);
-        row.Controls.Add(_cmbMode, 5, 0);
         box.Controls.Add(row);
         return box;
     }
@@ -515,7 +498,8 @@ public sealed class MainForm : Form
     private static void StyleButton(Button btn, string text, int width)
     {
         btn.Text = text;
-        btn.Height = 32;
+        btn.Height = 34;
+        btn.MinimumSize = new Size(72, 34);
         if (width > 0)
         {
             btn.Width = width;
@@ -523,7 +507,7 @@ public sealed class MainForm : Form
         }
 
         btn.FlatStyle = FlatStyle.System;
-        btn.Margin = new Padding(0, 2, 8, 2);
+        btn.Margin = new Padding(0, 2, 6, 2);
         btn.UseVisualStyleBackColor = true;
     }
 
@@ -583,15 +567,17 @@ public sealed class MainForm : Form
         {
             AppendSystem(msg);
         }
-
         _host.Queue.QueueChanged += () => BeginInvoke(RefreshQueue);
         _host.PlaybackCommands.Playback.StateChanged += () => BeginInvoke(RefreshPlayback);
         _host.StateChanged += () => BeginInvoke(RefreshStatusPanels);
 
         _btnConnect.Click += async (_, _) => await ConnectAsync();
         _btnKugouLogin.Click += (_, _) => OpenKugouLoginPage();
-        _btnPause.Click += (_, _) => TogglePause();
+        _btnPause.Click += (_, _) => _host.Engine.Pause();
+        _btnResume.Click += (_, _) => _host.Engine.Resume();
         _btnNext.Click += async (_, _) => await _host.Engine.SkipAsync();
+        _btnKugouRelogin.Click += (_, _) => OpenKugouLoginPage();
+        _btnToggleRequest.Click += (_, _) => ToggleSongRequest();
         _btnSkipQueue.Click += async (_, _) => await _host.Engine.SkipAsync();
         _btnRemoveQueue.Click += (_, _) => RemoveSelectedQueueItem();
         _btnClearQueue.Click += (_, _) =>
@@ -616,8 +602,12 @@ public sealed class MainForm : Form
             RefreshStatus();
         };
 
-        _uiTimer.Interval = 1000;
-        _uiTimer.Tick += (_, _) => RefreshPlayback();
+        _uiTimer.Interval = 2000;
+        _uiTimer.Tick += (_, _) =>
+        {
+            RefreshPlayback();
+            RefreshRuntimeStatus();
+        };
         _uiTimer.Start();
 
         Load += async (_, _) =>
@@ -688,18 +678,13 @@ public sealed class MainForm : Form
         }
     }
 
-    private void TogglePause()
+    private void ToggleSongRequest()
     {
-        if (_host.PlaybackCommands.Playback.State == PlaybackState.Paused)
-        {
-            _host.Engine.Resume();
-            _btnPause.Text = "暂停";
-        }
-        else if (_host.PlaybackCommands.Playback.State is PlaybackState.Playing or PlaybackState.RandomFill)
-        {
-            _host.Engine.Pause();
-            _btnPause.Text = "恢复";
-        }
+        var enabled = !_host.SongRequestControl.IsRequestEnabled;
+        _host.SetSongRequestEnabled(enabled);
+        _btnToggleRequest.Text = enabled ? "关闭点歌" : "开启点歌";
+        AppendSystem(enabled ? "点歌已开启" : "点歌已关闭");
+        RefreshRuntimeStatus();
     }
 
     private void RemoveSelectedQueueItem()
@@ -734,16 +719,12 @@ public sealed class MainForm : Form
         _lstDanmaku.TopIndex = _lstDanmaku.Items.Count - 1;
     }
 
+    private string _lastSystemMessage = "";
+
     private void AppendSystem(string line)
     {
-        if (_lstSystem.Items.Contains(line))
-        {
-            return;
-        }
-
-        _lstSystem.Items.Add(line);
-        TrimList(_lstSystem, _host.Config.Settings.Ui.MaxSystemMessageLines);
-        _lstSystem.TopIndex = _lstSystem.Items.Count - 1;
+        _lastSystemMessage = line;
+        RefreshAlertBar();
     }
 
     private static void TrimList(ListBox list, int max)
@@ -788,29 +769,78 @@ public sealed class MainForm : Form
     private void RefreshRuntimeStatus()
     {
         var status = _host.GetRuntimeStatus();
-        _lblDouyinSidecar.Text = $"{status.DouyinStatus} ({status.DanmakuConnection})";
-        _lblDouyinSidecar.ForeColor = status.DouyinOnline ? Color.DarkGreen : Color.DarkRed;
-        if (status.KugouOnline)
+        var track = _host.PlaybackCommands.Playback.CurrentTrack;
+
+        _lblDouyinConn.Text = status.DouyinOnline ? "在线" : "断开";
+        _lblKugouConn.Text = !status.KugouOnline ? "离线"
+            : status.KugouLoginStatus.Contains("未登录", StringComparison.Ordinal)
+              || status.KugouLoginStatus.Contains("失效", StringComparison.Ordinal) ? "失效"
+            : status.KugouFullPlaybackAvailable ? "完整版可用" : "完整版不可用";
+
+        _lblHealthSong.Text = track?.SongName ?? "-";
+        _lblHealthArtist.Text = track?.Artist ?? "-";
+        var duration = Math.Max(1, status.DurationSec);
+        _lblHealthProgress.Text = track == null
+            ? "-"
+            : $"{FormatTime(status.ProgressSec)}/{FormatTime(duration)}";
+        _lblQueueWaiting.Text = status.WaitingQueueCount.ToString();
+        _lblStartedAt.Text = status.StartedAt.ToString("MM-dd HH:mm");
+        _lblUptime.Text = FormatUptime(status.Uptime);
+        _lblTodaySongs.Text = status.TodaySongsPlayed.ToString();
+        _lblTodayDanmaku.Text = status.TodayDanmakuCount.ToString();
+        _lblTodayGifts.Text = status.TodayGiftCount.ToString();
+        _lblTodayRequests.Text = status.TodaySongRequestCount.ToString();
+        _lblRecentErrors.Text = status.RecentErrorCount.ToString();
+
+        _btnToggleRequest.Text = status.SongRequestEnabled ? "关闭点歌" : "开启点歌";
+        RefreshAlertBar(status);
+    }
+
+    private void RefreshAlertBar(RuntimeStatus? status = null)
+    {
+        status ??= _host.GetRuntimeStatus();
+        var track = _host.PlaybackCommands.Playback.CurrentTrack;
+        var song = track?.SongName ?? status.CurrentSong ?? "-";
+        var dy = status.DouyinOnline ? "抖音:在线" : "抖音:断开";
+        var kg = !status.KugouOnline ? "酷狗:离线"
+            : status.KugouLoginStatus.Contains("未登录", StringComparison.Ordinal)
+              || status.KugouLoginStatus.Contains("失效", StringComparison.Ordinal) ? "酷狗:失效"
+            : status.KugouFullPlaybackAvailable ? "酷狗:完整版可用" : "酷狗:完整版不可用";
+        var req = status.SongRequestEnabled ? "点歌:开" : "点歌:关";
+        var err = status.RecentErrorCount > 0 ? $" | 异常:{status.RecentErrorCount}" : "";
+        var msg = string.IsNullOrWhiteSpace(_lastSystemMessage) ? "" : $" | {_lastSystemMessage}";
+        _lblAlertBar.Text = $"{dy} | {kg} | {req} | 播放:{song} | 队列:{status.WaitingQueueCount}{err}{msg}";
+
+        if (status.RecentErrorCount > 0 || !status.DouyinOnline || !status.KugouOnline)
         {
-            _lblKugouSidecar.Text = status.KugouLoginStatus;
-            _lblKugouSidecar.ForeColor = status.KugouLoginStatus.Contains("未登录", StringComparison.Ordinal)
-                ? Color.DarkOrange
-                : Color.DarkGreen;
+            _lblAlertBar.BackColor = Color.FromArgb(255, 235, 235);
+            _lblAlertBar.ForeColor = Color.DarkRed;
+        }
+        else if (_host.Config.Settings.Emergency.PauseInteraction)
+        {
+            _lblAlertBar.BackColor = Color.FromArgb(255, 230, 200);
+            _lblAlertBar.ForeColor = Color.FromArgb(160, 70, 0);
         }
         else
         {
-            _lblKugouSidecar.Text = "离线";
-            _lblKugouSidecar.ForeColor = Color.DarkRed;
+            _lblAlertBar.BackColor = Color.FromArgb(255, 248, 230);
+            _lblAlertBar.ForeColor = Color.FromArgb(120, 80, 0);
         }
-        _lblAdminAccount.Text = status.DouyinLoginStatus.Contains("已登录", StringComparison.Ordinal)
-            ? status.DouyinLoginNickname
-            : status.DouyinLoginStatus;
-        _lblRuntimeSong.Text = status.CurrentSong;
-        _lblRuntimeQueue.Text = status.QueueCount.ToString();
-        _lblUptime.Text = FormatUptime(status.Uptime);
-        _lblCurrentTask.Text = status.CurrentTask;
-        _lblLastError.Text = string.IsNullOrWhiteSpace(status.LastError) ? "无" : status.LastError;
-        _lblLastError.ForeColor = string.IsNullOrWhiteSpace(status.LastError) ? Color.Black : Color.DarkRed;
+    }
+
+    private void OpenAdminPage()
+    {
+        var admin = _host.Config.Settings.Admin;
+        var adminUrl = $"http://127.0.0.1:{admin.Port}{admin.Path}";
+        try
+        {
+            Process.Start(new ProcessStartInfo(adminUrl) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"无法打开管理后台: {ex.Message}", AppBranding.DisplayName,
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
     }
 
     private static string FormatUptime(TimeSpan uptime)
@@ -858,26 +888,36 @@ public sealed class MainForm : Form
     private void RefreshPlayback()
     {
         var track = _host.PlaybackCommands.Playback.CurrentTrack;
+        var playback = _host.PlaybackCommands.Playback;
         if (track == null)
         {
             _lblNowSong.Text = "歌曲: -";
             _lblNowArtist.Text = "歌手: -";
-            _lblNowRequester.Text = "点歌: -";
-            _lblProgress.Text = "进度: -";
-            _btnPause.Text = "暂停";
+            _lblNowState.Text = "状态: -";
+            _lblNowSource.Text = "来源: -";
+            _lblNowRemaining.Text = "剩余: -";
             RefreshStatus();
             return;
         }
 
         _lblNowSong.Text = $"歌曲: {track.SongName}";
         _lblNowArtist.Text = $"歌手: {track.Artist}";
-        _lblNowRequester.Text = track.IsRandom ? "点歌: 随机补位" : $"点歌: {track.Requester}";
-        var duration = Math.Max(1, _host.PlaybackCommands.Playback.DurationSec);
-        var progress = _host.PlaybackCommands.Playback.ProgressSec;
-        _lblProgress.Text = $"进度: {FormatTime(progress)} / {FormatTime(duration)}";
-        _btnPause.Text = _host.PlaybackCommands.Playback.State == PlaybackState.Paused ? "恢复" : "暂停";
+        _lblNowState.Text = $"状态: {FormatPlaybackState(playback.State)}";
+        _lblNowSource.Text = track.IsRandom ? "来源: 随机补位" : "来源: 点歌";
+        var duration = Math.Max(1, playback.DurationSec);
+        var remaining = Math.Max(0, duration - playback.ProgressSec);
+        _lblNowRemaining.Text = $"剩余: {FormatTime(remaining)}";
         RefreshStatus();
     }
+
+    private static string FormatPlaybackState(PlaybackState state) => state switch
+    {
+        PlaybackState.Playing => "播放中",
+        PlaybackState.Paused => "已暂停",
+        PlaybackState.RandomFill => "随机补位",
+        PlaybackState.Idle => "空闲",
+        _ => state.ToString()
+    };
 
     private static string FormatTime(int seconds)
     {

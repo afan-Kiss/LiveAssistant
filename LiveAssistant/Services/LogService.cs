@@ -32,6 +32,8 @@ public sealed class LogService
 
     public void Error(string message, Exception? ex = null) => Error("app", message, ex);
 
+    public event Action? ErrorRecorded;
+
     public void Error(string source, string message, Exception? ex = null)
     {
         var text = ex == null ? message : $"{message} | {ex.GetType().Name}: {ex.Message}";
@@ -41,6 +43,7 @@ public sealed class LogService
             Write("error", "ERROR", $"[{source}] {text}");
         }
         Write("app", "ERROR", $"[{source}] {text}");
+        try { ErrorRecorded?.Invoke(); } catch { /* ignore */ }
     }
 
     public void LogPlayback(
@@ -86,6 +89,118 @@ public sealed class LogService
     public void GiftInfo(string message) => Write("gift", "INFO", message);
     public void GiftWarn(string message) => Write("gift", "WARN", message);
     public void AdminInfo(string message) => Write("admin", "INFO", message);
+
+    /// <summary>供后台运营日志页读取，面向非开发人员。</summary>
+    public IReadOnlyList<OpsLogEntry> ReadRecentOpsEntries(int limit = 100)
+    {
+        limit = Math.Clamp(limit, 1, 500);
+        var entries = new List<OpsLogEntry>();
+        foreach (var fileKey in new[] { "admin", "error", "app", "song_request", "gift" })
+        {
+            entries.AddRange(ReadLogFileEntries(fileKey, limit));
+        }
+
+        return entries
+            .OrderByDescending(e => e.SortKey)
+            .Take(limit)
+            .ToList();
+    }
+
+    private IEnumerable<OpsLogEntry> ReadLogFileEntries(string fileKey, int maxLines)
+    {
+        var path = Path.Combine(_logDir, $"{fileKey}.log");
+        if (!File.Exists(path))
+        {
+            yield break;
+        }
+
+        string[] lines;
+        lock (_lock)
+        {
+            try
+            {
+                lines = File.ReadAllLines(path);
+            }
+            catch
+            {
+                yield break;
+            }
+        }
+
+        var start = Math.Max(0, lines.Length - maxLines);
+        for (var i = lines.Length - 1; i >= start; i--)
+        {
+            var parsed = ParseOpsLine(lines[i], fileKey);
+            if (parsed != null)
+            {
+                yield return parsed;
+            }
+        }
+    }
+
+    private static OpsLogEntry? ParseOpsLine(string line, string source)
+    {
+        if (string.IsNullOrWhiteSpace(line) || line.Length < 25)
+        {
+            return null;
+        }
+
+        var timePart = line[..23];
+        if (!DateTime.TryParse(timePart, out var ts))
+        {
+            return null;
+        }
+
+        var rest = line.Length > 26 ? line[26..].Trim() : "";
+        var level = "INFO";
+        var message = rest;
+        if (rest.StartsWith('['))
+        {
+            var end = rest.IndexOf(']');
+            if (end > 1)
+            {
+                level = rest[1..end];
+                message = rest[(end + 1)..].Trim();
+            }
+        }
+
+        var (evt, result) = FormatOpsEvent(source, level, message);
+        return new OpsLogEntry(ts.ToString("yyyy-MM-dd HH:mm:ss"), evt, result, level, ts.Ticks);
+    }
+
+    private static (string Event, string Result) FormatOpsEvent(string source, string level, string message)
+    {
+        var sourceLabel = source switch
+        {
+            "admin" => "后台操作",
+            "error" => "系统异常",
+            "song_request" => "点歌",
+            "gift" => "礼物",
+            _ => "运行"
+        };
+
+        if (message.Contains("result=SUCCESS", StringComparison.OrdinalIgnoreCase))
+        {
+            return (sourceLabel, "成功");
+        }
+
+        if (message.Contains("result=FAILED", StringComparison.OrdinalIgnoreCase))
+        {
+            return (sourceLabel, "失败");
+        }
+
+        if (string.Equals(level, "ERROR", StringComparison.OrdinalIgnoreCase))
+        {
+            return (sourceLabel, message);
+        }
+
+        if (string.Equals(level, "WARN", StringComparison.OrdinalIgnoreCase))
+        {
+            return (sourceLabel, message);
+        }
+
+        return (sourceLabel, message);
+    }
     public void SyncInfo(string message) => Write("sync", "INFO", message);
     public void SyncWarn(string message) => Write("sync", "WARN", message);
     public void BanInfo(string message) => Write("ban", "INFO", message);
@@ -107,6 +222,8 @@ public sealed class LogService
 
     private volatile string _lastError = "";
     public string LastError => _lastError;
+
+    public sealed record OpsLogEntry(string Time, string Event, string Result, string Level, long SortKey);
 
     private void Write(string fileKey, string level, string message)
     {

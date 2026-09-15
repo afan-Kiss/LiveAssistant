@@ -39,7 +39,7 @@ public sealed class SkipSongService
         _log = log;
     }
 
-    public bool TryHandle(DanmakuItem item, string webRid)
+    public async Task<bool> TryHandleAsync(DanmakuItem item, string webRid)
     {
         if (!SkipSongParser.TryParse(item.Content))
         {
@@ -92,16 +92,24 @@ public sealed class SkipSongService
                 _system.Add($"{item.Nickname} 切歌失败：积分不足（需要 {cost}）");
                 return true;
             }
-
-            if (!_users.DeductPoints(item.UserId, cost))
-            {
-                _replyQueue.EnqueueMention(webRid, item.UserId,
-                    $"切歌需要 {cost} 积分，请送礼物获取积分后再试");
-                return true;
-            }
         }
 
-        _ = _engine.SkipAsync();
+        await _engine.SkipAsync();
+
+        if (cost > 0 && !_users.TryDeductPoints(
+                item.UserId,
+                item.Nickname,
+                cost,
+                PointsTransactionType.SkipSong,
+                "切歌扣积分",
+                null,
+                out _))
+        {
+            _replyQueue.EnqueueMention(webRid, item.UserId,
+                $"切歌需要 {cost} 积分，请送礼物获取积分后再试");
+            _system.Add($"{item.Nickname} 切歌成功但扣积分失败（余额不足）");
+            return true;
+        }
 
         var successKey = cost > 0 ? "skipSongSuccessPaid" : "skipSongSuccess";
         var success = _reply.Render(successKey, new Dictionary<string, string>
@@ -121,6 +129,9 @@ public sealed class SkipSongService
         _log.Info($"切歌: {item.Nickname} cost={cost}");
         return true;
     }
+
+    public bool TryHandle(DanmakuItem item, string webRid)
+        => TryHandleAsync(item, webRid).GetAwaiter().GetResult();
 
     private bool HasSkippablePlayback()
         => _playback.State != PlaybackState.Idle || _queue.NowPlaying != null;

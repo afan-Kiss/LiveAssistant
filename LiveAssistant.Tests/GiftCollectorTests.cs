@@ -132,6 +132,95 @@ public sealed class GiftCollectorTests : IDisposable
     }
 
     [Fact]
+    public async Task FileCookieProvider_FallsBackToRoomResolve_WhenCookiesJsonMissing()
+    {
+        var missingPath = Path.Combine(_tempDir, "missing-cookies.json");
+        var handler = new ScriptedHandler(req =>
+        {
+            var path = req.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/api/cookie", StringComparison.OrdinalIgnoreCase))
+            {
+                return JsonResponse("""
+                {"ok":true,"data":{"active":"默认账号","login_ok":true,"login_hint":"ok"}}
+                """);
+            }
+
+            if (path.EndsWith("/api/live/room/resolve", StringComparison.OrdinalIgnoreCase))
+            {
+                return JsonResponse("""
+                {"ok":true,"data":{"web_rid":"49489141797","room_id":"123","raw":{"cookie":"sessionid=fallback123; ttwid=xyz"}}}
+                """);
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
+        });
+
+        var config = new ConfigManager();
+        config.Settings.Douyin.BaseUrl = "http://127.0.0.1:4723";
+        config.Settings.Douyin.CookieStorePath = missingPath;
+        config.Settings.Douyin.WebRid = "49489141797";
+        var log = new LogService(_tempDir);
+        var douyin = new DouyinService(config.Settings.Douyin, log, new HttpClient(handler)
+        {
+            BaseAddress = new Uri("http://127.0.0.1:4723/")
+        });
+        var provider = new FileCookieProvider(config, douyin);
+
+        var cookie = await provider.GetActiveCookieAsync();
+
+        Assert.Contains("sessionid=fallback123", cookie);
+    }
+
+    [Fact]
+    public async Task FileCookieProvider_ReusesResolverCookie_WithoutSecondResolve()
+    {
+        var missingPath = Path.Combine(_tempDir, "missing-cookies-2.json");
+        var resolveCalls = 0;
+        var handler = new ScriptedHandler(req =>
+        {
+            var path = req.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/api/cookie", StringComparison.OrdinalIgnoreCase))
+            {
+                return JsonResponse("""
+                {"ok":true,"data":{"active":"默认账号","login_ok":true,"login_hint":"ok"}}
+                """);
+            }
+
+            if (path.EndsWith("/api/live/room/resolve", StringComparison.OrdinalIgnoreCase))
+            {
+                Interlocked.Increment(ref resolveCalls);
+                return JsonResponse("""
+                {"ok":true,"data":{"web_rid":"49489141797","room_id":"123","raw":{"cookie":"sessionid=resolver123; ttwid=xyz"}}}
+                """);
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
+        });
+
+        var config = new ConfigManager();
+        config.Settings.Douyin.BaseUrl = "http://127.0.0.1:4723";
+        config.Settings.Douyin.CookieStorePath = missingPath;
+        config.Settings.Douyin.WebRid = "49489141797";
+        var log = new LogService(_tempDir);
+        var douyin = new DouyinService(config.Settings.Douyin, log, new HttpClient(handler)
+        {
+            BaseAddress = new Uri("http://127.0.0.1:4723/")
+        });
+        var rooms = new SidecarGiftRoomResolver(douyin);
+        await rooms.ResolveRoomIdAsync("49489141797");
+        var resolveCallsAfterWarmup = Volatile.Read(ref resolveCalls);
+        var provider = new FileCookieProvider(config, douyin, rooms);
+        provider.BindWebRid("49489141797");
+
+        var first = await provider.GetActiveCookieAsync();
+        var second = await provider.GetActiveCookieAsync();
+
+        Assert.Contains("sessionid=resolver123", first);
+        Assert.Equal(first, second);
+        Assert.Equal(resolveCallsAfterWarmup, Volatile.Read(ref resolveCalls));
+    }
+
+    [Fact]
     public void GiftCollector_StartStop_ReconnectLifecycle()
     {
         var config = new ConfigManager();
@@ -179,6 +268,8 @@ public sealed class GiftCollectorTests : IDisposable
     {
         private readonly string _roomId;
         public StaticRoomResolver(string roomId) => _roomId = roomId;
+        public string? ResolvedCookie => null;
+        public void ClearResolvedCookie() { }
         public Task<string> ResolveRoomIdAsync(string webRid, CancellationToken ct = default) => Task.FromResult(_roomId);
     }
 
@@ -229,4 +320,10 @@ public sealed class GiftCollectorTests : IDisposable
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
             => Task.FromResult(_handler(request));
     }
+
+    private static HttpResponseMessage JsonResponse(string json)
+        => new(HttpStatusCode.OK)
+        {
+            Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json")
+        };
 }

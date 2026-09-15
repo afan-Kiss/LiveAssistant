@@ -1,5 +1,6 @@
 using System.Threading.Channels;
 using LiveAssistant.Config;
+using LiveAssistant.Models;
 
 namespace LiveAssistant.Services;
 
@@ -25,7 +26,9 @@ public sealed class ReplyQueue : IDisposable
     private readonly LogService _log;
     private readonly ReplySettings _settings;
     private readonly ReplyIdempotencyStore _idempotency;
+    private readonly OutboundReplyTracker? _outboundTracker;
     private readonly Func<string, string, string, CancellationToken, Task<bool>> _sendMention;
+    private readonly bool _sendMentionInjected;
     private readonly CancellationTokenSource _cts = new();
     private readonly Task _worker;
     private readonly Queue<DateTime> _sentTimestamps = new();
@@ -40,12 +43,15 @@ public sealed class ReplyQueue : IDisposable
         LogService log,
         ReplySettings settings,
         ReplyIdempotencyStore? idempotency = null,
-        Func<string, string, string, CancellationToken, Task<bool>>? sendMention = null)
+        Func<string, string, string, CancellationToken, Task<bool>>? sendMention = null,
+        OutboundReplyTracker? outboundTracker = null)
     {
         _douyin = douyin;
         _log = log;
         _settings = settings;
         _idempotency = idempotency ?? new ReplyIdempotencyStore();
+        _outboundTracker = outboundTracker;
+        _sendMentionInjected = sendMention != null;
         _sendMention = sendMention ?? ((webRid, userId, content, ct) =>
             _douyin.SendMentionAsync(webRid, userId, content, ct));
         _worker = Task.Run(() => WorkerLoopAsync(_cts.Token));
@@ -86,7 +92,10 @@ public sealed class ReplyQueue : IDisposable
         if (!_channel.Writer.TryWrite(job))
         {
             _log.DouyinWarn($"回复入队失败 reply_id={job.ReplyId}");
+            return;
         }
+
+        _outboundTracker?.Track(job.ReplyId, job.Content);
     }
 
     public void EnqueueSongRequestReply(string webRid, string userId, string nickname, string songName, int aheadCount)
@@ -163,19 +172,14 @@ public sealed class ReplyQueue : IDisposable
                 continue;
             }
 
-            var job = new ReplyJob
+            TryEnqueue(new ReplyJob
             {
                 ReplyId = NewReplyId(),
                 WebRid = webRid,
                 UserId = userId,
                 Content = content,
                 IsSongRequestBatch = group.Count() > 1
-            };
-
-            if (!_channel.Writer.TryWrite(job))
-            {
-                _log.DouyinWarn($"点歌 @ 回复入队失败 reply_id={job.ReplyId} user={userId}");
-            }
+            });
         }
     }
 
@@ -196,8 +200,10 @@ public sealed class ReplyQueue : IDisposable
                     }
 
                     await WaitForRateLimitAsync(ct);
-                    var ok = await _sendMention(job.WebRid, job.UserId, job.Content, ct);
-                    if (ok)
+                    var sentAt = DateTime.UtcNow;
+                    var detail = await SendMentionWithDiagnosticAsync(job, ct);
+                    LogReplySendDiagnostic(job, detail, sentAt);
+                    if (detail.Ok)
                     {
                         _idempotency.MarkSucceeded(job.ReplyId);
                         RecordSent();
@@ -207,7 +213,7 @@ public sealed class ReplyQueue : IDisposable
                         continue;
                     }
 
-                    await HandleFailureAsync(job, "发送返回失败", ct);
+                    await HandleFailureAsync(job, detail.ErrorReason, ct);
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
@@ -229,6 +235,32 @@ public sealed class ReplyQueue : IDisposable
         }
     }
 
+    private async Task<MentionSendResult> SendMentionWithDiagnosticAsync(ReplyJob job, CancellationToken ct)
+    {
+        if (_sendMentionInjected)
+        {
+            var ok = await _sendMention(job.WebRid, job.UserId, job.Content, ct);
+            return new MentionSendResult
+            {
+                Ok = ok,
+                HttpStatus = ok ? 200 : 400,
+                ErrorReason = ok ? "" : "发送返回失败",
+                ReplyType = job.IsSongRequestBatch ? "song_request_batch" : "mention"
+            };
+        }
+
+        return await _douyin.SendMentionDetailedAsync(job.WebRid, job.UserId, job.Content, ct);
+    }
+
+    private void LogReplySendDiagnostic(ReplyJob job, MentionSendResult detail, DateTime sentAtUtc)
+    {
+        var type = job.IsSongRequestBatch ? "song_request_batch" : "mention";
+        _log.DouyinInfo(
+            $"REPLY_SEND_DIAGNOSTIC replyId={job.ReplyId} type={type} " +
+            $"httpStatus={detail.HttpStatus?.ToString() ?? "-"} ok={detail.Ok} " +
+            $"requestTime={sentAtUtc:O} error={detail.ErrorReason} retry={job.RetryCount}");
+    }
+
     private async Task HandleFailureAsync(ReplyJob job, string reason, CancellationToken ct)
     {
         // 若已成功发送过（例如先前成功后被重复入队），不再重试
@@ -237,6 +269,17 @@ public sealed class ReplyQueue : IDisposable
             _log.DouyinInfo(
                 $"[reply-send] reply_id={job.ReplyId} target_user={job.UserId} " +
                 $"content={Truncate(job.Content)} result=skip_already_sent");
+            return;
+        }
+
+        // 侧车已发出弹幕但回显格式与发送内容不完全一致（常见：去掉换行）——勿重试
+        if (IsLikelyAlreadySent(reason))
+        {
+            _idempotency.MarkSucceeded(job.ReplyId);
+            RecordSent();
+            _log.DouyinInfo(
+                $"[reply-send] reply_id={job.ReplyId} target_user={job.UserId} " +
+                $"content={Truncate(job.Content)} result=ok_likely_sent error={reason}");
             return;
         }
 
@@ -293,6 +336,11 @@ public sealed class ReplyQueue : IDisposable
             _sentTimestamps.Enqueue(DateTime.UtcNow);
         }
     }
+
+    private static bool IsLikelyAlreadySent(string reason)
+        => !string.IsNullOrWhiteSpace(reason)
+           && (reason.Contains("假成功", StringComparison.Ordinal)
+               || reason.Contains("内容不一致", StringComparison.Ordinal));
 
     private static string NewReplyId() => Guid.NewGuid().ToString("N");
 

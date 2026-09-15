@@ -15,6 +15,7 @@ public sealed class LiveAppHost : IDisposable
     private readonly KugouService _kugou;
     private readonly QueueService _queue;
     private readonly ReplyService _reply;
+    private readonly OutboundReplyTracker _outboundTracker;
     private readonly ReplyQueue _replyQueue;
     private readonly RandomPlaylistService _random;
     private readonly PlaybackService _playback;
@@ -48,12 +49,20 @@ public sealed class LiveAppHost : IDisposable
     private readonly AdminWebHost _adminWeb;
     private readonly AdminTunnelService _adminTunnel;
     private readonly ProcessWatchdogService _watchdog;
+    private readonly LiveHealthService _health;
+    private readonly SongRequestControlService _songRequestControl;
+    private readonly UserDetailService _userDetail;
+    private readonly ReplyTemplatePreviewService _templatePreview;
     private readonly DateTime _startedAt = DateTime.Now;
+    private string _lastPlayedTrackKey = "";
     private CancellationTokenSource? _watchCts;
     private volatile bool _douyinSidecarOk;
     private volatile bool _kugouSidecarOk;
     private volatile string _kugouLoginStatus = "未检测";
     private volatile string _kugouVipLabel = "";
+    private volatile bool _kugouFullPlaybackAvailable;
+    private volatile string _kugouFullPlaybackReason = "";
+    private long _kugouStatusCheckedAtTicks;
     private volatile bool _kugouLoginWarned;
     private volatile string _adminAccountStatus = "未检测";
     private volatile string _adminNickname = "-";
@@ -70,15 +79,16 @@ public sealed class LiveAppHost : IDisposable
         _system = new SystemMessageService(_config.Settings.Ui.MaxSystemMessageLines);
         _db = new AppDatabase(_config.DataDirectory);
 
-        var recovered = _db.RecoverPlayingQueueItems();
-        if (recovered > 0)
+        var abandoned = _db.AbandonPendingQueueOnStartup();
+        if (abandoned > 0)
         {
-            _log.Info($"播放恢复保护: 已将 {recovered} 条 playing 队列项恢复为 waiting");
-            _system.Add($"启动恢复: {recovered} 条未完成播放已重置为等待");
+            _log.Info($"启动清空未播放队列: {abandoned} 条");
+            _system.Add($"启动已清空 {abandoned} 条未播放点歌，等待新点歌");
         }
 
-        _users = new UserRepository(_db);
-        _giftRepo = new GiftRepository(_db);
+        var pointsLedgerRepo = new PointsLedgerRepository(_db);
+        _users = new UserRepository(_db, pointsLedgerRepo);
+        _giftRepo = new GiftRepository(_db, pointsLedgerRepo);
         _giftRuleRepo = new GiftRuleRepository(_db);
         _banVoteRepo = new BanVoteRepository(_db);
         _songBlacklistRepo = new SongBlacklistRepository(_db);
@@ -95,10 +105,11 @@ public sealed class LiveAppHost : IDisposable
         _settingsStore.ApplyDbToMemory();
 
         _douyin = new DouyinService(_config.Settings.Douyin, _log);
-        _kugou = new KugouService(_config.Settings.Kugou, _log);
+        _kugou = new KugouService(_config.Settings.Kugou, _log, dataDirectory: _config.DataDirectory);
         _queue = new QueueService(_db);
         _reply = new ReplyService(_config);
-        _replyQueue = new ReplyQueue(_douyin, _log, _config.Settings.Reply);
+        _outboundTracker = new OutboundReplyTracker();
+        _replyQueue = new ReplyQueue(_douyin, _log, _config.Settings.Reply, outboundTracker: _outboundTracker);
         _random = new RandomPlaylistService(_config, _db);
         _playback = new PlaybackService(_log);
         _playback.SetVolume(_config.Settings.Playback.Volume);
@@ -107,19 +118,24 @@ public sealed class LiveAppHost : IDisposable
             _config, _queue, _kugou, _random, _playback, _reply, _system, _log);
         _engine = new PlaybackEngine(_config, _playbackCommands, _system);
         _danmaku = new DanmakuService(
-            _douyin, _log, _system, new DanmakuDeduplicator(_config.DataDirectory));
+            _douyin, _log, _system, new DanmakuDeduplicator(_config.DataDirectory), _outboundTracker,
+            _config.Settings.Douyin.PollIntervalMs);
 
         var songBlacklist = new SongBlacklistService(_songBlacklistRepo);
         _userLevel = new UserLevelService(_config, _users);
+        _health = new LiveHealthService();
+        _songRequestControl = new SongRequestControlService(_config, _users);
+        _userDetail = new UserDetailService(_users, _giftRepo, pointsLedgerRepo);
+        _templatePreview = new ReplyTemplatePreviewService(_config, _replyTemplateRepo, _reply);
         _permission = new SongRequestPermissionService(
-            _config, _users, _queue, songBlacklist, _levelPermRepo, _userLevel, _giftRepo);
+            _config, _users, _queue, songBlacklist, _levelPermRepo, _userLevel, _giftRepo, _songRequestControl);
         _songRequest = new SongRequestService(_config, _kugou, _queue, _permission, _reply, _replyQueue, _system, _log);
         _gift = new GiftService(_config, _douyin, _giftRepo, _users, _userLevel, _giftRuleRepo, _log, _system, _reply, _replyQueue);
         _giftCollector = new GiftCollectorService(_config, _douyin, _gift, _log, giftRepo: _giftRepo);
         _banVote = new BanVoteService(_config, _banVoteRepo, _users, _douyin, _replyQueue, _reply, _system, _log);
         _welcome = new WelcomeService(_config, _reply, _replyQueue, _system, _welcomeCooldownRepo);
         _keywordReply = new KeywordReplyService(_config, _keywordReplyRepo, new NullAIReplyService());
-        _pointsQuery = new PointsQueryService(_users);
+        _pointsQuery = new PointsQueryService(_users, pointsLedgerRepo);
         _skipSong = new SkipSongService(
             _config, _users, _playback, _queue, _engine, _reply, _replyQueue, _system, _log);
         _commandQueue = new CommandQueueService(new AdminCommandRepository(_db));
@@ -135,6 +151,7 @@ public sealed class LiveAppHost : IDisposable
             Commands = _commandQueue,
             Settings = _settingsStore,
             Users = _users,
+            PointsLedger = pointsLedgerRepo,
             Gifts = _giftRepo,
             GiftRules = _giftRuleRepo,
             RandomPool = _randomPoolRepo,
@@ -143,14 +160,25 @@ public sealed class LiveAppHost : IDisposable
             KeywordReplies = _keywordReplyRepo,
             BanVotes = _banVoteRepo,
             LevelPermissions = _levelPermRepo,
-            Log = _log
+            Log = _log,
+            Health = _health,
+            SongRequestControl = _songRequestControl,
+            UserDetail = _userDetail,
+            TemplatePreview = _templatePreview,
+            Reply = _reply
         });
         _adminTunnel = new AdminTunnelService(_config, _log, _system);
 
         _danmaku.DanmakuReceived += OnDanmakuReceived;
-        _songRequest.RequestHandled += () => _ = _engine.EnsurePlayingAsync();
-        _playbackCommands.Playback.StateChanged += () => NotifyStateChanged();
+        _songRequest.RequestHandled += () =>
+        {
+            _health.RecordSongRequest();
+            _ = _engine.EnsurePlayingAsync();
+        };
+        _playbackCommands.Playback.StateChanged += OnPlaybackStateChanged;
         _queue.QueueChanged += () => NotifyStateChanged();
+        _log.ErrorRecorded += () => _health.RecordError();
+        _gift.GiftReceived += _ => _health.RecordGift();
 
         _adminWeb.Start();
         _adminTunnel.Start();
@@ -189,6 +217,8 @@ public sealed class LiveAppHost : IDisposable
     public KugouService Kugou => _kugou;
     public SettingsStore SettingsStore => _settingsStore;
     public DateTime StartedAt => _startedAt;
+    public LiveHealthService Health => _health;
+    public SongRequestControlService SongRequestControl => _songRequestControl;
 
     public event Action<DanmakuItem>? DanmakuReceived;
     public event Action? StateChanged;
@@ -196,7 +226,11 @@ public sealed class LiveAppHost : IDisposable
     public RuntimeStatus GetRuntimeStatus()
     {
         var track = _playbackCommands.Playback.CurrentTrack;
+        var playback = _playbackCommands.Playback;
         var queueCount = _queue.WaitingCount + (_queue.NowPlaying != null ? 1 : 0);
+        var health = _health.GetSnapshot();
+        var duration = Math.Max(1, playback.DurationSec);
+        var progress = playback.ProgressSec;
         return new RuntimeStatus
         {
             DouyinOnline = _douyinSidecarOk,
@@ -205,6 +239,8 @@ public sealed class LiveAppHost : IDisposable
             KugouStatus = _kugouSidecarOk ? "在线" : "离线",
             KugouLoginStatus = _kugouSidecarOk ? _kugouLoginStatus : "离线",
             KugouVipLabel = _kugouVipLabel,
+            KugouFullPlaybackAvailable = _kugouSidecarOk && _kugouFullPlaybackAvailable,
+            KugouFullPlaybackReason = _kugouFullPlaybackReason,
             KugouLoginPageUrl = _kugou.LoginPageUrl,
             DanmakuConnection = _danmaku.ConnectionStatus,
             RoomOwnerNickname = _danmaku.RoomOwnerNickname,
@@ -213,11 +249,41 @@ public sealed class LiveAppHost : IDisposable
             CurrentSong = track == null ? "-" : $"{track.SongName} - {track.Artist}",
             PlaybackMode = _engine.Mode.ToString(),
             QueueCount = queueCount,
+            WaitingQueueCount = _queue.WaitingCount,
             Uptime = DateTime.Now - _startedAt,
             StartedAt = _startedAt,
             CurrentTask = _currentTask,
-            LastError = _log.LastError
+            LastError = _log.LastError,
+            PlaybackState = playback.State.ToString(),
+            PlaybackSource = track == null ? "-" : track.IsRandom ? "随机补位" : "点歌",
+            ProgressSec = progress,
+            DurationSec = duration,
+            RemainingSec = Math.Max(0, duration - progress),
+            SongRequestEnabled = _songRequestControl.IsRequestEnabled,
+            TodayDanmakuCount = health.TodayDanmakuCount,
+            TodayGiftCount = health.TodayGiftCount,
+            TodaySongRequestCount = health.TodaySongRequestCount,
+            TodaySongsPlayed = health.TodaySongsPlayed,
+            RecentErrorCount = health.RecentErrorCount
         };
+    }
+
+    public void SetSongRequestEnabled(bool enabled) => _songRequestControl.SetRequestEnabled(enabled);
+
+    private void OnPlaybackStateChanged()
+    {
+        var track = _playbackCommands.Playback.CurrentTrack;
+        if (track != null && _playbackCommands.Playback.State is PlaybackState.Playing or PlaybackState.RandomFill)
+        {
+            var key = $"{track.SongId}|{track.Hash}|{track.SongName}";
+            if (_lastPlayedTrackKey != key)
+            {
+                _lastPlayedTrackKey = key;
+                _health.RecordSongPlayed(key);
+            }
+        }
+
+        NotifyStateChanged();
     }
 
     public async Task StartAsync(CancellationToken ct = default)
@@ -279,6 +345,11 @@ public sealed class LiveAppHost : IDisposable
             }
 
             _users.EnsureUser(item.UserId, item.Nickname);
+            _users.TouchInteraction(item.UserId, item.Nickname);
+            if (item.MsgType != "member" && item.MsgType != "gift")
+            {
+                _health.RecordDanmaku();
+            }
 
             if (item.MsgType == "member")
             {
@@ -346,6 +417,17 @@ public sealed class LiveAppHost : IDisposable
 
                     _kugouLoginStatus = login.DisplayStatus;
                     _kugouVipLabel = login.VipLabel;
+
+                    var fullStatus = await _kugou.CheckFullPlaybackStatusAsync(ct);
+                    _kugouFullPlaybackAvailable = fullStatus.FullPlaybackAvailable;
+                    _kugouFullPlaybackReason = fullStatus.Reason;
+                    _kugouStatusCheckedAtTicks = fullStatus.CheckedAtUtc.Ticks;
+                    _log.KugouInfo(
+                        $"KUGOU_STATUS loggedIn={fullStatus.LoggedIn} vip={fullStatus.VipLabel} " +
+                        $"fullPlaybackAvailable={fullStatus.FullPlaybackAvailable} " +
+                        $"lastCheckTime={fullStatus.CheckedAtUtc:O}" +
+                        (string.IsNullOrWhiteSpace(fullStatus.Reason) ? "" : $" reason={fullStatus.Reason}"));
+
                     if (!_kugouLoginWarned)
                     {
                         if (!login.LoggedIn)
@@ -356,6 +438,10 @@ public sealed class LiveAppHost : IDisposable
                         {
                             _system.Add("酷狗已登录，正在自动领取试用会员；若仍无会员请重新扫码");
                         }
+                        else if (!fullStatus.FullPlaybackAvailable)
+                        {
+                            _system.Add($"酷狗已登录但完整版不可用：{fullStatus.Reason}");
+                        }
 
                         _kugouLoginWarned = true;
                     }
@@ -364,6 +450,8 @@ public sealed class LiveAppHost : IDisposable
                 {
                     _kugouLoginStatus = "离线";
                     _kugouVipLabel = "";
+                    _kugouFullPlaybackAvailable = false;
+                    _kugouFullPlaybackReason = "Sidecar离线";
                 }
 
                 if (health != null)

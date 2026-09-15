@@ -10,14 +10,32 @@ public static partial class SongNameParser
 
     public static bool IsBotReply(string content)
     {
-        content = content.Trim();
+        content = StripMentionPrefix(content.Trim());
         return content.StartsWith("点歌成功", StringComparison.Ordinal)
                || content.StartsWith("点歌失败", StringComparison.Ordinal)
                || content.StartsWith("已切歌", StringComparison.Ordinal)
                || content.StartsWith("找到多首", StringComparison.Ordinal)
                || content.StartsWith("是否点歌", StringComparison.Ordinal)
                || content.StartsWith("请回复 确定", StringComparison.Ordinal)
-               || content.StartsWith("是否确定点歌", StringComparison.Ordinal);
+               || content.StartsWith("是否确定点歌", StringComparison.Ordinal)
+               || content.StartsWith("已投票禁言", StringComparison.Ordinal)
+               || content.StartsWith("你当前有", StringComparison.Ordinal);
+    }
+
+    internal static string StripMentionPrefix(string content)
+    {
+        while (content.StartsWith('@'))
+        {
+            var space = content.IndexOf(' ');
+            if (space < 0)
+            {
+                break;
+            }
+
+            content = content[(space + 1)..].Trim();
+        }
+
+        return content;
     }
 
     public static bool TryParse(string content, out string songName)

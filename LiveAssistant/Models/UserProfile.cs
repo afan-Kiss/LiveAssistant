@@ -12,4 +12,6 @@ public sealed class UserProfile
     public UserStatus Status { get; set; } = UserStatus.Active;
     public int SongPermissionCredits { get; set; }
     public bool SongPermissionUnlimited { get; set; }
+    public DateTime? LastInteractionAt { get; set; }
+    public int TotalGiftPoints { get; set; }
 }

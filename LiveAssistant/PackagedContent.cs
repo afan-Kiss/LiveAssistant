@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using LiveAssistant.Utils;
 
 namespace LiveAssistant;
 
@@ -86,18 +87,28 @@ internal static class PackagedContent
 
         if (!File.Exists(target))
         {
-            File.WriteAllText(target, embeddedNode.ToJsonString(JsonOptions));
+            AtomicFileWriter.WriteAllText(target, embeddedNode.ToJsonString(JsonOptions));
             return;
         }
 
         JsonObject existing;
         try
         {
-            existing = JsonNode.Parse(File.ReadAllText(target)) as JsonObject ?? new JsonObject();
+            var current = AtomicFileWriter.IsCorruptOrEmpty(target)
+                ? AtomicFileWriter.RecoverCorruptFile(target, msg => StartupDiagnostics.Write(msg))
+                : File.ReadAllText(target);
+            if (string.IsNullOrWhiteSpace(current))
+            {
+                AtomicFileWriter.WriteAllText(target, embeddedNode.ToJsonString(JsonOptions));
+                return;
+            }
+
+            existing = JsonNode.Parse(current) as JsonObject ?? new JsonObject();
         }
-        catch
+        catch (Exception ex)
         {
-            File.WriteAllText(target, embeddedNode.ToJsonString(JsonOptions));
+            StartupDiagnostics.Write($"合并内嵌配置失败，回退内嵌版本: {ex.Message}");
+            AtomicFileWriter.WriteAllText(target, embeddedNode.ToJsonString(JsonOptions));
             return;
         }
 
@@ -154,7 +165,7 @@ internal static class PackagedContent
             existing["adminTunnel"] = tunnel;
         }
 
-        File.WriteAllText(target, existing.ToJsonString(JsonOptions));
+        AtomicFileWriter.WriteAllText(target, existing.ToJsonString(JsonOptions));
     }
 
     private static string RelocateEmbeddedPath(string dotted)

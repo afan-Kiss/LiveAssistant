@@ -40,8 +40,8 @@ public sealed class GiftCollectorService : IDisposable
         _gifts = gifts;
         _log = log;
         _imFetch = imFetch ?? new GiftImFetchClient();
-        _cookies = cookies ?? new FileCookieProvider(config, douyin);
         _rooms = rooms ?? new SidecarGiftRoomResolver(douyin);
+        _cookies = cookies ?? new FileCookieProvider(config, douyin, _rooms);
         _cursorStore = cursorStore ?? new GiftCursorStore(config.DataDirectory);
         _deduper = deduper ?? new GiftEventDeduplicator(
             TimeSpan.FromMinutes(30),
@@ -71,6 +71,10 @@ public sealed class GiftCollectorService : IDisposable
 
         _webRid = next;
         _gifts.BindRoom(_webRid);
+        if (_cookies is FileCookieProvider fileCookies)
+        {
+            fileCookies.BindWebRid(_webRid);
+        }
         RestoreCursor(_webRid);
 
         _cts = new CancellationTokenSource();
@@ -188,7 +192,12 @@ public sealed class GiftCollectorService : IDisposable
             catch (CookieInvalidException ex)
             {
                 _log.GiftWarn($"Cookie 失效，等待重试: {ex.Message}");
+                if (_cookies is FileCookieProvider fileCookies)
+                {
+                    fileCookies.InvalidateCache();
+                }
                 _roomId = null;
+                _rooms.ClearResolvedCookie();
                 // Cookie 失效不丢 cursor，避免重登后重复历史；由去重挡回流
                 await DelayAsync(backoffMs, ct);
                 backoffMs = Math.Min(backoffMs * 2, 60_000);

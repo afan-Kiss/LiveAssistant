@@ -43,6 +43,8 @@ public sealed class PipelineParseTests
         Assert.False(SongNameParser.TryParse("我想点歌 泡沫", out _));
         Assert.False(SongNameParser.TryParse("点歌成功《泡沫》", out _));
         Assert.True(SongNameParser.IsBotReply("点歌成功《泡沫》"));
+        Assert.True(SongNameParser.IsBotReply("@1155 是否确定点歌《社会摇》- 萧全？回复 确定 开始点歌"));
+        Assert.True(SongNameParser.IsBotReply("@一只小青蛙 你当前有 99999 积分，等级 Lv4"));
     }
 
     [Fact]

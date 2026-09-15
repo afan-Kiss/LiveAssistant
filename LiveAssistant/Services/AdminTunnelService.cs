@@ -1,3 +1,4 @@
+using System.Net.Sockets;
 using System.Text.Json;
 using LiveAssistant.Config;
 using Renci.SshNet;
@@ -25,6 +26,8 @@ public sealed class AdminTunnelService : IDisposable
     private SshClient? _activeClient;
     private ForwardedPortRemote? _activeForward;
     private int _disposed;
+    private int _consecutiveFailures;
+    private DateTime _lastFailureLogUtc = DateTime.MinValue;
 
     public AdminTunnelService(ConfigManager config, LogService log, SystemMessageService system)
     {
@@ -83,8 +86,17 @@ public sealed class AdminTunnelService : IDisposable
             catch (Exception ex)
             {
                 _announcedConnected = false;
-                _log.Warn($"云端后台隧道异常: {ex.Message}");
-                if (!ct.IsCancellationRequested)
+                _consecutiveFailures++;
+                var now = DateTime.UtcNow;
+                if (_consecutiveFailures == 1
+                    || _consecutiveFailures % 12 == 0
+                    || now - _lastFailureLogUtc > TimeSpan.FromMinutes(5))
+                {
+                    _lastFailureLogUtc = now;
+                    _log.Warn($"云端后台隧道异常: {ex.Message}");
+                }
+
+                if (!ct.IsCancellationRequested && _consecutiveFailures == 1)
                 {
                     _system.Add($"云端后台断开，{delayMs / 1000}s 后重连…");
                 }
@@ -128,6 +140,12 @@ public sealed class AdminTunnelService : IDisposable
 
             ct.ThrowIfCancellationRequested();
 
+            if (!await WaitForLocalPortAsync(endpoint.LocalPort, ct).ConfigureAwait(false))
+            {
+                throw new InvalidOperationException(
+                    $"本地管理后台未监听 127.0.0.1:{endpoint.LocalPort}，请确认后台已启动");
+            }
+
             var forward = new ForwardedPortRemote(
                 "127.0.0.1",
                 (uint)endpoint.RemotePort,
@@ -147,7 +165,17 @@ public sealed class AdminTunnelService : IDisposable
             }
 
             client.AddForwardedPort(forward);
-            forward.Start();
+            try
+            {
+                forward.Start();
+            }
+            catch (Exception ex) when (IsRemotePortInUse(ex))
+            {
+                TryReleaseRemotePort(client, endpoint.RemotePort);
+                forward.Start();
+            }
+
+            _consecutiveFailures = 0;
 
             if (!_announcedConnected)
             {
@@ -170,6 +198,53 @@ public sealed class AdminTunnelService : IDisposable
         {
             ForceCloseClient(client);
         }
+    }
+
+    private static bool IsRemotePortInUse(Exception ex)
+    {
+        var msg = ex.Message ?? "";
+        return msg.Contains("failed to start", StringComparison.OrdinalIgnoreCase)
+               || msg.Contains("already in use", StringComparison.OrdinalIgnoreCase)
+               || msg.Contains("Address already in use", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void TryReleaseRemotePort(SshClient client, int remotePort)
+    {
+        if (!client.IsConnected)
+        {
+            return;
+        }
+
+        try
+        {
+            using var cmd = client.CreateCommand(
+                $"fuser -k {remotePort}/tcp 2>/dev/null || ss -lptn 'sport = :{remotePort}' | sed -n 's/.*pid=\\([0-9]\\+\\).*/\\1/p' | xargs -r kill 2>/dev/null || true");
+            cmd.CommandTimeout = TimeSpan.FromSeconds(5);
+            cmd.Execute();
+        }
+        catch
+        {
+            // ignore cleanup failures
+        }
+    }
+
+    private static async Task<bool> WaitForLocalPortAsync(int port, CancellationToken ct)
+    {
+        for (var i = 0; i < 30 && !ct.IsCancellationRequested; i++)
+        {
+            try
+            {
+                using var tcp = new TcpClient();
+                await tcp.ConnectAsync("127.0.0.1", port, ct).ConfigureAwait(false);
+                return true;
+            }
+            catch
+            {
+                await Task.Delay(200, ct).ConfigureAwait(false);
+            }
+        }
+
+        return false;
     }
 
     private void ForceCloseClient(SshClient? expected = null)

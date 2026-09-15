@@ -72,6 +72,12 @@ public sealed class BanVoteService
             return;
         }
 
+        if (item.UserId == target.UserId)
+        {
+            _system.Add($"禁言投票: {item.Nickname} 不能投票禁言自己");
+            return;
+        }
+
         var session = _votes.GetActiveSession(target.UserId);
         if (session != null && _votes.IsExpired(session))
         {
@@ -96,12 +102,14 @@ public sealed class BanVoteService
 
         if (!isNew && _votes.HasVoted(session.Id, item.UserId))
         {
+            SendVoteProgressReply(webRid, item, target, session, session.VoteCount);
             return;
         }
 
         var count = _votes.AddVote(session.Id, target.UserId, target.Nickname, item.UserId, item.Nickname);
         _system.Add($"禁言投票: {item.Nickname} 投票禁言 {target.Nickname} ({count}/{session.RequiredVotes})");
         _log.BanInfo($"投票 user={item.Nickname} target={target.Nickname} count={count}/{session.RequiredVotes}");
+        SendVoteProgressReply(webRid, item, target, session, count);
 
         if (count >= session.RequiredVotes)
         {
@@ -143,9 +151,38 @@ public sealed class BanVoteService
         {
             ["name"] = target.Nickname
         });
-        if (!string.IsNullOrWhiteSpace(reply))
+        if (string.IsNullOrWhiteSpace(reply))
         {
-            _replyQueue.EnqueueMention(webRid, target.UserId, reply);
+            reply = "已被投票禁言";
         }
+
+        _replyQueue.EnqueueMention(webRid, target.UserId, reply);
+    }
+
+    private void SendVoteProgressReply(
+        string webRid,
+        DanmakuItem voter,
+        UserProfile target,
+        BanVoteSession session,
+        int count)
+    {
+        if (string.IsNullOrWhiteSpace(voter.UserId))
+        {
+            return;
+        }
+
+        var msg = _reply.Render("banVoteProgress", new Dictionary<string, string>
+        {
+            ["name"] = voter.Nickname,
+            ["target"] = target.Nickname,
+            ["count"] = count.ToString(),
+            ["required"] = session.RequiredVotes.ToString()
+        });
+        if (string.IsNullOrWhiteSpace(msg))
+        {
+            msg = $"已投票禁言 {target.Nickname}，当前 {count}/{session.RequiredVotes} 票";
+        }
+
+        _replyQueue.EnqueueMention(webRid, voter.UserId, msg);
     }
 }

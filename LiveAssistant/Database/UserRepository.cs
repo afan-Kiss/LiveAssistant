@@ -6,10 +6,12 @@ namespace LiveAssistant.Database;
 public sealed class UserRepository
 {
     private readonly AppDatabase _db;
+    private readonly PointsLedgerRepository _ledger;
 
-    public UserRepository(AppDatabase db)
+    public UserRepository(AppDatabase db, PointsLedgerRepository? ledger = null)
     {
         _db = db;
+        _ledger = ledger ?? new PointsLedgerRepository(db);
     }
 
     public UserProfile EnsureUser(string userId, string nickname)
@@ -62,7 +64,7 @@ public sealed class UserRepository
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             SELECT user_id, nickname, role, status, points, level, request_count, last_request_at,
-                   song_permission_credits, song_permission_unlimited
+                   song_permission_credits, song_permission_unlimited, updated_at
             FROM users WHERE user_id = $uid
             """;
         cmd.Parameters.AddWithValue("$uid", userId);
@@ -82,7 +84,7 @@ public sealed class UserRepository
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             SELECT user_id, nickname, role, status, points, level, request_count, last_request_at,
-                   song_permission_credits, song_permission_unlimited
+                   song_permission_credits, song_permission_unlimited, updated_at
             FROM users ORDER BY points DESC, updated_at DESC LIMIT $limit OFFSET $offset
             """;
         cmd.Parameters.AddWithValue("$limit", limit);
@@ -108,7 +110,7 @@ public sealed class UserRepository
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             SELECT user_id, nickname, role, status, points, level, request_count, last_request_at,
-                   song_permission_credits, song_permission_unlimited
+                   song_permission_credits, song_permission_unlimited, updated_at
             FROM users
             WHERE nickname LIKE $q COLLATE NOCASE OR user_id LIKE $q
             ORDER BY points DESC, updated_at DESC
@@ -136,7 +138,7 @@ public sealed class UserRepository
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             SELECT user_id, nickname, role, status, points, level, request_count, last_request_at,
-                   song_permission_credits, song_permission_unlimited
+                   song_permission_credits, song_permission_unlimited, updated_at
             FROM users WHERE nickname = $nick COLLATE NOCASE LIMIT 1
             """;
         cmd.Parameters.AddWithValue("$nick", nickname.Trim());
@@ -193,34 +195,166 @@ public sealed class UserRepository
     }
 
     public bool DeductPoints(string userId, int points)
-    {
-        if (string.IsNullOrWhiteSpace(userId) || points <= 0)
-        {
-            return false;
-        }
+        => TryDeductPoints(userId, "", points, "deduct", "积分扣除", null, out _);
 
-        var user = GetUser(userId);
-        if (user == null || user.Points < points)
-        {
-            return false;
-        }
-
-        var now = DateTime.Now.ToString("O");
-        using var conn = _db.Open();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
-            UPDATE users SET points = points - $pts, updated_at = $now
-            WHERE user_id = $uid AND points >= $pts
-            """;
-        cmd.Parameters.AddWithValue("$uid", userId);
-        cmd.Parameters.AddWithValue("$pts", points);
-        cmd.Parameters.AddWithValue("$now", now);
-        return cmd.ExecuteNonQuery() > 0;
-    }
+    public bool TryDeductPoints(
+        string userId,
+        string nickname,
+        int points,
+        string type,
+        string reason,
+        string? refId,
+        out int balanceAfter)
+        => TryChangePoints(userId, nickname, -points, type, reason, refId, out balanceAfter);
 
     public void AddPoints(string userId, string nickname, int points)
     {
         if (string.IsNullOrWhiteSpace(userId) || points <= 0)
+        {
+            return;
+        }
+
+        TryChangePoints(userId, nickname, points, PointsTransactionType.AdminAdjust, "积分增加", null, out _);
+    }
+
+    public bool TryAdminSetPoints(string userId, int points, string reason, string operatorName, out string? error)
+    {
+        error = null;
+        if (string.IsNullOrWhiteSpace(userId))
+        {
+            error = "用户ID无效";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(reason))
+        {
+            error = "必须填写修改原因";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(operatorName))
+        {
+            error = "必须填写修改人";
+            return false;
+        }
+
+        var current = GetUser(userId)?.Points ?? 0;
+        var delta = points - current;
+        if (delta == 0)
+        {
+            return true;
+        }
+
+        var ledgerReason = $"[{operatorName}] {reason}";
+        return TryChangePoints(
+            userId, "", delta, PointsTransactionType.AdminSet, ledgerReason, null, out _, operatorName);
+    }
+
+    public bool TryAdminAdjustPoints(string userId, int delta, string reason, string operatorName, out string? error)
+    {
+        error = null;
+        if (string.IsNullOrWhiteSpace(userId) || delta == 0)
+        {
+            error = delta == 0 ? null : "用户ID无效";
+            return delta == 0;
+        }
+
+        if (string.IsNullOrWhiteSpace(reason))
+        {
+            error = "必须填写修改原因";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(operatorName))
+        {
+            error = "必须填写修改人";
+            return false;
+        }
+
+        if (delta < 0)
+        {
+            var current = GetUser(userId)?.Points ?? 0;
+            if (current + delta < 0)
+            {
+                delta = -current;
+            }
+        }
+
+        if (delta == 0)
+        {
+            return true;
+        }
+
+        var ledgerReason = $"[{operatorName}] {reason}";
+        return TryChangePoints(
+            userId, "", delta, PointsTransactionType.AdminAdjust, ledgerReason, null, out _, operatorName);
+    }
+
+    [Obsolete("Use TryAdminSetPoints with reason and operator")]
+    public void SetPoints(string userId, int points)
+    {
+        if (string.IsNullOrWhiteSpace(userId))
+        {
+            return;
+        }
+
+        var current = GetUser(userId)?.Points ?? 0;
+        var delta = points - current;
+        if (delta == 0)
+        {
+            return;
+        }
+
+        TryChangePoints(userId, "", delta, PointsTransactionType.AdminSet, "管理员设置积分", null, out _);
+    }
+
+    [Obsolete("Use TryAdminAdjustPoints with reason and operator")]
+    public void AdjustPoints(string userId, int delta)
+    {
+        if (string.IsNullOrWhiteSpace(userId) || delta == 0)
+        {
+            return;
+        }
+
+        if (delta < 0)
+        {
+            var current = GetUser(userId)?.Points ?? 0;
+            if (current + delta < 0)
+            {
+                delta = -current;
+            }
+        }
+
+        if (delta == 0)
+        {
+            return;
+        }
+
+        TryChangePoints(userId, "", delta, PointsTransactionType.AdminAdjust, "管理员调整积分", null, out _);
+    }
+
+    public int CountRequestsToday(string userId)
+    {
+        if (string.IsNullOrWhiteSpace(userId))
+        {
+            return 0;
+        }
+
+        var today = DateTime.Today.ToString("O");
+        using var conn = _db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT COUNT(1) FROM queue_items
+            WHERE user_id = $uid AND is_random = 0 AND created_at >= $today
+            """;
+        cmd.Parameters.AddWithValue("$uid", userId);
+        cmd.Parameters.AddWithValue("$today", today);
+        return Convert.ToInt32(cmd.ExecuteScalar());
+    }
+
+    public void TouchInteraction(string userId, string nickname)
+    {
+        if (string.IsNullOrWhiteSpace(userId))
         {
             return;
         }
@@ -231,45 +365,120 @@ public sealed class UserRepository
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             UPDATE users
-            SET nickname = $nick, points = points + $pts, updated_at = $now
+            SET nickname = CASE WHEN length($nick) > 0 THEN $nick ELSE nickname END,
+                updated_at = $now
             WHERE user_id = $uid
             """;
         cmd.Parameters.AddWithValue("$uid", userId);
         cmd.Parameters.AddWithValue("$nick", nickname);
-        cmd.Parameters.AddWithValue("$pts", points);
         cmd.Parameters.AddWithValue("$now", now);
         cmd.ExecuteNonQuery();
     }
 
-    public void SetPoints(string userId, int points)
+    /// <summary>
+    /// 原子更新积分并写入流水。扣减时使用 SQL 条件保证余额充足。
+    /// </summary>
+    public bool TryChangePoints(
+        string userId,
+        string nickname,
+        int delta,
+        string type,
+        string reason,
+        string? refId,
+        out int balanceAfter,
+        string? operatorName = null)
     {
-        var now = DateTime.Now.ToString("O");
-        using var conn = _db.Open();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = "UPDATE users SET points = $pts, updated_at = $now WHERE user_id = $uid";
-        cmd.Parameters.AddWithValue("$uid", userId);
-        cmd.Parameters.AddWithValue("$pts", points);
-        cmd.Parameters.AddWithValue("$now", now);
-        cmd.ExecuteNonQuery();
-    }
-
-    public void AdjustPoints(string userId, int delta)
-    {
+        balanceAfter = 0;
         if (string.IsNullOrWhiteSpace(userId) || delta == 0)
         {
-            return;
+            return false;
         }
 
+        EnsureUser(userId, nickname);
         var now = DateTime.Now.ToString("O");
+
         using var conn = _db.Open();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
-            UPDATE users SET points = MAX(0, points + $delta), updated_at = $now WHERE user_id = $uid
-            """;
-        cmd.Parameters.AddWithValue("$uid", userId);
-        cmd.Parameters.AddWithValue("$delta", delta);
-        cmd.Parameters.AddWithValue("$now", now);
-        cmd.ExecuteNonQuery();
+        using var tx = conn.BeginTransaction();
+        try
+        {
+            int rows;
+            if (delta < 0)
+            {
+                var deduct = -delta;
+                using (var cmd = conn.CreateCommand())
+                {
+                    cmd.Transaction = tx;
+                    cmd.CommandText = """
+                        UPDATE users
+                        SET nickname = CASE WHEN length($nick) > 0 THEN $nick ELSE nickname END,
+                            points = points - $pts,
+                            updated_at = $now
+                        WHERE user_id = $uid AND points >= $pts
+                        """;
+                    cmd.Parameters.AddWithValue("$uid", userId);
+                    cmd.Parameters.AddWithValue("$nick", nickname);
+                    cmd.Parameters.AddWithValue("$pts", deduct);
+                    cmd.Parameters.AddWithValue("$now", now);
+                    rows = cmd.ExecuteNonQuery();
+                }
+
+                if (rows == 0)
+                {
+                    tx.Rollback();
+                    return false;
+                }
+            }
+            else
+            {
+                using (var cmd = conn.CreateCommand())
+                {
+                    cmd.Transaction = tx;
+                    cmd.CommandText = """
+                        UPDATE users
+                        SET nickname = CASE WHEN length($nick) > 0 THEN $nick ELSE nickname END,
+                            points = points + $pts,
+                            updated_at = $now
+                        WHERE user_id = $uid
+                        """;
+                    cmd.Parameters.AddWithValue("$uid", userId);
+                    cmd.Parameters.AddWithValue("$nick", nickname);
+                    cmd.Parameters.AddWithValue("$pts", delta);
+                    cmd.Parameters.AddWithValue("$now", now);
+                    rows = cmd.ExecuteNonQuery();
+                }
+
+                if (rows == 0)
+                {
+                    tx.Rollback();
+                    return false;
+                }
+            }
+
+            using (var readCmd = conn.CreateCommand())
+            {
+                readCmd.Transaction = tx;
+                readCmd.CommandText = "SELECT points FROM users WHERE user_id = $uid";
+                readCmd.Parameters.AddWithValue("$uid", userId);
+                balanceAfter = Convert.ToInt32(readCmd.ExecuteScalar() ?? 0);
+            }
+
+            _ledger.Insert(conn, tx, userId, delta, balanceAfter, type, reason, refId, operatorName: operatorName);
+            tx.Commit();
+            return true;
+        }
+        catch
+        {
+            try
+            {
+                tx.Rollback();
+            }
+            catch
+            {
+                // ignore rollback errors
+            }
+
+            throw;
+        }
     }
 
     public void SetLevel(string userId, int level)
@@ -388,6 +597,12 @@ public sealed class UserRepository
             lastRequest = dt;
         }
 
+        DateTime? lastInteraction = null;
+        if (reader.FieldCount > 10 && !reader.IsDBNull(10) && DateTime.TryParse(reader.GetString(10), out var updated))
+        {
+            lastInteraction = updated;
+        }
+
         return new UserProfile
         {
             UserId = reader.GetString(0),
@@ -399,7 +614,8 @@ public sealed class UserRepository
             RequestCount = reader.IsDBNull(6) ? 0 : reader.GetInt32(6),
             LastRequestAt = lastRequest,
             SongPermissionCredits = reader.FieldCount > 8 && !reader.IsDBNull(8) ? reader.GetInt32(8) : 0,
-            SongPermissionUnlimited = reader.FieldCount > 9 && !reader.IsDBNull(9) && reader.GetInt64(9) == 1
+            SongPermissionUnlimited = reader.FieldCount > 9 && !reader.IsDBNull(9) && reader.GetInt64(9) == 1,
+            LastInteractionAt = lastInteraction
         };
     }
 }

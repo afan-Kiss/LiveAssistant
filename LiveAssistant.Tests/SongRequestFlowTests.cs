@@ -22,6 +22,34 @@ public sealed class SongRequestFlowTests
     }
 
     [Fact]
+    public void ArtistNameMatcher_RejectsAmbiguousPartialMatch()
+    {
+        var candidates = new List<SongSearchCandidate>
+        {
+            new() { Artist = "王力宏", SongName = "花田错" },
+            new() { Artist = "王力宏/卢巧音", SongName = "花田错" }
+        };
+
+        Assert.Null(ArtistNameMatcher.Match("王力宏", candidates));
+        Assert.Equal("王力宏", ArtistNameMatcher.Match("王力宏", new List<SongSearchCandidate>
+        {
+            new() { Artist = "王力宏", SongName = "花田错" }
+        })!.Artist);
+    }
+
+    [Fact]
+    public void ArtistNameMatcher_RejectsSingleCharPartial()
+    {
+        var candidates = new List<SongSearchCandidate>
+        {
+            new() { Artist = "G.E.M.邓紫棋", SongName = "泡沫" },
+            new() { Artist = "田馥甄", SongName = "泡沫" }
+        };
+
+        Assert.Null(ArtistNameMatcher.Match("G", candidates));
+    }
+
+    [Fact]
     public void ConfirmParser_AcceptsCommonAnswers()
     {
         Assert.True(SongRequestConfirmParser.IsConfirm("确定"));

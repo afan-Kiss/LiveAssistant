@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using LiveAssistant.Utils;
 
 namespace LiveAssistant.Services;
 
@@ -170,10 +171,7 @@ public sealed class DanmakuDeduplicator
             }
 
             var json = JsonSerializer.Serialize(file, JsonOptions);
-            var tmp = _path + ".tmp";
-            File.WriteAllText(tmp, json);
-            File.Copy(tmp, _path, overwrite: true);
-            File.Delete(tmp);
+            AtomicFileWriter.WriteAllText(_path, json);
         }
         catch
         {

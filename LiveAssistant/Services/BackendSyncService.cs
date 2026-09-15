@@ -51,6 +51,11 @@ public sealed class BackendSyncService : IDisposable
         _log = log;
         var port = config.Settings.Admin.Port;
         _client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
+        var tunnelSecret = config.Settings.Admin.TunnelSecret;
+        if (!string.IsNullOrWhiteSpace(tunnelSecret))
+        {
+            _client.DefaultRequestHeaders.Add("X-LiveAssistant-Tunnel", tunnelSecret);
+        }
     }
 
     public void Start()

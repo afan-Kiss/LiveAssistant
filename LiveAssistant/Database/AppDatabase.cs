@@ -167,6 +167,17 @@ public sealed class AppDatabase : IDisposable
                 user_id TEXT PRIMARY KEY,
                 welcomed_at TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS points_ledger (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                delta INTEGER NOT NULL,
+                balance_after INTEGER NOT NULL,
+                type TEXT NOT NULL,
+                reason TEXT,
+                ref_id TEXT,
+                created_at TEXT NOT NULL
+            );
             """;
         cmd.ExecuteNonQuery();
     }
@@ -193,12 +204,15 @@ public sealed class AppDatabase : IDisposable
         EnsureColumn(conn, "gift_rules", "song_permission_count", "INTEGER DEFAULT 0");
         EnsureColumn(conn, "users", "song_permission_credits", "INTEGER DEFAULT 0");
         EnsureColumn(conn, "users", "song_permission_unlimited", "INTEGER DEFAULT 0");
+        EnsureColumn(conn, "points_ledger", "operator_name", "TEXT");
 
         using (var idxCmd = conn.CreateCommand())
         {
             idxCmd.CommandText = """
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_gift_events_event_id
-                ON gift_events(event_id) WHERE event_id IS NOT NULL AND event_id != ''
+                ON gift_events(event_id) WHERE event_id IS NOT NULL AND event_id != '';
+                CREATE INDEX IF NOT EXISTS idx_points_ledger_user_created
+                ON points_ledger(user_id, created_at DESC);
                 """;
             idxCmd.ExecuteNonQuery();
         }
@@ -220,26 +234,20 @@ public sealed class AppDatabase : IDisposable
         legacyCmd.ExecuteNonQuery();
     }
 
-    public int RecoverPlayingQueueItems()
+    /// <summary>
+    /// 启动时放弃未播放的点歌队列，避免重启后从头重播历史点歌。
+    /// </summary>
+    public int AbandonPendingQueueOnStartup()
     {
         using var conn = Open();
-        using var countCmd = conn.CreateCommand();
-        countCmd.CommandText = "SELECT COUNT(1) FROM queue_items WHERE status = 'playing'";
-        var count = Convert.ToInt32(countCmd.ExecuteScalar());
-        if (count <= 0)
-        {
-            return 0;
-        }
-
-        using var resetCmd = conn.CreateCommand();
-        resetCmd.CommandText = """
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
             UPDATE queue_items
-            SET status = 'waiting', updated_at = $updated
-            WHERE status = 'playing'
+            SET status = 'deleted', updated_at = $updated
+            WHERE status IN ('waiting', 'playing')
             """;
-        resetCmd.Parameters.AddWithValue("$updated", DateTime.Now.ToString("O"));
-        resetCmd.ExecuteNonQuery();
-        return count;
+        cmd.Parameters.AddWithValue("$updated", DateTime.Now.ToString("O"));
+        return cmd.ExecuteNonQuery();
     }
 
     private static void EnsureColumn(SqliteConnection conn, string table, string column, string definition)
@@ -264,6 +272,12 @@ public sealed class AppDatabase : IDisposable
     {
         var conn = new SqliteConnection(_connectionString);
         conn.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            PRAGMA busy_timeout = 5000;
+            PRAGMA journal_mode = WAL;
+            """;
+        cmd.ExecuteNonQuery();
         return conn;
     }
 

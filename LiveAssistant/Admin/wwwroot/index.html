@@ -6,7 +6,8 @@
   <title>24小时直播助手管理后台</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: "Segoe UI", sans-serif; background: #0f1419; color: #e7e9ea; }
+    body { font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; font-size: 14px; background: #0f1419; color: #e7e9ea; }
+    #appView { display: flex; flex-direction: column; min-height: 100vh; }
     .login-wrap { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
     .card { background: #1a1f26; border-radius: 12px; padding: 24px; width: 380px; }
     input, button, select, textarea { width: 100%; padding: 10px; margin: 8px 0; border-radius: 8px; border: 1px solid #38444d; background: #0f1419; color: #e7e9ea; }
@@ -18,18 +19,17 @@
     nav { display: flex; gap: 8px; padding: 12px 24px; border-bottom: 1px solid #38444d; flex-wrap: wrap; }
     nav button { width: auto; padding: 8px 14px; background: #38444d; }
     nav button.active { background: #1d9bf0; }
-    main { padding: 24px; max-width: 1200px; }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
     .stat { background: #1a1f26; padding: 14px; border-radius: 10px; }
     .stat label { color: #8b98a5; font-size: 12px; }
     .stat div { font-size: 16px; margin-top: 4px; word-break: break-all; }
     table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-    th, td { padding: 8px; border-bottom: 1px solid #38444d; text-align: left; font-size: 13px; }
+    th, td { padding: 10px 8px; border-bottom: 1px solid #38444d; text-align: left; font-size: 14px; }
     .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; align-items: center; }
     .row input, .row select { width: auto; min-width: 100px; margin: 4px 0; }
     h2 { margin-bottom: 10px; }
     textarea { min-height: 280px; font-family: monospace; font-size: 12px; }
-    .hint { color: #8b98a5; font-size: 12px; margin-bottom: 8px; }
+    .hint { color: #8b98a5; font-size: 13px; margin-bottom: 8px; line-height: 1.5; }
     .tpl-grid { display: grid; gap: 12px; }
     .tpl-item label { display: block; font-size: 12px; color: #8b98a5; margin-bottom: 4px; }
     .tpl-item textarea { min-height: 60px; }
@@ -82,6 +82,44 @@
     .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; background: #38444d; }
     .badge.ok { background: rgba(0,186,124,.2); color: #00ba7c; }
     .badge.warn { background: rgba(255,173,31,.15); color: #ffad1f; }
+    .health-section { margin-bottom: 16px; }
+    .health-section h3 { font-size: 14px; color: #8b98a5; margin-bottom: 8px; }
+    .dot-green { color: #00ba7c; }
+    .dot-red { color: #f4212e; }
+    .preview-box {
+      background: #0f1419; border: 1px solid #38444d; border-radius: 8px;
+      padding: 12px; margin-top: 10px; white-space: pre-wrap; word-break: break-word;
+    }
+    .user-detail-header { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
+    .user-detail-header .stat { flex: 1; min-width: 140px; }
+    .ledger-delta-pos { color: #00ba7c; }
+    .ledger-delta-neg { color: #f4212e; }
+    main { flex: 1; width: 100%; max-width: 1400px; margin: 0 auto; padding: 24px; box-sizing: border-box; }
+    .header-wrap { border-bottom: 1px solid #38444d; flex-shrink: 0; }
+    nav, .subnav { flex-shrink: 0; }
+    header { border-bottom: none; }
+    .emergency-bar {
+      display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+      padding: 8px 24px; background: rgba(244, 33, 46, 0.08);
+      border-bottom: 1px solid rgba(244, 33, 46, 0.25);
+    }
+    .emergency-bar label { font-size: 12px; color: #f4212e; font-weight: 700; margin-right: 4px; }
+    .emergency-bar button { width: auto; padding: 6px 12px; font-size: 13px; margin: 0; background: #702e2e; }
+    .emergency-bar button:hover { background: #8b3a3a; }
+    .emergency-bar button.on { background: #f4212e; }
+    .subnav { display: flex; gap: 6px; padding: 8px 24px; border-bottom: 1px solid #38444d; flex-wrap: wrap; background: #151a20; }
+    .subnav button { width: auto; padding: 6px 12px; font-size: 13px; background: #2a3440; margin: 0; }
+    .subnav button.active { background: #1d9bf0; }
+    .module-title { font-size: 13px; color: #8b98a5; margin-bottom: 12px; }
+    .level-table input[type="number"] { width: 72px; padding: 4px 6px; margin: 0; font-size: 13px; }
+    .level-table input[type="checkbox"] { width: auto; margin: 0; }
+    .ops-result-ok { color: #00ba7c; }
+    .ops-result-warn { color: #ffad1f; }
+    .ops-result-err { color: #f4212e; }
+    @media (max-width: 900px) {
+      main { padding: 16px; }
+      nav button, .subnav button { font-size: 12px; padding: 6px 10px; }
+    }
   </style>
 </head>
 <body>
@@ -100,14 +138,23 @@
   </div>
 
   <div id="appView" class="hidden">
-    <header>
-      <div class="left">
-        <h1>24小时直播助手管理后台</h1>
-        <span class="status-badge status-checking" data-runtime-status><span class="dot"></span>检测中</span>
+    <div class="header-wrap">
+      <header>
+        <div class="left">
+          <h1>24小时直播助手管理后台</h1>
+          <span class="status-badge status-checking" data-runtime-status><span class="dot"></span>检测中</span>
+        </div>
+        <button class="sec" style="width:auto" onclick="logout()">退出</button>
+      </header>
+      <div class="emergency-bar">
+        <label>紧急操作</label>
+        <button id="btnPauseInteraction" onclick="emergencyPauseInteraction()">暂停全部互动</button>
+        <button onclick="emergencyCloseSongRequest()">关闭点歌</button>
+        <button onclick="emergencyKugouRelogin()">酷狗重新登录</button>
       </div>
-      <button class="sec" style="width:auto" onclick="logout()">退出</button>
-    </header>
+    </div>
     <nav id="nav"></nav>
+    <div id="subnav" class="subnav hidden"></div>
     <main id="main"></main>
     <div id="userEditPanel" class="edit-panel hidden"></div>
   </div>
@@ -116,33 +163,98 @@
     const base = location.pathname.replace(/\/index\.html$/, '').replace(/\/$/, '') || '/diangexitong';
     let token = localStorage.getItem('adminToken') || '';
     let appOnline = false;
-    const tabs = [
-      { id: 'dashboard', label: '控制台' },
-      { id: 'queue', label: '点歌队列' },
-      { id: 'users', label: '用户管理' },
-      { id: 'templates', label: '回复模板' },
-      { id: 'random', label: '随机歌曲' },
-      { id: 'policy', label: '点歌设置' },
-      { id: 'gifts', label: '礼物积分' },
-      { id: 'levels', label: '等级权限' },
-      { id: 'keywords', label: '关键词回复' },
-      { id: 'welcome', label: '欢迎消息' },
-      { id: 'banvote', label: '禁言投票' },
-      { id: 'blacklist', label: '歌曲黑名单' },
-      { id: 'cleanup', label: '数据清理' }
+    const modules = [
+      { id: 'dashboard', label: '首页驾驶舱' },
+      { id: 'song-mgmt', label: '点歌管理', subs: [
+        { id: 'queue', label: '点歌队列' },
+        { id: 'policy', label: '点歌设置' },
+        { id: 'random', label: '随机歌曲' },
+        { id: 'levels', label: '等级权限' },
+        { id: 'blacklist', label: '歌曲黑名单' }
+      ]},
+      { id: 'users', label: '用户中心' },
+      { id: 'gifts', label: '礼物中心' },
+      { id: 'playback', label: '播放控制' },
+      { id: 'reply', label: '回复管理', subs: [
+        { id: 'templates', label: '回复模板' },
+        { id: 'keywords', label: '关键词回复' },
+        { id: 'welcome', label: '欢迎消息' }
+      ]},
+      { id: 'settings', label: '系统设置', subs: [
+        { id: 'banvote', label: '禁言投票' },
+        { id: 'cleanup', label: '数据清理' },
+        { id: 'opslog', label: '运营日志' }
+      ]}
     ];
     const tplKeys = [
-      { key: 'songRequestSuccess', label: '点歌成功' },
+      { key: 'songRequestAccepted', label: '点歌成功' },
       { key: 'songRequestRejected', label: '点歌失败' },
-      { key: 'songRequestQueued', label: '排队提示' },
+      { key: 'songRequestCooldown', label: '冷却提示' },
+      { key: 'songRequestConfirm', label: '确认点歌' },
+      { key: 'songRequestConfirmPoints', label: '确认点歌(积分)' },
+      { key: 'songNotFound', label: '歌曲未找到' },
+      { key: 'queueFull', label: '队列已满' },
       { key: 'pointsQuery', label: '查积分回复' },
       { key: 'giftThanks', label: '礼物感谢' },
       { key: 'welcome', label: '欢迎消息' },
-      { key: 'banVotePassed', label: '禁言结果' },
-      { key: 'songRequestCooldown', label: '冷却提示' },
-      { key: 'queueFull', label: '队列已满' }
+      { key: 'skipSongSuccess', label: '切歌成功' },
+      { key: 'skipSongInsufficientPoints', label: '切歌积分不足' }
     ];
-    let currentTab = 'dashboard';
+    let viewingUserId = '';
+    let currentModule = 'dashboard';
+    let currentSub = '';
+
+    let dashboardTimer = null;
+    let emergencyTimer = null;
+    let runtimeTimer = null;
+
+    function stopAppTimers() {
+      if (dashboardTimer != null) { clearInterval(dashboardTimer); dashboardTimer = null; }
+      if (emergencyTimer != null) { clearInterval(emergencyTimer); emergencyTimer = null; }
+      if (runtimeTimer != null) { clearInterval(runtimeTimer); runtimeTimer = null; }
+    }
+
+    function startRuntimeTimerOnly() {
+      if (runtimeTimer != null) return;
+      runtimeTimer = setInterval(refreshRuntimeStatus, 5000);
+    }
+    function startAppTimers() {
+      if (dashboardTimer != null && emergencyTimer != null && runtimeTimer != null) return;
+      stopAppTimers();
+      dashboardTimer = setInterval(() => {
+        if (currentModule === 'dashboard') renderDashboard();
+      }, 3000);
+      emergencyTimer = setInterval(refreshEmergencyState, 8000);
+      runtimeTimer = setInterval(refreshRuntimeStatus, 5000);
+    }
+
+    // 供审查/测试读取定时器状态（不影响业务）
+    window.__adminRefreshTimers = {
+      get dashboardTimer() { return dashboardTimer; },
+      get emergencyTimer() { return emergencyTimer; },
+      get runtimeTimer() { return runtimeTimer; },
+      startAppTimers,
+      stopAppTimers,
+      startRuntimeTimerOnly
+    };
+
+    function getModule(id) { return modules.find(m => m.id === id); }
+    function resolvePageId() {
+      const mod = getModule(currentModule);
+      if (mod?.subs?.length) return currentSub || mod.subs[0].id;
+      if (currentModule === 'users') return 'users';
+      if (currentModule === 'gifts') return 'gifts';
+      if (currentModule === 'playback') return 'playback';
+      return currentModule;
+    }
+    function pageLabel(pageId) {
+      for (const m of modules) {
+        if (m.id === pageId) return m.label;
+        const sub = m.subs?.find(s => s.id === pageId);
+        if (sub) return sub.label;
+      }
+      return '功能';
+    }
 
     function setRuntimeStatus(online) {
       appOnline = !!online;
@@ -193,15 +305,22 @@
           document.getElementById('loginView').classList.add('hidden');
           document.getElementById('appView').classList.remove('hidden');
           await refreshRuntimeStatus();
-          renderNav(); showTab('dashboard');
-          setInterval(() => currentTab === 'dashboard' && renderDashboard(), 3000);
+          renderNav();
+          showModule('dashboard');
+          refreshEmergencyState();
+          startAppTimers();
         } else err.textContent = data.message || '登录失败';
       } catch (_) {
         err.textContent = '登录失败，请稍后重试';
       }
     }
 
-    function logout() { token = ''; localStorage.removeItem('adminToken'); location.reload(); }
+    function logout() {
+      stopAppTimers();
+      token = '';
+      localStorage.removeItem('adminToken');
+      location.reload();
+    }
 
     function bindLoginKeys() {
       const onEnter = (e) => {
@@ -216,78 +335,232 @@
     bindLoginKeys();
 
     function renderNav() {
-      document.getElementById('nav').innerHTML = tabs.map(t =>
-        `<button class="${t.id === currentTab ? 'active' : ''}" onclick="showTab('${t.id}')">${t.label}</button>`).join('');
+      document.getElementById('nav').innerHTML = modules.map(m =>
+        `<button class="${m.id === currentModule ? 'active' : ''}" onclick="showModule('${m.id}')">${m.label}</button>`).join('');
+      renderSubNav();
     }
 
-    function showTab(id) { currentTab = id; renderNav(); renderTab(); }
+    function renderSubNav() {
+      const mod = getModule(currentModule);
+      const bar = document.getElementById('subnav');
+      if (!mod?.subs?.length) {
+        bar.classList.add('hidden');
+        bar.innerHTML = '';
+        return;
+      }
+      bar.classList.remove('hidden');
+      const activeSub = currentSub || mod.subs[0].id;
+      bar.innerHTML = mod.subs.map(s =>
+        `<button class="${s.id === activeSub ? 'active' : ''}" onclick="showSub('${s.id}')">${s.label}</button>`).join('');
+    }
+
+    function showModule(id) {
+      currentModule = id;
+      const mod = getModule(id);
+      currentSub = mod?.subs?.length ? mod.subs[0].id : '';
+      renderNav();
+      renderPage();
+    }
+
+    function showSub(id) {
+      currentSub = id;
+      renderSubNav();
+      renderPage();
+    }
+
+    function renderPage() { renderTab(); }
 
     async function renderTab() {
-      if (currentTab !== 'dashboard') {
+      const pageId = resolvePageId();
+      if (pageId !== 'dashboard' && pageId !== 'opslog') {
         await refreshRuntimeStatus();
         if (!appOnline) {
-          await renderOfflineHint(tabs.find(t => t.id === currentTab)?.label || '功能');
+          await renderOfflineHint(pageLabel(pageId));
           return;
         }
       }
-      const m = { dashboard: renderDashboard, queue: renderQueue, users: renderUsers, templates: renderTemplates,
-        random: renderRandom, gifts: renderGiftRules, policy: renderPolicy, levels: renderLevels,
-        keywords: renderKeywords, welcome: renderWelcome, banvote: renderBanVote, blacklist: renderBlacklist, cleanup: renderCleanup };
+      const m = {
+        dashboard: renderDashboard, queue: renderQueue, users: renderUsers,
+        templates: renderTemplates, random: renderRandom, gifts: renderGiftRules,
+        policy: renderPolicy, levels: renderLevels, keywords: renderKeywords,
+        welcome: renderWelcome, banvote: renderBanVote, blacklist: renderBlacklist,
+        cleanup: renderCleanup, playback: renderPlayback, opslog: renderOpsLog
+      };
       try {
-        await (m[currentTab] || renderDashboard)();
+        await (m[pageId] || renderDashboard)();
       } catch (_) {
-        await renderOfflineHint(tabs.find(t => t.id === currentTab)?.label || '功能');
+        await renderOfflineHint(pageLabel(pageId));
       }
+    }
+
+    function fmtTime(sec) {
+      sec = Math.max(0, sec || 0);
+      const m = Math.floor(sec / 60).toString().padStart(2, '0');
+      const s = (sec % 60).toString().padStart(2, '0');
+      return m + ':' + s;
+    }
+
+    function kugouStatusLabel(s) {
+      if (!s.kugouOnline) return '<span class="dot-red">🔴 离线</span>';
+      const st = (s.kugouLoginStatus || '').toLowerCase();
+      if (st.includes('未登录') || st.includes('失效')) return '<span class="dot-red">🔴 失效</span>';
+      if (s.kugouFullPlaybackAvailable) return '<span class="dot-green">🟢 完整播放可用</span>';
+      return '<span class="dot-yellow">🟡 已登录但完整版不可用</span>';
     }
 
     async function renderDashboard() {
       await refreshRuntimeStatus();
       if (!appOnline) {
         document.getElementById('main').innerHTML = `
-          <h2>直播状态</h2>
-          <div class="grid">
-            <div class="stat"><label>24小时直播助手</label><div style="color:#f4212e;font-weight:700">没运行</div></div>
+          <h2>首页驾驶舱</h2>
+          <div class="panel">
+            <div class="health-section">
+              <h3>服务状态</h3>
+              <div class="grid">
+                <div class="stat"><label>24小时直播助手</label><div style="color:#f4212e;font-weight:700">没运行</div></div>
+              </div>
+            </div>
           </div>
           <p class="hint" style="margin-top:16px">客户端未启动或未连上云端。启动 24小时直播助手 后会自动变为在线。</p>`;
         return;
       }
       try {
-        const s = await api('GET', '/api/status');
+        const [s, q] = await Promise.all([api('GET', '/api/status'), api('GET', '/api/queue')]);
+        const dy = s.douyinOnline ? '<span class="dot-green">🟢 在线</span>' : '<span class="dot-red">🔴 断开</span>';
+        const queuePreview = (q.waiting || []).slice(0, 5).map(i =>
+          `<tr><td>${i.index}</td><td>${esc(i.nickname)}</td><td>${esc(i.songName)}</td></tr>`).join('')
+          || '<tr><td colspan="3" class="hint">队列为空</td></tr>';
         document.getElementById('main').innerHTML = `
-        <h2>直播状态</h2>
-        <div class="grid">
-          <div class="stat"><label>24小时直播助手</label><div style="color:#00ba7c;font-weight:700">在线</div></div>
-          <div class="stat"><label>抖音连接</label><div>${s.douyinOnline ? '在线' : '离线'} ${s.danmakuConnection || ''}</div></div>
-          <div class="stat"><label>酷狗</label><div>${s.kugouOnline ? (s.kugouLoginStatus || '在线') : '离线'}${s.kugouLoginPageUrl ? ` <a href="${s.kugouLoginPageUrl}" target="_blank" rel="noopener">扫码登录</a>` : ''}</div></div>
-          <div class="stat"><label>主播</label><div>${s.roomOwnerNickname || '-'}</div></div>
-          <div class="stat"><label>抖音登录</label><div>${s.douyinLoginNickname || s.adminNickname || '-'}</div></div>
-          <div class="stat"><label>当前歌曲</label><div>${s.currentSong}</div></div>
-          <div class="stat"><label>播放模式</label><div>${s.playbackMode}</div></div>
-          <div class="stat"><label>队列数量</label><div>${s.queueCount}</div></div>
-          <div class="stat"><label>运行时间</label><div>${s.uptime}</div></div>
-          <div class="stat"><label>当前任务</label><div>${s.currentTask || '空闲'}</div></div>
-          <div class="stat"><label>最后错误</label><div>${s.lastError || '无'}</div></div>
-        </div>
-        <h2 style="margin-top:20px">播放控制</h2>
-        <p class="hint">所有操作经 CommandQueue → PlaybackCommandQueue</p>
-        <div class="row">
-          <button onclick="api('POST','/api/playback/play')">播放</button>
-          <button onclick="api('POST','/api/playback/pause')">暂停</button>
-          <button onclick="api('POST','/api/playback/resume')">恢复</button>
-          <button onclick="api('POST','/api/playback/skip')">下一首</button>
-          <button onclick="api('POST','/api/playback/previous')">上一首</button>
-          <button onclick="api('POST','/api/playback/random/on')">开启随机播放</button>
-          <button onclick="api('POST','/api/playback/random/off')">关闭随机播放</button>
-          <button onclick="api('POST','/api/playback/clear-queue')">清空队列</button>
+        <h2>首页驾驶舱</h2>
+        <div class="panel">
+          <div class="health-section">
+            <h3>服务状态</h3>
+            <div class="grid">
+              <div class="stat"><label>抖音连接</label><div>${dy} ${esc(s.danmakuConnection || '')}</div></div>
+              <div class="stat"><label>酷狗状态</label><div>${kugouStatusLabel(s)} ${esc(s.kugouLoginStatus || '')}${s.kugouFullPlaybackAvailable ? '' : (s.kugouFullPlaybackReason ? ' · ' + esc(s.kugouFullPlaybackReason) : '')}</div></div>
+              <div class="stat"><label>点歌开关</label><div>${s.songRequestEnabled ? '<span class="badge ok">开启</span>' : '<span class="badge warn">关闭</span>'}</div></div>
+              <div class="stat"><label>运行时长</label><div>${esc(s.uptime || '-')}</div></div>
+            </div>
+          </div>
+          <div class="health-section">
+            <h3>当前播放</h3>
+            <div class="grid">
+              <div class="stat"><label>歌曲</label><div>${esc(s.nowPlayingSong || s.currentSong || '-')}</div></div>
+              <div class="stat"><label>歌手</label><div>${esc(s.nowPlayingArtist || '-')}</div></div>
+              <div class="stat"><label>状态</label><div>${esc(s.playbackState || '-')}</div></div>
+              <div class="stat"><label>进度</label><div>${fmtTime(s.progressSec)} / ${fmtTime(s.durationSec)}</div></div>
+            </div>
+          </div>
+          <div class="health-section">
+            <h3>队列</h3>
+            <div class="grid">
+              <div class="stat"><label>等待歌曲</label><div><b>${s.waitingQueueCount ?? 0}</b></div></div>
+            </div>
+            <table style="margin-top:8px"><tr><th>序号</th><th>用户</th><th>歌曲</th></tr>${queuePreview}</table>
+            <p class="hint">完整队列管理请前往「点歌管理 → 点歌队列」</p>
+          </div>
+          <div class="health-section">
+            <h3>今日统计</h3>
+            <div class="grid">
+              <div class="stat"><label>播放歌曲</label><div>${s.todaySongsPlayed ?? 0}</div></div>
+              <div class="stat"><label>弹幕数量</label><div>${s.todayDanmakuCount ?? 0}</div></div>
+              <div class="stat"><label>礼物次数</label><div>${s.todayGiftCount ?? 0}</div></div>
+              <div class="stat"><label>点歌次数</label><div>${s.todaySongRequestCount ?? 0}</div></div>
+            </div>
+          </div>
+          <div class="health-section">
+            <h3>异常</h3>
+            <div class="grid">
+              <div class="stat"><label>近期错误(1h)</label><div style="color:${(s.recentErrorCount||0)>0?'#f4212e':'inherit'}">${s.recentErrorCount ?? 0}</div></div>
+              <div class="stat"><label>最后错误</label><div>${esc(s.lastError || '无')}</div></div>
+            </div>
+          </div>
         </div>`;
       } catch (_) {
         setRuntimeStatus(false);
-        document.getElementById('main').innerHTML = `
-          <h2>直播状态</h2>
-          <div class="grid">
-            <div class="stat"><label>24小时直播助手</label><div style="color:#f4212e;font-weight:700">没运行</div></div>
-          </div>`;
+        document.getElementById('main').innerHTML = `<h2>首页驾驶舱</h2><p class="hint" style="color:#f4212e">无法获取状态</p>`;
       }
+    }
+
+    async function renderPlayback() {
+      const s = await api('GET', '/api/status');
+      document.getElementById('main').innerHTML = `
+        <h2>播放控制</h2>
+        <div class="panel">
+          <div class="grid" style="margin-bottom:12px">
+            <div class="stat"><label>歌曲</label><div>${esc(s.nowPlayingSong || '-')}</div></div>
+            <div class="stat"><label>歌手</label><div>${esc(s.nowPlayingArtist || '-')}</div></div>
+            <div class="stat"><label>状态</label><div>${esc(s.playbackState || '-')}</div></div>
+            <div class="stat"><label>来源</label><div>${esc(s.playbackSource || '-')}</div></div>
+            <div class="stat"><label>剩余</label><div>${fmtTime(s.remainingSec)}</div></div>
+          </div>
+          <div class="row">
+            <button onclick="api('POST','/api/playback/skip').then(renderPlayback)">下一首</button>
+            <button onclick="api('POST','/api/playback/pause').then(renderPlayback)">暂停</button>
+            <button onclick="api('POST','/api/playback/resume').then(renderPlayback)">恢复</button>
+            <button onclick="kugouRelogin()">重新登录酷狗</button>
+            <button onclick="toggleSongRequest(${!s.songRequestEnabled})">${s.songRequestEnabled ? '关闭点歌' : '开启点歌'}</button>
+            <button class="sec" onclick="api('POST','/api/playback/clear-queue').then(renderPlayback)">清空队列</button>
+          </div>
+        </div>
+        <div class="panel">
+          <h3>随机补位</h3>
+          <div class="row">
+            <button class="sm" onclick="api('POST','/api/playback/random/on').then(()=>alert('已开启随机模式'))">开启随机</button>
+            <button class="sm" onclick="api('POST','/api/playback/random/off').then(()=>alert('已关闭随机模式'))">关闭随机</button>
+            <button class="sm" onclick="api('POST','/api/playback/random-fill',{enabled:true}).then(()=>alert('已触发随机补位'))">立即补位</button>
+          </div>
+        </div>`;
+    }
+
+    async function refreshEmergencyState() {
+      if (!token) return;
+      try {
+        const e = await api('GET', '/api/emergency');
+        const btn = document.getElementById('btnPauseInteraction');
+        if (btn) {
+          btn.textContent = e.pauseInteraction ? '恢复全部互动' : '暂停全部互动';
+          btn.classList.toggle('on', !!e.pauseInteraction);
+        }
+      } catch (_) {}
+    }
+
+    async function emergencyPauseInteraction() {
+      try {
+        const e = await api('GET', '/api/emergency');
+        await api('POST', '/api/emergency/pause-interaction', { enabled: !e.pauseInteraction });
+        await refreshEmergencyState();
+        alert(e.pauseInteraction ? '已恢复全部互动' : '已暂停全部互动');
+      } catch (_) { alert('操作失败，请确认客户端在线'); }
+    }
+
+    async function emergencyCloseSongRequest() {
+      if (!confirm('确定关闭点歌？观众将无法点歌。')) return;
+      try {
+        await api('POST', '/api/emergency/close-song-request');
+        alert('点歌已关闭');
+        if (currentModule === 'dashboard') renderDashboard();
+      } catch (_) { alert('操作失败'); }
+    }
+
+    async function emergencyKugouRelogin() {
+      try {
+        const res = await api('POST', '/api/emergency/kugou-relogin');
+        if (res.url) window.open(res.url, '_blank');
+        else alert('酷狗登录页不可用');
+      } catch (_) { alert('操作失败'); }
+    }
+
+    async function kugouRelogin() {
+      const s = await api('GET', '/api/status');
+      if (s.kugouLoginPageUrl) window.open(s.kugouLoginPageUrl, '_blank');
+      else alert('酷狗登录页不可用');
+    }
+
+    async function toggleSongRequest(enabled) {
+      await api('POST', '/api/song-request/toggle', { enabled });
+      if (currentModule === 'playback') renderPlayback();
+      else if (currentModule === 'dashboard') renderDashboard();
     }
 
     async function renderOfflineHint(title) {
@@ -356,6 +629,8 @@
         </div>
         <div class="form-grid" style="margin-top:8px">
           <div class="form-field"><label>或：增减积分（填此项则忽略上方积分框）</label><input id="ueDelta" type="number" placeholder="正数加/负数减"></div>
+          <div class="form-field"><label>修改人（积分变更必填）</label><input id="ueOperator" placeholder="管理员昵称"></div>
+          <div class="form-field"><label>修改原因（积分变更必填）</label><input id="ueReason" placeholder="如：活动补偿"></div>
         </div>
         <div class="edit-actions">
           <button onclick="saveUserEdit()">保存</button>
@@ -373,21 +648,34 @@
         status: document.getElementById('ueStatus').value
       };
       const delta = document.getElementById('ueDelta').value.trim();
+      const changingPoints = (delta !== '' && !Number.isNaN(+delta) && +delta !== 0)
+        || +document.getElementById('uePoints').value !== (window._usersCache[editingUserId]?.points ?? 0);
+      if (changingPoints) {
+        body.operator = document.getElementById('ueOperator').value.trim();
+        body.reason = document.getElementById('ueReason').value.trim();
+        if (!body.operator || !body.reason) {
+          alert('修改积分必须填写修改人和原因');
+          return;
+        }
+      }
       if (delta !== '' && !Number.isNaN(+delta) && +delta !== 0) {
         body.pointsDelta = +delta;
-      } else {
+      } else if (changingPoints) {
         body.points = +document.getElementById('uePoints').value;
       }
-      await api('PUT', '/api/users/' + encodeURIComponent(editingUserId), body);
+      const res = await api('PUT', '/api/users/' + encodeURIComponent(editingUserId), body);
+      if (res.ok === false) { alert(res.message || '保存失败'); return; }
       editingUserId = '';
       closeUserEdit();
-      loadUserTable();
+      if (viewingUserId) await showUserDetail(viewingUserId);
+      else loadUserTable();
     }
 
     async function renderUsers() {
+      viewingUserId = '';
       document.getElementById('main').innerHTML = `<h2>用户管理</h2>
         <div class="panel">
-          <p class="hint">可搜索昵称或用户ID，手动调整积分和等级。观众发弹幕 <b>查积分</b> 可查询自己的积分。</p>
+          <p class="hint">可搜索昵称或用户ID，查看详情与积分流水。修改积分必须填写修改人和原因。</p>
           <div class="toolbar">
             <input id="userSearch" placeholder="搜索昵称 / 用户ID" oninput="debounceUserSearch()">
             <button class="sm" onclick="renderUsers()">刷新</button>
@@ -395,6 +683,52 @@
         </div>
         <div id="userTableWrap"><p class="hint">加载中...</p></div>`;
       await loadUserTable();
+    }
+
+    async function showUserDetail(userId) {
+      viewingUserId = userId;
+      const [detail, ledger] = await Promise.all([
+        api('GET', '/api/users/' + encodeURIComponent(userId)),
+        api('GET', '/api/users/' + encodeURIComponent(userId) + '/points-ledger?limit=50')
+      ]);
+      const lastAt = detail.lastInteractionAt ? new Date(detail.lastInteractionAt).toLocaleString() : '-';
+      const ledgerRows = (ledger.entries || []).map(e => {
+        const cls = e.delta >= 0 ? 'ledger-delta-pos' : 'ledger-delta-neg';
+        const sign = e.delta >= 0 ? '+' + e.delta : e.delta;
+        return `<tr>
+          <td>${new Date(e.createdAt).toLocaleString()}</td>
+          <td class="${cls}"><b>${sign}</b></td>
+          <td>${esc(e.typeLabel || e.type)}</td>
+          <td>${esc(e.reason || '-')}</td>
+          <td>${esc(e.operatorName || '-')}</td>
+          <td>${e.balanceAfter}</td>
+        </tr>`;
+      }).join('') || '<tr><td colspan="6" class="hint">暂无流水</td></tr>';
+      document.getElementById('main').innerHTML = `
+        <div class="toolbar">
+          <button class="sec sm" onclick="renderUsers()">← 返回列表</button>
+        </div>
+        <h2>用户详情</h2>
+        <div class="user-detail-header">
+          <div class="stat"><label>昵称</label><div>${esc(detail.nickname)}</div></div>
+          <div class="stat"><label>用户ID</label><div style="font-size:12px">${esc(detail.userId)}</div></div>
+          <div class="stat"><label>等级</label><div>Lv${detail.level}</div></div>
+          <div class="stat"><label>当前积分</label><div><b>${detail.points}</b></div></div>
+          <div class="stat"><label>累计点歌</label><div>${detail.requestCount || 0}</div></div>
+          <div class="stat"><label>累计礼物积分</label><div>${detail.totalGiftPoints || 0}</div></div>
+          <div class="stat"><label>今日点歌</label><div>${detail.todayRequestCount || 0}</div></div>
+          <div class="stat"><label>最近互动</label><div>${lastAt}</div></div>
+        </div>
+        <div class="row">
+          <button class="sm" onclick="openUserEditById('${esc(userId)}')">编辑积分/等级</button>
+        </div>
+        <div class="panel" style="margin-top:16px">
+          <h3>积分流水</h3>
+          <table>
+            <tr><th>时间</th><th>变化</th><th>类型</th><th>原因</th><th>修改人</th><th>余额</th></tr>
+            ${ledgerRows}
+          </table>
+        </div>`;
     }
 
     function debounceUserSearch() {
@@ -419,6 +753,7 @@
           <td>Lv${u.level}</td><td>${u.requestCount || 0}</td>
           <td>${esc(u.role)}</td><td>${esc(u.status)}</td>
           <td>
+            <button class="sm" onclick="showUserDetail('${esc(u.userId)}')">详情</button>
             <button class="sm" onclick="openUserEditById('${esc(u.userId)}')">编辑</button>
             <button class="sm" onclick="blacklistUser('${esc(u.userId)}')">拉黑</button>
             <button class="sm" onclick="unblacklistUser('${esc(u.userId)}')">解除</button>
@@ -444,7 +779,17 @@
     async function renderTemplates() {
       const t = await api('GET', '/api/templates');
       document.getElementById('main').innerHTML = `<h2>回复模板</h2>
-        <p class="hint">变量: {name} {song} {queue} {gift} {score} — 保存到数据库，客户端自动同步</p>
+        <p class="hint">变量: {name} {song} {artist} {queue} {gift} {score} {cost} {reason} — 保存到数据库，客户端自动同步</p>
+        <div class="panel">
+          <h3>模板测试（不会发送弹幕）</h3>
+          <div class="form-grid">
+            <div class="form-field"><label>选择模板</label>
+              <select id="tplPreviewKey">${tplKeys.map(k => `<option value="${k.key}">${k.label}</option>`).join('')}</select></div>
+            <div class="form-field"><label>测试用户昵称</label><input id="tplTestUser" value="测试用户"></div>
+          </div>
+          <div class="row"><button class="sm" onclick="previewTemplate()">预览效果</button></div>
+          <div id="tplPreviewOut" class="preview-box hint">点击「预览效果」查看最终发送内容</div>
+        </div>
         <div class="tpl-grid" id="tplGrid"></div>
         <button onclick="saveTpl()">保存全部</button>`;
       const grid = document.getElementById('tplGrid');
@@ -454,6 +799,23 @@
         div.innerHTML = `<label>${label} (${key})</label><textarea id="tpl_${key}">${t[key] || ''}</textarea>`;
         grid.appendChild(div);
       });
+    }
+
+    async function previewTemplate() {
+      const key = document.getElementById('tplPreviewKey').value;
+      const testUser = document.getElementById('tplTestUser').value || '测试用户';
+      const content = document.getElementById('tpl_' + key)?.value;
+      const res = await api('POST', '/api/templates/preview', {
+        templateKey: key,
+        testUser,
+        templateContent: content || undefined
+      });
+      const out = document.getElementById('tplPreviewOut');
+      if (!res.ok) {
+        out.textContent = res.message || '预览失败';
+        return;
+      }
+      out.innerHTML = `<div class="hint">模板: ${esc(res.templateKey)} | 用户: ${esc(res.testUser)}</div><div style="margin-top:8px">${esc(res.previewText)}</div>`;
     }
 
     async function saveTpl() {
@@ -588,14 +950,36 @@
       policyDraft = { ...p };
       document.getElementById('main').innerHTML = `<h2>点歌设置</h2>
         <div class="panel">
+          <h3>点歌总开关</h3>
+          <p class="hint">关闭后观众点歌将回复暂停提示，保存后立即生效。</p>
+          <div class="row">
+            <label><input type="checkbox" id="pEnabled" ${p.requestEnabled !== false ? 'checked' : ''}> 开启点歌</label>
+          </div>
+          <div class="form-field" style="margin-top:10px">
+            <label>关闭时的回复</label>
+            <input id="pPausedMsg" value="${esc(p.pausedReplyMessage || '当前暂停点歌，请稍后再试')}">
+          </div>
+        </div>
+        <div class="panel">
+          <h3>用户限制</h3>
+          <div class="form-grid">
+            <div class="form-field"><label>每日最大点歌次数（0=不限）</label>
+              <input id="pDailyMax" type="number" value="${p.maxDailyRequestsPerUser || 0}"></div>
+            <div class="form-field"><label>点歌冷却时间（秒）</label>
+              <input id="pCooldown" type="number" value="${p.cooldownSeconds ?? 30}"></div>
+            <div class="form-field"><label>最大排队数量</label>
+              <input id="pMaxQueue" type="number" value="${p.maxQueueSize ?? 50}"></div>
+          </div>
+        </div>
+        <div class="panel">
           <h3>点歌模式</h3>
-          <p class="hint">选择观众如何获得点歌资格。保存后立即生效。</p>
+          <p class="hint">选择观众如何获得点歌资格。</p>
           <div class="card-grid">
             <div class="option-card" data-mode="Free" onclick="selectPolicyMode('Free')">
-              <h4>免费点歌</h4><p>所有观众均可免费点歌，仅受冷却时间和队列限制。</p>
+              <h4>免费</h4><p>所有观众均可免费点歌，仅受冷却时间和队列限制。</p>
             </div>
             <div class="option-card" data-mode="Points" onclick="selectPolicyMode('Points')">
-              <h4>积分点歌</h4><p>每次点歌消耗积分，积分通过送礼物获得。</p>
+              <h4>积分</h4><p>每次点歌消耗积分，积分通过送礼物获得。</p>
             </div>
             <div class="option-card" data-mode="GiftUnlock" onclick="selectPolicyMode('GiftUnlock')">
               <h4>礼物解锁</h4><p>送礼物累计达到门槛后解锁点歌权限。</p>
@@ -625,8 +1009,8 @@
         </div>
         <div class="panel">
           <h3>弹幕指令</h3>
-          <p class="hint">点歌流程：<b>点歌 歌名</b> → 多结果时选择歌手（最多展示3位）→ 回复 <b>确定</b> 后才入队。积分模式下会提示所需积分。<br>
-            其他指令：<b>查积分</b> / <b>切歌</b> / <b>下一首</b>。回复话术在「回复模板」中修改。</p>
+          <p class="hint">点歌流程：<b>点歌 歌名</b> → 多结果时选择歌手 → 回复 <b>确定</b> 后才入队。<br>
+            其他指令：<b>查积分</b> / <b>切歌</b> / <b>下一首</b>。</p>
         </div>`;
       selectPolicyMode(p.mode || 'Free');
     }
@@ -634,6 +1018,11 @@
     async function savePolicy() {
       const mode = policyDraft?.mode || 'Free';
       await api('PUT', '/api/song-request-policy', {
+        requestEnabled: document.getElementById('pEnabled').checked,
+        pausedReplyMessage: document.getElementById('pPausedMsg').value || '当前暂停点歌，请稍后再试',
+        maxDailyRequestsPerUser: +(document.getElementById('pDailyMax').value || 0),
+        cooldownSeconds: +(document.getElementById('pCooldown').value || 30),
+        maxQueueSize: +(document.getElementById('pMaxQueue').value || 50),
         mode,
         pointsCost: +(document.getElementById('pCost')?.value || 10),
         skipPointsCost: +(document.getElementById('pSkipCost')?.value || 20),
@@ -646,23 +1035,94 @@
 
     async function renderLevels() {
       const levels = await api('GET', '/api/level-permissions');
+      window._levelDraft = levels.map(l => ({ ...l }));
+      const rows = window._levelDraft.map((l, i) => `<tr>
+        <td><input class="inline-input" type="number" min="0" value="${l.level}" onchange="updateLevelField(${i},'level',+this.value)"></td>
+        <td><input class="inline-input" type="number" min="0" value="${l.minPoints ?? 0}" onchange="updateLevelField(${i},'minPoints',+this.value)"></td>
+        <td><select class="inline-input" style="width:96px" onchange="updateLevelField(${i},'canRequest',this.value==='1')">
+          <option value="1" ${l.canRequest !== false ? 'selected' : ''}>允许点歌</option>
+          <option value="0" ${l.canRequest === false ? 'selected' : ''}>禁止点歌</option>
+        </select></td>
+        <td><input class="inline-input" type="number" min="0" value="${l.cooldownSeconds ?? 0}" onchange="updateLevelField(${i},'cooldownSeconds',+this.value)"> 秒</td>
+        <td><input type="checkbox" ${(l.queuePriority ?? 0) > 0 ? 'checked' : ''} onchange="toggleQueuePriority(${i},this.checked)"> 允许插队</td>
+        <td><button class="sm sec" onclick="removeLevelRow(${i})">删除</button></td>
+      </tr>`).join('');
       document.getElementById('main').innerHTML = `<h2>等级权限</h2>
-        <p class="hint">影响点歌冷却、费用、插队优先级</p>
-        <textarea id="lvlJson">${JSON.stringify(levels, null, 2)}</textarea>
-        <button onclick="saveLevels()">保存</button>`;
+        <p class="hint">表格化配置各等级：积分要求、点歌限制、冷却时间、插队优先级（数值越大越优先）</p>
+        <div class="panel">
+          <table class="level-table">
+            <tr><th>等级</th><th>积分要求</th><th>点歌限制</th><th>冷却时间</th><th>插队权限</th><th></th></tr>
+            ${rows || '<tr><td colspan="6" class="hint">暂无等级，请添加</td></tr>'}
+          </table>
+          <div class="row" style="margin-top:12px">
+            <button class="sm sec" onclick="addLevelRow()">添加等级</button>
+            <button onclick="saveLevels()">保存全部</button>
+          </div>
+        </div>`;
+    }
+
+    function updateLevelField(index, field, value) {
+      if (!window._levelDraft?.[index]) return;
+      window._levelDraft[index][field] = value;
+    }
+
+    function toggleQueuePriority(index, enabled) {
+      if (!window._levelDraft?.[index]) return;
+      const cur = window._levelDraft[index].queuePriority ?? 0;
+      window._levelDraft[index].queuePriority = enabled ? (cur > 0 ? cur : 10) : 0;
+    }
+
+    function addLevelRow() {
+      window._levelDraft = window._levelDraft || [];
+      const nextLevel = window._levelDraft.length ? Math.max(...window._levelDraft.map(l => l.level)) + 1 : 0;
+      window._levelDraft.push({ level: nextLevel, minPoints: 0, canRequest: true, cooldownSeconds: 30, queuePriority: 0, pointsCostOverride: -1 });
+      renderLevels();
+    }
+
+    function removeLevelRow(index) {
+      window._levelDraft.splice(index, 1);
+      renderLevels();
     }
 
     async function saveLevels() {
-      await api('PUT', '/api/level-permissions', JSON.parse(document.getElementById('lvlJson').value));
+      const body = (window._levelDraft || []).map(l => ({
+        level: +l.level,
+        minPoints: +l.minPoints || 0,
+        canRequest: l.canRequest !== false,
+        cooldownSeconds: +l.cooldownSeconds || 0,
+        queuePriority: +l.queuePriority || 0,
+        pointsCostOverride: l.pointsCostOverride ?? -1
+      }));
+      await api('PUT', '/api/level-permissions', body);
       alert('已保存');
     }
 
+    async function renderOpsLog() {
+      const entries = await api('GET', '/api/ops-log?limit=100');
+      const rows = (entries || []).map(e => {
+        const cls = e.Level === 'ERROR' ? 'ops-result-err' : (e.Level === 'WARN' ? 'ops-result-warn' : 'ops-result-ok');
+        return `<tr>
+          <td>${esc(e.Time)}</td>
+          <td>${esc(e.Event)}</td>
+          <td class="${cls}">${esc(e.Result)}</td>
+        </tr>`;
+      }).join('') || '<tr><td colspan="3" class="hint">暂无日志</td></tr>';
+      document.getElementById('main').innerHTML = `<h2>运营日志</h2>
+        <p class="hint">面向运营人员，展示后台操作与关键业务事件。无需懂代码即可查看异常。</p>
+        <div class="panel">
+          <div class="toolbar">
+            <button class="sm" onclick="renderOpsLog()">刷新</button>
+          </div>
+          <table><tr><th>时间</th><th>事件</th><th>结果</th></tr>${rows}</table>
+        </div>`;
+    }
+
     async function renderKeywords() {
-      const [rules, enabled] = await Promise.all([
+      const [rules, syncConfig] = await Promise.all([
         api('GET', '/api/keywords'),
-        api('GET', '/api/song-request-policy').then(() => null)
+        api('GET', '/api/sync/config').catch(() => ({}))
       ]);
-      const kwEnabled = (await fetch(base + '/api/sync/config').then(r => r.json()).catch(() => ({}))).config?.keywordReply?.enabled;
+      const kwEnabled = syncConfig?.config?.keywordReply?.enabled;
       document.getElementById('main').innerHTML = `<h2>关键词回复</h2>
         <div class="row">
           <label>总开关</label>
@@ -781,11 +1241,14 @@
     if (token) {
       document.getElementById('loginView').classList.add('hidden');
       document.getElementById('appView').classList.remove('hidden');
-      renderNav(); showTab('dashboard');
-      setInterval(() => currentTab === 'dashboard' && renderDashboard(), 3000);
+      renderNav();
+      showModule('dashboard');
+      refreshEmergencyState();
+      startAppTimers();
+    } else {
+      startRuntimeTimerOnly();
+      refreshRuntimeStatus();
     }
-    refreshRuntimeStatus();
-    setInterval(refreshRuntimeStatus, 5000);
   </script>
 </body>
 </html>

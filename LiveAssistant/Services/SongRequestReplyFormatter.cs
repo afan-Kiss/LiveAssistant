@@ -21,10 +21,11 @@ public static class SongRequestReplyFormatter
         var ahead = Math.Max(0, entries[^1].AheadCount);
         if (entries.Count == 1)
         {
-            return $"点歌成功《{entries[0].SongName}》\n前面还有{ahead}首";
+            // 单行文案：侧车回显会去掉换行，带 \n 会触发「假成功」并重试导致重复弹幕
+            return $"点歌成功《{entries[0].SongName}》，前面还有{ahead}首";
         }
 
         var songs = string.Join("、", entries.Select(e => $"《{e.SongName}》"));
-        return $"点歌成功 {songs}\n前面还有{ahead}首";
+        return $"点歌成功 {songs}，前面还有{ahead}首";
     }
 }

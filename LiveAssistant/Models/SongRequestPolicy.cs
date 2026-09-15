@@ -11,6 +11,14 @@ public enum SongRequestPolicyMode
 
 public sealed class SongRequestPolicySettings
 {
+    /// <summary>点歌总开关；关闭时回复 PausedReplyMessage。</summary>
+    public bool RequestEnabled { get; set; } = true;
+
+    public string PausedReplyMessage { get; set; } = "当前暂停点歌，请稍后再试";
+
+    /// <summary>每用户每日最大点歌次数；0 表示不限制。</summary>
+    public int MaxDailyRequestsPerUser { get; set; }
+
     [JsonConverter(typeof(JsonStringEnumConverter))]
     public SongRequestPolicyMode Mode { get; set; } = SongRequestPolicyMode.Free;
     public int PointsCost { get; set; } = 10;

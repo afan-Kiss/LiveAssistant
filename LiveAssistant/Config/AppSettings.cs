@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using LiveAssistant.Models;
+using LiveAssistant.Utils;
 
 namespace LiveAssistant.Config;
 
@@ -30,7 +31,8 @@ public sealed class DouyinSettings
     public string BaseUrl { get; set; } = "http://127.0.0.1:4723";
     public string ApiToken { get; set; } = "";
     public string WebRid { get; set; } = "";
-    public int PollIntervalMs { get; set; } = 1500;
+    /// <summary>弹幕轮询间隔（毫秒）。越小越快，建议 500～1000，过低可能增加侧车压力。</summary>
+    public int PollIntervalMs { get; set; } = 800;
     public string DouyinExePath { get; set; } = "";
     /// <summary>Sidecar cookies.json 路径；空则按 exe 旁 data/cookies.json 推断。</summary>
     public string CookieStorePath { get; set; } = "";
@@ -70,7 +72,7 @@ public sealed class RandomPlaylistItem
 
 public sealed class RandomPlaylistSettings
 {
-    /// <summary>kugou=酷狗曲库随机搜歌；fixed=使用 items / 后台随机池。</summary>
+    /// <summary>kugou=酷狗每日推荐顺序播放；fixed=使用 items / 后台随机池。</summary>
     public string Source { get; set; } = "kugou";
 
     public int NoRepeatMinutes { get; set; } = 30;
@@ -274,17 +276,8 @@ public sealed class ConfigManager
 
     public ConfigManager()
     {
-        var baseDir = AppPaths.ExeDirectory;
-        _configDir = Path.Combine(baseDir, "Config");
-        _dataDir = Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "..", "data"));
-        if (!Directory.Exists(_dataDir))
-        {
-            _dataDir = Path.GetFullPath(Path.Combine(baseDir, "data"));
-        }
-        if (!Directory.Exists(_dataDir))
-        {
-            _dataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LiveAssistant", "data");
-        }
+        _configDir = AppPaths.ConfigDirectory;
+        _dataDir = AppPaths.ResolveDataDirectory();
         Directory.CreateDirectory(_dataDir);
     }
 
@@ -294,41 +287,94 @@ public sealed class ConfigManager
     {
         AppSettings? fileSettings = null;
         var appPath = Path.Combine(_configDir, "appsettings.json");
-        if (File.Exists(appPath))
+        fileSettings = TryLoadAppSettingsFile(appPath, "Config/appsettings.json");
+        if (fileSettings != null)
         {
-            var json = File.ReadAllText(appPath);
-            fileSettings = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions);
-            Settings = fileSettings ?? new AppSettings();
+            Settings = fileSettings;
         }
 
         var dataAppPath = Path.Combine(_dataDir, "appsettings.json");
-        if (File.Exists(dataAppPath))
+        var dataSettings = TryLoadAppSettingsFile(dataAppPath, "data/appsettings.json");
+        if (dataSettings != null)
         {
-            var json = File.ReadAllText(dataAppPath);
-            var dataSettings = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions);
-            if (dataSettings != null)
-            {
-                // 数据目录配置会整表覆盖；补回文件里的后台账号/云端隧道，避免被旧缓存清空
-                PreserveAdminRuntimeSettings(fileSettings, dataSettings);
-                Settings = dataSettings;
-            }
+            // 数据目录配置会整表覆盖；补回文件里的后台账号/云端隧道，避免被旧缓存清空
+            PreserveAdminRuntimeSettings(fileSettings, dataSettings);
+            Settings = dataSettings;
         }
 
         ApplyTunnelCredentialsFile();
         ResolveSidecarPaths();
 
-        var tplPath = Path.Combine(_configDir, "ReplyTemplates.json");
-        if (File.Exists(tplPath))
+        ReplyTemplates = TryLoadTemplatesFile(Path.Combine(_configDir, "ReplyTemplates.json")) ?? ReplyTemplates;
+        ReplyTemplates = TryLoadTemplatesFile(Path.Combine(_dataDir, "ReplyTemplates.json")) ?? ReplyTemplates;
+    }
+
+    private AppSettings? TryLoadAppSettingsFile(string path, string label)
+    {
+        if (!File.Exists(path))
         {
-            var json = File.ReadAllText(tplPath);
-            ReplyTemplates = JsonSerializer.Deserialize<Dictionary<string, string>>(json, JsonOptions) ?? new();
+            return null;
         }
 
-        var dataTplPath = Path.Combine(_dataDir, "ReplyTemplates.json");
-        if (File.Exists(dataTplPath))
+        var json = ReadConfigJson(path, label);
+        if (string.IsNullOrWhiteSpace(json))
         {
-            var json = File.ReadAllText(dataTplPath);
-            ReplyTemplates = JsonSerializer.Deserialize<Dictionary<string, string>>(json, JsonOptions) ?? ReplyTemplates;
+            return null;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<AppSettings>(json, JsonOptions);
+        }
+        catch (Exception ex)
+        {
+            StartupDiagnostics.Write($"配置解析失败 {label}: {ex.Message}");
+            return null;
+        }
+    }
+
+    private Dictionary<string, string>? TryLoadTemplatesFile(string path)
+    {
+        if (!File.Exists(path))
+        {
+            return null;
+        }
+
+        var json = ReadConfigJson(path, path);
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<Dictionary<string, string>>(json, JsonOptions);
+        }
+        catch (Exception ex)
+        {
+            StartupDiagnostics.Write($"模板解析失败 {path}: {ex.Message}");
+            return null;
+        }
+    }
+
+    private static string ReadConfigJson(string path, string label)
+    {
+        if (AtomicFileWriter.IsCorruptOrEmpty(path))
+        {
+            StartupDiagnostics.Write($"检测到损坏配置 {label}，尝试恢复");
+            var recovered = AtomicFileWriter.RecoverCorruptFile(path, msg => StartupDiagnostics.Write(msg));
+            return recovered ?? "";
+        }
+
+        try
+        {
+            return File.ReadAllText(path);
+        }
+        catch (Exception ex)
+        {
+            StartupDiagnostics.Write($"读取配置失败 {label}: {ex.Message}");
+            AtomicFileWriter.RecoverCorruptFile(path, msg => StartupDiagnostics.Write(msg));
+            return "";
         }
     }
 
@@ -461,10 +507,10 @@ public sealed class ConfigManager
     {
         Directory.CreateDirectory(_dataDir);
         var json = JsonSerializer.Serialize(Settings, JsonOptions);
-        File.WriteAllText(Path.Combine(_dataDir, "appsettings.json"), json);
+        AtomicFileWriter.WriteAllText(Path.Combine(_dataDir, "appsettings.json"), json);
 
         var tplJson = JsonSerializer.Serialize(ReplyTemplates, JsonOptions);
-        File.WriteAllText(Path.Combine(_dataDir, "ReplyTemplates.json"), tplJson);
+        AtomicFileWriter.WriteAllText(Path.Combine(_dataDir, "ReplyTemplates.json"), tplJson);
     }
 
     public void SetReplyTemplates(Dictionary<string, string> templates)

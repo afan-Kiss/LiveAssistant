@@ -110,7 +110,6 @@ public sealed class SettingsStore
 
     public SyncBundle BuildBundle()
     {
-        ApplyDbToMemory();
         var bundle = CreateBundleSnapshot();
         bundle.Version = ComputeVersion();
         return bundle;
@@ -118,6 +117,15 @@ public sealed class SettingsStore
 
     public void ApplyBundle(SyncBundle bundle, bool persistCache = true)
     {
+        if (persistCache)
+        {
+            var cached = _cache.Get("sync_version");
+            if (!string.IsNullOrEmpty(cached) && cached == bundle.Version)
+            {
+                return;
+            }
+        }
+
         _config.ApplySettings(bundle.Settings);
         _config.ApplyReplyTemplates(bundle.ReplyTemplates);
         _templates.SaveAll(bundle.ReplyTemplates);
@@ -227,40 +235,69 @@ public sealed class SettingsStore
 
     private void PersistRandomPool(List<RandomPoolItem> items)
     {
-        var existing = _randomPool.ListAll();
-        foreach (var e in existing)
-        {
-            _randomPool.Remove(e.Id);
-        }
-        foreach (var item in items)
-        {
-            _randomPool.Add(item);
-        }
+        UpsertById(
+            items,
+            _randomPool.ListAll(),
+            x => x.Id,
+            _randomPool.Update,
+            _randomPool.Add,
+            _randomPool.Remove);
     }
 
     private void PersistGiftRules(List<GiftRule> rules)
     {
-        var existing = _giftRules.ListAll();
-        foreach (var e in existing)
-        {
-            _giftRules.Remove(e.Id);
-        }
-        foreach (var rule in rules)
-        {
-            _giftRules.Add(rule);
-        }
+        UpsertById(
+            rules,
+            _giftRules.ListAll(),
+            x => x.Id,
+            _giftRules.Update,
+            _giftRules.Add,
+            _giftRules.Remove);
     }
 
     private void PersistKeywordReplies(List<KeywordReplyRule> rules)
     {
-        var existing = _keywordReplies.ListAll();
-        foreach (var e in existing)
+        UpsertById(
+            rules,
+            _keywordReplies.ListAll(),
+            x => x.Id,
+            _keywordReplies.Update,
+            _keywordReplies.Add,
+            _keywordReplies.Remove);
+    }
+
+    private static void UpsertById<T>(
+        List<T> incoming,
+        List<T> existing,
+        Func<T, long> idSelector,
+        Action<T> update,
+        Func<T, long> add,
+        Func<long, bool> remove)
+    {
+        var incomingIds = incoming
+            .Select(idSelector)
+            .Where(id => id > 0)
+            .ToHashSet();
+        foreach (var item in existing)
         {
-            _keywordReplies.Remove(e.Id);
+            var id = idSelector(item);
+            if (id > 0 && !incomingIds.Contains(id))
+            {
+                remove(id);
+            }
         }
-        foreach (var rule in rules)
+
+        foreach (var item in incoming)
         {
-            _keywordReplies.Add(rule);
+            var id = idSelector(item);
+            if (id > 0 && existing.Any(x => idSelector(x) == id))
+            {
+                update(item);
+            }
+            else
+            {
+                add(item);
+            }
         }
     }
 }

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace LiveAssistant.Models;
@@ -132,6 +133,15 @@ public sealed class DouyinRoomData
 
     [JsonPropertyName("user_count")]
     public int UserCount { get; set; }
+
+    [JsonPropertyName("raw")]
+    public DouyinRoomRawData? Raw { get; set; }
+}
+
+public sealed class DouyinRoomRawData
+{
+    [JsonPropertyName("cookie")]
+    public string? Cookie { get; set; }
 }
 
 public sealed class DouyinCookieStatusData
@@ -162,6 +172,51 @@ public sealed class KugouSearchData
 {
     [JsonPropertyName("歌单")]
     public List<KugouSongItem>? Songs { get; set; }
+
+    [JsonPropertyName("总数")]
+    public int Total { get; set; }
+}
+
+public sealed class MoeEverydayRecommendResponse
+{
+    [JsonPropertyName("status")]
+    public int Status { get; set; }
+
+    [JsonPropertyName("data")]
+    public MoeEverydayRecommendData? Data { get; set; }
+}
+
+public sealed class MoeEverydayRecommendData
+{
+    [JsonPropertyName("song_list")]
+    public List<MoeEverydaySong>? SongList { get; set; }
+}
+
+public sealed class MoeEverydaySong
+{
+    [JsonPropertyName("hash")]
+    public string? Hash { get; set; }
+
+    [JsonPropertyName("ori_audio_name")]
+    public string? OriAudioName { get; set; }
+
+    [JsonPropertyName("songname")]
+    public string? SongName { get; set; }
+
+    [JsonPropertyName("author_name")]
+    public string? AuthorName { get; set; }
+
+    [JsonPropertyName("album_id")]
+    public string? AlbumId { get; set; }
+
+    [JsonPropertyName("album_audio_id")]
+    public JsonElement AlbumAudioId { get; set; }
+
+    [JsonPropertyName("mixsongid")]
+    public JsonElement MixSongId { get; set; }
+
+    [JsonPropertyName("time_length")]
+    public int TimeLength { get; set; }
 }
 
 public sealed class KugouVipClaimData
@@ -182,16 +237,46 @@ public sealed class KugouVipClaimData
     public string? Message { get; set; }
 }
 
+public sealed class KugouSidecarSession
+{
+    [JsonPropertyName("token")]
+    public string? Token { get; set; }
+
+    [JsonPropertyName("userid")]
+    public string? UserId { get; set; }
+
+    [JsonPropertyName("vip_token")]
+    public string? VipToken { get; set; }
+
+    [JsonPropertyName("vip_type")]
+    public string? VipType { get; set; }
+
+    [JsonPropertyName("dfid")]
+    public string? Dfid { get; set; }
+
+    [JsonPropertyName("extra")]
+    public Dictionary<string, string>? Extra { get; set; }
+}
+
 public sealed class KugouLoginStatusData
 {
     [JsonPropertyName("logged_in")]
     public bool LoggedIn { get; set; }
+
+    [JsonPropertyName("userid")]
+    public string? UserId { get; set; }
 
     [JsonPropertyName("nickname")]
     public string? Nickname { get; set; }
 
     [JsonPropertyName("vip_label")]
     public string? VipLabel { get; set; }
+
+    [JsonPropertyName("vip_type")]
+    public string? VipType { get; set; }
+
+    [JsonPropertyName("has_vip_token")]
+    public bool HasVipToken { get; set; }
 
     [JsonPropertyName("vip_end")]
     public string? VipEnd { get; set; }

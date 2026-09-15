@@ -22,6 +22,7 @@ public sealed class SongRequestSessionStore
 
         lock (_gate)
         {
+            PurgeExpiredLocked();
             if (!_sessions.TryGetValue(userId, out var session))
             {
                 return null;
@@ -42,6 +43,7 @@ public sealed class SongRequestSessionStore
         session.ExpiresAt = DateTime.UtcNow.Add(_ttl);
         lock (_gate)
         {
+            PurgeExpiredLocked();
             _sessions[session.UserId] = session;
         }
     }
@@ -56,6 +58,15 @@ public sealed class SongRequestSessionStore
         lock (_gate)
         {
             _sessions.Remove(userId);
+            PurgeExpiredLocked();
+        }
+    }
+
+    private void PurgeExpiredLocked()
+    {
+        foreach (var key in _sessions.Where(kv => kv.Value.IsExpired).Select(kv => kv.Key).ToList())
+        {
+            _sessions.Remove(key);
         }
     }
 }

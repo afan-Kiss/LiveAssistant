@@ -13,6 +13,7 @@ public sealed class SongRequestPermissionService
     private readonly LevelPermissionRepository _levelPerms;
     private readonly UserLevelService _levels;
     private readonly GiftRepository? _gifts;
+    private readonly SongRequestControlService? _control;
 
     public SongRequestPermissionService(
         ConfigManager config,
@@ -21,7 +22,8 @@ public sealed class SongRequestPermissionService
         SongBlacklistService blacklist,
         LevelPermissionRepository levelPerms,
         UserLevelService levels,
-        GiftRepository? gifts = null)
+        GiftRepository? gifts = null,
+        SongRequestControlService? control = null)
     {
         _config = config;
         _users = users;
@@ -30,13 +32,15 @@ public sealed class SongRequestPermissionService
         _levelPerms = levelPerms;
         _levels = levels;
         _gifts = gifts;
+        _control = control;
     }
 
     public SongRequestPermissionResult Evaluate(DanmakuItem item)
     {
-        if (_config.Settings.Emergency.PauseSongRequest)
+        var gate = _control?.EvaluateGate(item);
+        if (gate != null)
         {
-            return Deny(null, item.Nickname, "点歌已暂停", "主播已暂停点歌");
+            return Deny(null, item.Nickname, gate.Reason, gate.Reason);
         }
 
         var user = _users.EnsureUser(item.UserId, item.Nickname);
@@ -170,7 +174,7 @@ public sealed class SongRequestPermissionService
         return SongRequestPermissionResult.Permit(user);
     }
 
-    public void RecordSuccessfulRequest(DanmakuItem item)
+    public bool RecordSuccessfulRequest(DanmakuItem item, long? queueItemId = null)
     {
         var user = _users.GetUser(item.UserId);
         if (user != null && !IsPrivileged(user.Role))
@@ -179,15 +183,19 @@ public sealed class SongRequestPermissionService
             {
                 _users.RecordSuccessfulRequest(item.UserId, item.Nickname);
                 _levels.RefreshUserLevel(item.UserId);
-                return;
+                return true;
             }
 
             if (user.SongPermissionCredits > 0)
             {
-                _users.ConsumeSongPermissionCredit(item.UserId);
+                if (!_users.ConsumeSongPermissionCredit(item.UserId))
+                {
+                    return false;
+                }
+
                 _users.RecordSuccessfulRequest(item.UserId, item.Nickname);
                 _levels.RefreshUserLevel(item.UserId);
-                return;
+                return true;
             }
 
             var policy = _config.Settings.SongRequestPolicy;
@@ -197,12 +205,23 @@ public sealed class SongRequestPermissionService
                 var cost = levelPerm?.PointsCostOverride >= 0
                     ? levelPerm.PointsCostOverride
                     : policy.PointsCost;
-                _users.DeductPoints(item.UserId, cost);
+                if (cost > 0 && !_users.TryDeductPoints(
+                        item.UserId,
+                        item.Nickname,
+                        cost,
+                        PointsTransactionType.SongRequest,
+                        "点歌扣积分",
+                        queueItemId?.ToString(),
+                        out _))
+                {
+                    return false;
+                }
             }
         }
 
         _users.RecordSuccessfulRequest(item.UserId, item.Nickname);
         _levels.RefreshUserLevel(item.UserId);
+        return true;
     }
 
     private int GetCooldownSeconds(UserProfile user, LevelPermission? levelPerm)

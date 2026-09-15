@@ -15,4 +15,9 @@ public interface ICookieProvider
 public interface IGiftRoomResolver
 {
     Task<string> ResolveRoomIdAsync(string webRid, CancellationToken ct = default);
+
+    /// <summary>最近一次 room/resolve 附带 Cookie（若有）。</summary>
+    string? ResolvedCookie { get; }
+
+    void ClearResolvedCookie();
 }

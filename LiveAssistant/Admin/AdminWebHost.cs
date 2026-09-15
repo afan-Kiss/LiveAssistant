@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using LiveAssistant.Config;
 using LiveAssistant.Models;
+using LiveAssistant.Services;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -53,7 +54,8 @@ public sealed class AdminWebHost : IDisposable
             });
         }
 
-        // 云端 health 探活用，无需登录
+        // 云端/前端 health 探活用，无需登录（index.html 请求 /health）
+        _app.MapGet("/health", () => Results.Json(new { ok = true, ts = DateTimeOffset.UtcNow.ToUnixTimeSeconds() }));
         _app.MapGet("/api/ping", () => Results.Json(new { ok = true, ts = DateTimeOffset.UtcNow.ToUnixTimeSeconds() }));
         MapRoutes(_app, pathBase);
         _ = _app.RunAsync();
@@ -83,12 +85,15 @@ public sealed class AdminWebHost : IDisposable
         {
             var status = _ctx.Host.GetRuntimeStatus();
             var nowPlaying = _ctx.Host.Queue.NowPlaying;
+            var track = _ctx.Host.PlaybackCommands.Playback.CurrentTrack;
             return Results.Json(new
             {
                 douyinOnline = status.DouyinOnline,
                 kugouOnline = status.KugouOnline,
                 kugouLoginStatus = status.KugouLoginStatus,
                 kugouVipLabel = status.KugouVipLabel,
+                kugouFullPlaybackAvailable = status.KugouFullPlaybackAvailable,
+                kugouFullPlaybackReason = status.KugouFullPlaybackReason,
                 kugouLoginPageUrl = status.KugouLoginPageUrl,
                 danmakuConnection = status.DanmakuConnection,
                 roomOwnerNickname = status.RoomOwnerNickname,
@@ -99,13 +104,26 @@ public sealed class AdminWebHost : IDisposable
                 currentSong = status.CurrentSong,
                 nowPlayingUser = nowPlaying?.Nickname,
                 nowPlayingSong = nowPlaying?.SongName,
+                nowPlayingArtist = track?.Artist ?? nowPlaying?.Artist,
                 playbackMode = status.PlaybackMode,
+                playbackState = status.PlaybackState,
+                playbackSource = status.PlaybackSource,
+                progressSec = status.ProgressSec,
+                durationSec = status.DurationSec,
+                remainingSec = status.RemainingSec,
+                songRequestEnabled = status.SongRequestEnabled,
                 randomFillEnabled = _ctx.Config.Settings.Playback.RandomFillEnabled,
                 queueCount = status.QueueCount,
+                waitingQueueCount = status.WaitingQueueCount,
                 uptime = status.Uptime.ToString(),
                 startedAt = status.StartedAt.ToString("O"),
                 currentTask = status.CurrentTask,
-                lastError = status.LastError
+                lastError = status.LastError,
+                todaySongsPlayed = status.TodaySongsPlayed,
+                todayDanmakuCount = status.TodayDanmakuCount,
+                todayGiftCount = status.TodayGiftCount,
+                todaySongRequestCount = status.TodaySongRequestCount,
+                recentErrorCount = status.RecentErrorCount
             });
         }));
 
@@ -215,14 +233,73 @@ public sealed class AdminWebHost : IDisposable
         }));
 
         app.MapGet("/api/song-request-policy", (HttpContext http) => Auth(http, () =>
-            Results.Json(_ctx.Config.Settings.SongRequestPolicy)));
+            Results.Json(_ctx.SongRequestControl.GetSettings())));
 
-        app.MapPut("/api/song-request-policy", (SongRequestPolicySettings body, HttpContext http) => Auth(http, () =>
+        app.MapPut("/api/song-request-policy", (SongRequestControlSettings body, HttpContext http) => Auth(http, () =>
         {
-            _ctx.Config.Settings.SongRequestPolicy = body;
-            _ctx.Config.Save();
+            _ctx.SongRequestControl.SaveSettings(body);
             _ctx.Commands.Enqueue(AdminCommandType.ReloadConfig);
             return Results.Json(new { ok = true });
+        }));
+
+        app.MapGet("/api/song-request-control", (HttpContext http) => Auth(http, () =>
+            Results.Json(_ctx.SongRequestControl.GetSettings())));
+
+        app.MapPut("/api/song-request-control", (SongRequestControlSettings body, HttpContext http) => Auth(http, () =>
+        {
+            _ctx.SongRequestControl.SaveSettings(body);
+            _ctx.Commands.Enqueue(AdminCommandType.ReloadConfig);
+            return Results.Json(new { ok = true });
+        }));
+
+        app.MapPost("/api/song-request/toggle", (EnabledRequest req, HttpContext http) => Auth(http, () =>
+        {
+            _ctx.SongRequestControl.SetRequestEnabled(req.Enabled);
+            _ctx.Commands.Enqueue(AdminCommandType.ReloadConfig);
+            return Results.Json(new { ok = true, enabled = req.Enabled });
+        }));
+
+        app.MapGet("/api/emergency", (HttpContext http) => Auth(http, () =>
+        {
+            var emergency = _ctx.Config.Settings.Emergency;
+            return Results.Json(new
+            {
+                pauseInteraction = emergency.PauseInteraction,
+                pauseSongRequest = emergency.PauseSongRequest,
+                songRequestEnabled = _ctx.SongRequestControl.IsRequestEnabled
+            });
+        }));
+
+        app.MapPost("/api/emergency/pause-interaction", (EnabledRequest req, HttpContext http) => Auth(http, () =>
+        {
+            _ctx.Config.Settings.Emergency.PauseInteraction = req.Enabled;
+            _ctx.Config.Save();
+            _ctx.Commands.Enqueue(AdminCommandType.ReloadConfig);
+            _ctx.Log.AdminInfo($"紧急操作: 暂停全部互动={(req.Enabled ? "开启" : "关闭")}");
+            return Results.Json(new { ok = true, pauseInteraction = req.Enabled });
+        }));
+
+        app.MapPost("/api/emergency/close-song-request", (HttpContext http) => Auth(http, () =>
+        {
+            _ctx.SongRequestControl.SetRequestEnabled(false);
+            _ctx.Commands.Enqueue(AdminCommandType.ReloadConfig);
+            _ctx.Log.AdminInfo("紧急操作: 关闭点歌");
+            return Results.Json(new { ok = true, enabled = false });
+        }));
+
+        app.MapPost("/api/emergency/kugou-relogin", (HttpContext http) => Auth(http, () =>
+        {
+            var status = _ctx.Host.GetRuntimeStatus();
+            _ctx.Log.AdminInfo("紧急操作: 酷狗重新登录");
+            return Results.Json(new { ok = true, url = status.KugouLoginPageUrl });
+        }));
+
+        app.MapGet("/api/ops-log", (HttpContext http, int? limit) => Auth(http, () =>
+        {
+            var take = Math.Clamp(limit ?? 100, 1, 500);
+            var entries = _ctx.Log.ReadRecentOpsEntries(take)
+                .Select(e => new { e.Time, e.Event, e.Result, e.Level });
+            return Results.Json(entries);
         }));
 
         app.MapGet("/api/level-permissions", (HttpContext http) => Auth(http, () =>
@@ -249,10 +326,42 @@ public sealed class AdminWebHost : IDisposable
             return Results.Json(users);
         }));
 
+        app.MapGet("/api/users/{userId}", (string userId, HttpContext http) => Auth(http, () =>
+        {
+            var detail = _ctx.UserDetail.GetDetail(userId);
+            return detail == null ? Results.NotFound() : Results.Json(detail);
+        }));
+
         app.MapPut("/api/users/{userId}", (string userId, UserUpdateRequest req, HttpContext http) => Auth(http, () =>
         {
-            if (req.Points.HasValue) _ctx.Users.SetPoints(userId, req.Points.Value);
-            if (req.PointsDelta.HasValue) _ctx.Users.AdjustPoints(userId, req.PointsDelta.Value);
+            if (req.Points.HasValue || req.PointsDelta.HasValue)
+            {
+                if (string.IsNullOrWhiteSpace(req.Reason))
+                {
+                    return Results.Json(new { ok = false, message = "修改积分必须填写原因" });
+                }
+
+                if (string.IsNullOrWhiteSpace(req.Operator))
+                {
+                    return Results.Json(new { ok = false, message = "修改积分必须填写修改人" });
+                }
+
+                if (req.Points.HasValue)
+                {
+                    if (!_ctx.Users.TryAdminSetPoints(userId, req.Points.Value, req.Reason!, req.Operator!, out var err))
+                    {
+                        return Results.Json(new { ok = false, message = err ?? "设置积分失败" });
+                    }
+                }
+                else if (req.PointsDelta.HasValue)
+                {
+                    if (!_ctx.Users.TryAdminAdjustPoints(userId, req.PointsDelta.Value, req.Reason!, req.Operator!, out var err))
+                    {
+                        return Results.Json(new { ok = false, message = err ?? "调整积分失败" });
+                    }
+                }
+            }
+
             if (req.Level.HasValue) _ctx.Users.SetLevel(userId, req.Level.Value);
             if (!string.IsNullOrWhiteSpace(req.Role) && Enum.TryParse<UserRole>(req.Role, true, out var role))
             {
@@ -264,9 +373,40 @@ public sealed class AdminWebHost : IDisposable
             }
             if (!string.IsNullOrWhiteSpace(req.Status) && Enum.TryParse<UserStatus>(req.Status, true, out var status))
                 _ctx.Users.SetStatus(userId, status);
-            _ctx.Log.AdminInfo($"用户更新 userId={userId} role={req.Role} points={req.Points} delta={req.PointsDelta}");
+            _ctx.Log.AdminInfo($"用户更新 userId={userId} role={req.Role} points={req.Points} delta={req.PointsDelta} op={req.Operator}");
             _ctx.Commands.Enqueue(AdminCommandType.ReloadConfig);
             return Results.Json(new { ok = true });
+        }));
+
+        app.MapGet("/api/users/{userId}/points-ledger", (string userId, HttpContext http, int? limit, int? offset) =>
+            Auth(http, () =>
+            {
+                var take = Math.Clamp(limit ?? 50, 1, 200);
+                var skip = Math.Max(0, offset ?? 0);
+                var entries = _ctx.PointsLedger.ListByUser(userId, take, skip);
+                return Results.Json(new
+                {
+                    userId,
+                    total = _ctx.PointsLedger.CountByUser(userId),
+                    entries = entries.Select(e => new
+                    {
+                        e.Id,
+                        e.Delta,
+                        e.BalanceAfter,
+                        e.Type,
+                        typeLabel = _ctx.PointsLedger.FormatTypeLabel(e.Type),
+                        e.Reason,
+                        operatorName = e.OperatorName,
+                        refId = e.RefId,
+                        createdAt = e.CreatedAt.ToString("O")
+                    })
+                });
+            }));
+
+        app.MapPost("/api/templates/preview", (TemplatePreviewRequest req, HttpContext http) => Auth(http, () =>
+        {
+            var result = _ctx.TemplatePreview.Preview(req.TemplateKey ?? "", req.TestUser ?? "测试用户", req.TemplateContent);
+            return Results.Json(result);
         }));
 
         app.MapGet("/api/gifts", (HttpContext http) => Auth(http, () =>
@@ -359,20 +499,20 @@ public sealed class AdminWebHost : IDisposable
             return Results.Json(new { ok = true });
         }));
 
-        app.MapGet("/api/sync/bundle", (HttpContext http) =>
-            Results.Json(_ctx.Settings.BuildBundle()));
+        app.MapGet("/api/sync/bundle", (HttpContext http) => Auth(http, () =>
+            Results.Json(_ctx.Settings.BuildBundle())));
 
-        app.MapGet("/api/sync/commands", (HttpContext http) =>
+        app.MapGet("/api/sync/commands", (HttpContext http) => Auth(http, () =>
         {
             var cmds = _ctx.Commands.DequeuePending().Select(c => new { type = c.Type.ToString(), payload = c.Payload });
             return Results.Json(cmds);
-        });
+        }));
 
-        app.MapGet("/api/sync/config", (HttpContext http) =>
+        app.MapGet("/api/sync/config", (HttpContext http) => Auth(http, () =>
         {
             var bundle = _ctx.Settings.BuildBundle();
             return Results.Json(new { hash = bundle.Version, config = bundle.Settings });
-        });
+        }));
 
         app.MapGet("/", () => Results.Redirect($"{pathBase}/index.html"));
     }
@@ -450,6 +590,8 @@ public sealed class AdminWebHost : IDisposable
 
     private sealed record LoginRequest(string Username, string Password);
     private sealed record RandomToggleRequest(bool Enabled);
-    private sealed record UserUpdateRequest(int? Points, int? PointsDelta, int? Level, string? Role, string? Status);
+    private sealed record UserUpdateRequest(
+        int? Points, int? PointsDelta, int? Level, string? Role, string? Status, string? Reason, string? Operator);
     private sealed record EnabledRequest(bool Enabled);
+    private sealed record TemplatePreviewRequest(string? TemplateKey, string? TestUser, string? TemplateContent);
 }

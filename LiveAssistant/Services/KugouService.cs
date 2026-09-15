@@ -1,6 +1,7 @@
 using LiveAssistant.Config;
 using LiveAssistant.Models;
 using LiveAssistant.Utils;
+using System.Text.Json;
 
 namespace LiveAssistant.Services;
 
@@ -9,22 +10,34 @@ public sealed class KugouService
     private readonly KugouSettings _settings;
     private readonly LogService _log;
     private readonly HttpClient _client;
+    private readonly string? _sessionFilePath;
     private DateTime _loginCheckedAt = DateTime.MinValue;
     private bool _lastLoggedIn;
     private KugouLoginSnapshot _loginSnapshot = new();
+    private readonly SemaphoreSlim _loginRefreshLock = new(1, 1);
+    private Task<KugouLoginSnapshot>? _loginRefreshTask;
+    private readonly SemaphoreSlim _vipClaimLock = new(1, 1);
     private string? _lastVipClaimDate;
+    private readonly SemaphoreSlim _dailyRecommendLock = new(1, 1);
+    private List<KugouSongItem> _dailyRecommendPlaylist = new();
+    private int _dailyRecommendIndex;
+    private string? _dailyRecommendSessionUserId;
 
-    public KugouService(KugouSettings settings, LogService log, HttpClient? client = null)
+    public KugouService(KugouSettings settings, LogService log, HttpClient? client = null, string? dataDirectory = null)
     {
         _settings = settings;
         _log = log;
         _client = client ?? HttpJson.CreateClient(settings.BaseUrl, settings.ApiKey, "X-API-Key");
         _client.Timeout = TimeSpan.FromSeconds(45);
+        if (!string.IsNullOrWhiteSpace(dataDirectory))
+        {
+            _sessionFilePath = Path.Combine(dataDirectory, "session.json");
+        }
     }
 
     public KugouLoginSnapshot LoginSnapshot => _loginSnapshot;
 
-    public string LoginPageUrl => $"{_settings.BaseUrl.TrimEnd('/')}/api/v1/login/page";
+    public string LoginPageUrl => $"{_settings.BaseUrl.TrimEnd('/')}/login";
 
     public Task<bool> HealthCheckAsync(CancellationToken ct = default)
         => SafeAsync("health", async () =>
@@ -53,17 +66,57 @@ public sealed class KugouService
             return songs.Count == 0 ? null : songs[0];
         }, null);
 
-    public async Task<KugouLoginSnapshot> RefreshLoginStatusAsync(CancellationToken ct = default)
+    public Task<KugouLoginSnapshot> RefreshLoginStatusAsync(CancellationToken ct = default)
+    {
+        var inFlight = _loginRefreshTask;
+        if (inFlight != null && !inFlight.IsCompleted)
+        {
+            return AwaitLoginRefresh(inFlight, ct);
+        }
+
+        return StartOrJoinLoginRefreshAsync(ct);
+    }
+
+    private static async Task<KugouLoginSnapshot> AwaitLoginRefresh(Task<KugouLoginSnapshot> task, CancellationToken ct)
+        => await task.WaitAsync(ct);
+
+    private async Task<KugouLoginSnapshot> StartOrJoinLoginRefreshAsync(CancellationToken ct)
+    {
+        Task<KugouLoginSnapshot> task;
+        await _loginRefreshLock.WaitAsync(ct);
+        try
+        {
+            if (_loginRefreshTask == null || _loginRefreshTask.IsCompleted)
+            {
+                _loginRefreshTask = Task.Run(async () => await FetchLoginStatusAsync(ct), ct);
+            }
+
+            task = _loginRefreshTask;
+        }
+        finally
+        {
+            _loginRefreshLock.Release();
+        }
+
+        return await task.WaitAsync(ct);
+    }
+
+    private async Task<KugouLoginSnapshot> FetchLoginStatusAsync(CancellationToken ct)
     {
         var status = await HttpJson.GetAsync<KugouResponse<KugouLoginStatusData>>(
             _client, "api/v1/login/status?refresh=1", ct);
         _loginCheckedAt = DateTime.UtcNow;
+        var wasLoggedIn = _lastLoggedIn;
+        var previousUserId = _loginSnapshot.UserId;
         _lastLoggedIn = status?.Code == 0 && status.Data?.LoggedIn == true;
         _loginSnapshot = new KugouLoginSnapshot
         {
             LoggedIn = _lastLoggedIn,
+            UserId = status?.Data?.UserId?.Trim() ?? "",
             Nickname = status?.Data?.Nickname?.Trim() ?? "",
             VipLabel = status?.Data?.VipLabel?.Trim() ?? "",
+            VipType = status?.Data?.VipType?.Trim() ?? "",
+            HasVipToken = status?.Data?.HasVipToken == true,
             VipEnd = status?.Data?.VipEnd?.Trim() ?? ""
         };
 
@@ -78,6 +131,12 @@ public sealed class KugouService
             _log.KugouInfo($"酷狗登录: {label}");
         }
 
+        var userChanged = !string.Equals(previousUserId, _loginSnapshot.UserId, StringComparison.Ordinal);
+        if (!wasLoggedIn && _lastLoggedIn || userChanged || (!_lastLoggedIn && wasLoggedIn))
+        {
+            InvalidateDailyRecommendCache();
+        }
+
         return _loginSnapshot;
     }
 
@@ -87,24 +146,32 @@ public sealed class KugouService
 
     public async Task<KugouVipClaimResult?> TryAutoClaimVipAsync(bool force, CancellationToken ct = default)
     {
-        if (!_settings.AutoClaimVip || !_lastLoggedIn)
+        await _vipClaimLock.WaitAsync(ct);
+        try
         {
-            return null;
-        }
+            if (!_settings.AutoClaimVip || !_lastLoggedIn)
+            {
+                return null;
+            }
 
-        var today = DateTime.Now.ToString("yyyy-MM-dd");
-        if (!force && _lastVipClaimDate == today)
+            var today = DateTime.Now.ToString("yyyy-MM-dd");
+            if (!force && _lastVipClaimDate == today)
+            {
+                return null;
+            }
+
+            var result = await ClaimDailyVipAsync(ct);
+            if (result != null && !force)
+            {
+                _lastVipClaimDate = today;
+            }
+
+            return result;
+        }
+        finally
         {
-            return null;
+            _vipClaimLock.Release();
         }
-
-        var result = await ClaimDailyVipAsync(ct);
-        if (result != null && !force)
-        {
-            _lastVipClaimDate = today;
-        }
-
-        return result;
     }
 
     public Task<KugouVipClaimResult?> ClaimDailyVipAsync(CancellationToken ct = default)
@@ -139,52 +206,388 @@ public sealed class KugouService
             };
         }, null);
 
-    /// <summary>从酷狗曲库随机搜歌并取可播放链接。</summary>
+    /// <summary>从酷狗「每日推荐」歌单顺序取下一首可播放曲目；播完歌单后自动重新拉取。</summary>
     public async Task<TrackInfo?> PickRandomTrackAsync(
         Func<string?, string?, bool> wasRecentlyPlayed,
         CancellationToken ct = default)
     {
-        var rng = Random.Shared;
-        var seeds = KugouRandomCatalog.SearchSeeds;
-
-        for (var attempt = 0; attempt < 12; attempt++)
+        _ = wasRecentlyPlayed;
+        if (_settings.RequireFullPlayback)
         {
-            var keyword = seeds[rng.Next(seeds.Length)];
-            var page = rng.Next(1, 6);
-            var songs = await SearchAsync(keyword, page, 30, ct);
-            if (songs.Count == 0)
+            await EnsureLoginReadyAsync(forceRefresh: false, ct);
+            if (!_lastLoggedIn)
             {
-                continue;
+                _log.KugouWarn("每日推荐完整播放需要先扫码登录酷狗");
+                return null;
             }
 
-            var order = Enumerable.Range(0, songs.Count).OrderBy(_ => rng.Next()).ToList();
-            foreach (var index in order)
+            await TryAutoClaimVipAsync(ct);
+        }
+
+        const int maxRefreshAttempts = 3;
+
+        for (var refreshAttempt = 0; refreshAttempt < maxRefreshAttempts; refreshAttempt++)
+        {
+            var triedInBatch = 0;
+            while (triedInBatch < 200)
             {
-                var song = songs[index];
-                var hash = song.Hash?.Trim() ?? "";
-                var songId = FirstNonEmpty(song.SongId, song.Id);
-                var songName = song.SongName?.Trim() ?? "";
-
-                if (string.IsNullOrWhiteSpace(hash) && string.IsNullOrWhiteSpace(songName))
+                var song = await TakeNextDailyRecommendSongAsync(ct);
+                if (song == null)
                 {
-                    continue;
+                    break;
                 }
 
-                if (wasRecentlyPlayed(songId, hash))
-                {
-                    continue;
-                }
-
-                var track = await ResolveFromSongAsync(song, keyword, isRandom: true, requester: "随机", ct);
-                if (track != null)
+                triedInBatch++;
+                var keyword = BuildDailyRecommendKeyword(song);
+                var track = await ResolveDailyRecommendSongAsync(song, keyword, ct);
+                if (track != null && IsAcceptableForPlayback(track))
                 {
                     return track;
                 }
             }
+
+            if (triedInBatch == 0)
+            {
+                _log.KugouWarn("每日推荐歌单为空");
+                return null;
+            }
+
+            await ResetDailyRecommendPlaylistAsync(ct);
+            _log.KugouWarn("每日推荐歌单内歌曲均无法播放，正在重新获取");
         }
 
-        _log.KugouWarn("酷狗曲库随机取歌失败，已重试多次");
+        _log.KugouWarn("每日推荐取歌失败，已重试多次");
         return null;
+    }
+
+    public Task<List<KugouSongItem>> FetchEverydayRecommendAsync(CancellationToken ct = default)
+        => SafeAsync("everyday_recommend", () => FetchEverydayRecommendCoreAsync(ct), new List<KugouSongItem>());
+
+    private async Task<List<KugouSongItem>> FetchEverydayRecommendCoreAsync(CancellationToken ct)
+    {
+        string? sidecarMsg = null;
+        try
+        {
+            var result = await HttpJson.PostAsync<KugouResponse<KugouSearchData>>(
+                _client, "api/v1/everyday/recommend", new { }, ct);
+            sidecarMsg = result?.Msg?.Trim();
+            if (result?.Code == 0 && result.Data?.Songs is { Count: > 0 } songs)
+            {
+                return NormalizeDailyRecommendSongs(songs);
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.KugouWarn($"侧车每日推荐请求异常: {ex.Message}");
+        }
+
+        var moeSongs = await TryFetchEverydayFromMoeAsync(ct);
+        if (moeSongs.Count > 0)
+        {
+            return moeSongs;
+        }
+
+        if (!string.IsNullOrWhiteSpace(sidecarMsg))
+        {
+            _log.KugouWarn($"获取每日推荐失败: {sidecarMsg}");
+        }
+        else if (!TryLoadSidecarSession(out _))
+        {
+            _log.KugouWarn("获取每日推荐失败：未找到登录 session，无法拉取个性化歌单（请先扫码登录酷狗）");
+        }
+        else
+        {
+            _log.KugouWarn("获取每日推荐失败：请确认酷狗 API 在线且 kgapijs 协议服务可用");
+        }
+
+        return new List<KugouSongItem>();
+    }
+
+    private async Task<KugouSongItem?> TakeNextDailyRecommendSongAsync(CancellationToken ct)
+    {
+        const int maxFetchAttempts = 2;
+        for (var fetchAttempt = 0; fetchAttempt < maxFetchAttempts; fetchAttempt++)
+        {
+            await _dailyRecommendLock.WaitAsync(ct);
+            try
+            {
+                if (ShouldRefreshDailyRecommendCache())
+                {
+                    InvalidateDailyRecommendCacheCore();
+                }
+
+                while (_dailyRecommendIndex < _dailyRecommendPlaylist.Count)
+                {
+                    var song = _dailyRecommendPlaylist[_dailyRecommendIndex++];
+                    if (!IsEmptyDailySong(song))
+                    {
+                        return song;
+                    }
+                }
+            }
+            finally
+            {
+                _dailyRecommendLock.Release();
+            }
+
+            var songs = await FetchEverydayRecommendCoreAsync(ct);
+            if (songs.Count == 0)
+            {
+                return null;
+            }
+
+            await _dailyRecommendLock.WaitAsync(ct);
+            try
+            {
+                _dailyRecommendPlaylist = songs;
+                _dailyRecommendIndex = 0;
+                _dailyRecommendSessionUserId = ResolveDailyRecommendUserId();
+                _log.KugouInfo($"已获取每日推荐歌单，共 {_dailyRecommendPlaylist.Count} 首");
+            }
+            finally
+            {
+                _dailyRecommendLock.Release();
+            }
+        }
+
+        return null;
+    }
+
+    private async Task ResetDailyRecommendPlaylistAsync(CancellationToken ct)
+    {
+        await _dailyRecommendLock.WaitAsync(ct);
+        try
+        {
+            InvalidateDailyRecommendCacheCore();
+        }
+        finally
+        {
+            _dailyRecommendLock.Release();
+        }
+    }
+
+    private void InvalidateDailyRecommendCache()
+    {
+        if (!_dailyRecommendLock.Wait(TimeSpan.FromSeconds(2)))
+        {
+            _log.KugouWarn("清空每日推荐缓存超时");
+            return;
+        }
+
+        try
+        {
+            InvalidateDailyRecommendCacheCore();
+        }
+        finally
+        {
+            _dailyRecommendLock.Release();
+        }
+    }
+
+    private void InvalidateDailyRecommendCacheCore()
+    {
+        _dailyRecommendPlaylist.Clear();
+        _dailyRecommendIndex = 0;
+        _dailyRecommendSessionUserId = null;
+    }
+
+    private bool ShouldRefreshDailyRecommendCache()
+    {
+        if (_dailyRecommendPlaylist.Count == 0
+            || string.IsNullOrWhiteSpace(_dailyRecommendSessionUserId))
+        {
+            return false;
+        }
+
+        if (!TryLoadSidecarSession(out var session))
+        {
+            return false;
+        }
+
+        var userId = session.UserId?.Trim() ?? "";
+        return string.IsNullOrWhiteSpace(userId)
+            || !string.Equals(_dailyRecommendSessionUserId, userId, StringComparison.Ordinal);
+    }
+
+    private static List<KugouSongItem> NormalizeDailyRecommendSongs(IEnumerable<KugouSongItem> songs)
+        => songs
+            .Select(NormalizeDailyRecommendSong)
+            .Where(s => !IsEmptyDailySong(s))
+            .ToList();
+
+    private static KugouSongItem NormalizeDailyRecommendSong(KugouSongItem song)
+    {
+        if (!string.IsNullOrWhiteSpace(song.Hash))
+        {
+            song.Hash = song.Hash.Trim().ToLowerInvariant();
+        }
+
+        return song;
+    }
+
+    private static bool IsEmptyDailySong(KugouSongItem song)
+        => string.IsNullOrWhiteSpace(song.Hash) && string.IsNullOrWhiteSpace(song.SongName);
+
+    private async Task<List<KugouSongItem>> TryFetchEverydayFromMoeAsync(CancellationToken ct)
+    {
+        if (!TryLoadSidecarSession(out var session))
+        {
+            _log.KugouWarn("每日推荐跳过未登录请求：未找到有效 session.json");
+            return new List<KugouSongItem>();
+        }
+
+        var cookie = KugouSessionCookie.BuildHeader(session);
+        if (string.IsNullOrWhiteSpace(cookie))
+        {
+            _log.KugouWarn("每日推荐跳过未登录请求：session 缺少 token/userid");
+            return new List<KugouSongItem>();
+        }
+
+        foreach (var baseUrl in new[] { "http://127.0.0.1:16521", "http://127.0.0.1:3000" })
+        {
+            try
+            {
+                using var client = HttpJson.CreateClient(baseUrl);
+                client.Timeout = TimeSpan.FromSeconds(20);
+                var response = await GetMoeEverydayRecommendAsync(client, cookie, ct);
+                if (response?.Status != 1 || response.Data?.SongList == null || response.Data.SongList.Count == 0)
+                {
+                    continue;
+                }
+
+                var songs = response.Data.SongList
+                    .Select(MapMoeEverydaySong)
+                    .Where(s => !IsEmptyDailySong(s))
+                    .ToList();
+                if (songs.Count > 0)
+                {
+                    var preview = string.Join(" | ", songs.Take(3).Select(s => s.SongName));
+                    _log.KugouInfo(
+                        $"已通过登录态获取每日推荐 {songs.Count} 首 ({baseUrl}) userid={session.UserId} preview={preview}");
+                    return songs;
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.KugouWarn($"每日推荐请求失败 ({baseUrl}): {ex.Message}");
+            }
+        }
+
+        return new List<KugouSongItem>();
+    }
+
+    private static async Task<MoeEverydayRecommendResponse?> GetMoeEverydayRecommendAsync(
+        HttpClient client,
+        string cookie,
+        CancellationToken ct)
+    {
+        var path = "everyday/recommend?cookie=" + Uri.EscapeDataString(cookie);
+        using var request = new HttpRequestMessage(HttpMethod.Get, path);
+        request.Headers.TryAddWithoutValidation("Authorization", cookie);
+        request.Headers.TryAddWithoutValidation("Cookie", cookie);
+        using var response = await client.SendAsync(request, ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        var text = await response.Content.ReadAsStringAsync(ct);
+        return JsonSerializer.Deserialize<MoeEverydayRecommendResponse>(text, HttpJson.Options);
+    }
+
+    private string? ResolveDailyRecommendUserId()
+    {
+        if (TryLoadSidecarSession(out var session))
+        {
+            return session.UserId?.Trim();
+        }
+
+        return string.IsNullOrWhiteSpace(_loginSnapshot.UserId)
+            ? null
+            : _loginSnapshot.UserId.Trim();
+    }
+
+    private bool TryLoadSidecarSession(out KugouSidecarSession session)
+    {
+        session = new KugouSidecarSession();
+        if (string.IsNullOrWhiteSpace(_sessionFilePath) || !File.Exists(_sessionFilePath))
+        {
+            return false;
+        }
+
+        try
+        {
+            var json = File.ReadAllText(_sessionFilePath);
+            if (json.Length > 0 && json[0] == '\uFEFF')
+            {
+                json = json[1..];
+            }
+
+            var loaded = JsonSerializer.Deserialize<KugouSidecarSession>(json, HttpJson.Options);
+            if (loaded == null
+                || string.IsNullOrWhiteSpace(loaded.Token)
+                || string.IsNullOrWhiteSpace(loaded.UserId))
+            {
+                return false;
+            }
+
+            session = loaded;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _log.KugouWarn($"读取 session.json 失败: {ex.Message}");
+            return false;
+        }
+    }
+
+    private static KugouSongItem MapMoeEverydaySong(MoeEverydaySong song)
+    {
+        var songId = ReadJsonId(song.AlbumAudioId);
+        if (string.IsNullOrWhiteSpace(songId))
+        {
+            songId = ReadJsonId(song.MixSongId);
+        }
+
+        long albumAudioId = 0;
+        if (long.TryParse(songId, out var parsedId))
+        {
+            albumAudioId = parsedId;
+        }
+
+        return new KugouSongItem
+        {
+            Hash = song.Hash?.Trim().ToLowerInvariant() ?? "",
+            SongName = FirstNonEmpty(song.OriAudioName, song.SongName),
+            Artist = song.AuthorName?.Trim() ?? "",
+            AlbumId = song.AlbumId?.Trim() ?? "",
+            SongId = songId,
+            Id = songId,
+            AlbumAudioId = albumAudioId,
+            Duration = song.TimeLength
+        };
+    }
+
+    private static string ReadJsonId(JsonElement value)
+    {
+        return value.ValueKind switch
+        {
+            JsonValueKind.String => value.GetString()?.Trim() ?? "",
+            JsonValueKind.Number when value.TryGetInt64(out var number) => number.ToString(),
+            _ => ""
+        };
+    }
+
+    private static string BuildDailyRecommendKeyword(KugouSongItem song)
+    {
+        var songName = song.SongName?.Trim() ?? "";
+        var artist = song.Artist?.Trim() ?? "";
+        if (!string.IsNullOrWhiteSpace(artist) && !string.IsNullOrWhiteSpace(songName))
+        {
+            return $"{artist} {songName}";
+        }
+
+        return songName;
     }
 
     public Task<KugouUrlData?> GetPlayUrlAsync(string? hash, string? keyword, CancellationToken ct = default)
@@ -202,8 +605,20 @@ public sealed class KugouService
         bool tryAlternates,
         CancellationToken ct)
     {
+        const string quality = "auto";
         await EnsureLoginReadyAsync(forceRefresh: false, ct);
+        if (_settings.RequireFullPlayback && !_lastLoggedIn)
+        {
+            await RefreshLoginStatusAsync(ct);
+            if (!_lastLoggedIn)
+            {
+                LogUrlFetchDiagnostic(ctx, quality, "precheck", null, null, "login_required");
+                return null;
+            }
+        }
+
         var previewAllowed = allowPreviewFallback && CanAcceptPreview();
+        string? lastFailReason = null;
 
         for (var attempt = 0; attempt < 2; attempt++)
         {
@@ -217,23 +632,32 @@ public sealed class KugouService
             foreach (var mode in BuildUrlModes(previewAllowed))
             {
                 var result = await PostSongUrlAsync(ctx, mode, ct);
+                if (IsSessionDroppedResponse(result))
+                {
+                    InvalidateLoginCache();
+                    lastFailReason = "session_expired";
+                    LogUrlFetchDiagnostic(ctx, quality, mode, result?.Data, lastFailReason, null);
+                    await RefreshLoginStatusAsync(ct);
+                    break;
+                }
+
                 if (result?.Code != 0 || string.IsNullOrWhiteSpace(result.Data?.Url))
                 {
-                    _log.KugouWarn($"取链失败 mode={mode}: {result?.Msg ?? "无响应"} ({Label(ctx)})");
+                    lastFailReason = ClassifySidecarFailure(result?.Msg, mode);
+                    LogUrlFetchDiagnostic(ctx, quality, mode, result?.Data, lastFailReason, result?.Msg);
                     continue;
                 }
+
+                NormalizePreviewFlags(result.Data);
 
                 if (ShouldRejectPreview(result.Data))
                 {
-                    _log.KugouWarn($"登录态仍返回试听链 mode={mode}: {Label(ctx)}");
+                    lastFailReason = "preview_rejected";
+                    LogUrlFetchDiagnostic(ctx, quality, mode, result.Data, lastFailReason, null);
                     continue;
                 }
 
-                if (result.Data.IsPreview)
-                {
-                    _log.KugouWarn($"未登录或会员曲，已降级试听: {Label(ctx)}");
-                }
-
+                LogUrlFetchDiagnostic(ctx, quality, mode, result.Data, "ok", null);
                 return result.Data;
             }
         }
@@ -261,24 +685,135 @@ public sealed class KugouService
             }
         }
 
+        LogUrlFetchDiagnostic(ctx, quality, "final", null, lastFailReason ?? "all_modes_failed", null);
         return null;
     }
 
-    private bool CanAcceptPreview()
-        => !_settings.RequireFullPlayback || !_lastLoggedIn;
+    private bool CanAcceptPreview() => !_settings.RequireFullPlayback;
 
     private IEnumerable<string> BuildUrlModes(bool includePreview)
     {
-        yield return "auto";
-        yield return "full";
         if (includePreview)
         {
+            yield return "auto";
+            yield return "full";
             yield return "preview";
+            yield break;
         }
+
+        yield return "full";
+        yield return "auto";
     }
 
     private bool ShouldRejectPreview(KugouUrlData data)
-        => _settings.RequireFullPlayback && _lastLoggedIn && data.IsPreview;
+        => _settings.RequireFullPlayback && (data.IsPreview || LooksLikePreviewUrl(data.Url));
+
+    private static void NormalizePreviewFlags(KugouUrlData data)
+    {
+        if (data.IsPreview || string.IsNullOrWhiteSpace(data.Url))
+        {
+            return;
+        }
+
+        if (LooksLikePreviewUrl(data.Url))
+        {
+            data.IsPreview = true;
+        }
+    }
+
+    internal static bool LooksLikePreviewUrl(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return false;
+        }
+
+        var low = url.ToLowerInvariant();
+        return low.Contains("/yp/p_", StringComparison.Ordinal) || low.Contains("/yp/p/", StringComparison.Ordinal);
+    }
+
+    private void LogUrlFetchDiagnostic(
+        KugouSongContext ctx,
+        string quality,
+        string mode,
+        KugouUrlData? data,
+        string? failReason,
+        string? detail)
+    {
+        var song = Label(ctx);
+        var hash = ctx.Hash?.Trim() ?? "";
+        var isPreview = data?.IsPreview == true;
+        var urlType = data == null || string.IsNullOrWhiteSpace(data.Url)
+            ? "-"
+            : (isPreview || LooksLikePreviewUrl(data.Url) ? "preview" : "full");
+        var loginStatus = _lastLoggedIn ? "logged_in" : "not_logged_in";
+        var vipType = string.IsNullOrWhiteSpace(_loginSnapshot.VipType) ? "-" : _loginSnapshot.VipType;
+        var reason = string.IsNullOrWhiteSpace(failReason) ? "-" : failReason;
+        var extra = string.IsNullOrWhiteSpace(detail) ? "" : $" detail={detail}";
+        _log.KugouInfo(
+            $"KUGOU_URL song={song} hash={hash} mode={mode} quality={quality} " +
+            $"is_preview={isPreview} vip_type={vipType} login_status={loginStatus} " +
+            $"result_url_type={urlType} fail_reason={reason}{extra}");
+    }
+
+    private static string ClassifySidecarFailure(string? msg, string mode)
+    {
+        var text = msg?.Trim() ?? "";
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return "no_response";
+        }
+
+        var low = text.ToLowerInvariant();
+        if (low.Contains("登录已掉线", StringComparison.Ordinal) ||
+            low.Contains("需重新登录", StringComparison.Ordinal) ||
+            low.Contains("session expired", StringComparison.Ordinal))
+        {
+            return "session_expired";
+        }
+
+        if (low.Contains("need vip", StringComparison.Ordinal) ||
+            low.Contains("need pay", StringComparison.Ordinal) ||
+            low.Contains("会员", StringComparison.Ordinal) ||
+            low.Contains("付费", StringComparison.Ordinal))
+        {
+            return "copyright_restricted";
+        }
+
+        if (low.Contains("got preview url", StringComparison.Ordinal) ||
+            low.Contains("试听链", StringComparison.Ordinal))
+        {
+            return "preview_rejected";
+        }
+
+        if (low.Contains("upstream", StringComparison.Ordinal) ||
+            low.Contains("协议服务", StringComparison.Ordinal))
+        {
+            return "kgapijs_failed";
+        }
+
+        if (low.Contains("tracker", StringComparison.Ordinal))
+        {
+            return "tracker_failed";
+        }
+
+        if (low.Contains("未登录", StringComparison.Ordinal) && mode == "auto")
+        {
+            return "not_logged_in";
+        }
+
+        return "sidecar_error";
+    }
+
+    private static bool IsSessionDroppedResponse(KugouResponse<KugouUrlData>? result)
+        => result is { Code: 40101 };
+
+    private void InvalidateLoginCache()
+    {
+        _loginCheckedAt = DateTime.MinValue;
+        _lastLoggedIn = false;
+        _loginSnapshot = new KugouLoginSnapshot();
+    }
 
     /// <summary>搜索候选，按歌手去重，最多返回 displayLimit 个。</summary>
     public async Task<List<SongSearchCandidate>> SearchCandidatesAsync(
@@ -381,7 +916,9 @@ public sealed class KugouService
                 AlbumId = albumId?.Trim(),
                 AlbumAudioId = albumAudioId
             };
-            var urlData = await GetPlayUrlAsync(ctx, ct);
+            var urlData = isRandom && _settings.RequireFullPlayback
+                ? await GetPlayUrlCoreAsync(ctx, allowPreviewFallback: false, tryAlternates: true, ct)
+                : await GetPlayUrlAsync(ctx, ct);
             if (urlData != null && !string.IsNullOrWhiteSpace(urlData.Url))
             {
                 return BuildTrackInfo(urlData, songHash, name, artist, songId, requester, isRandom);
@@ -457,6 +994,35 @@ public sealed class KugouService
             song.AlbumAudioId);
     }
 
+    /// <summary>每日推荐专用：只取完整版链接，不降级试听。</summary>
+    private async Task<TrackInfo?> ResolveDailyRecommendSongAsync(
+        KugouSongItem song,
+        string? keyword,
+        CancellationToken ct)
+    {
+        var urlData = await GetPlayUrlCoreAsync(
+            KugouSongContext.FromSong(song, keyword),
+            allowPreviewFallback: false,
+            tryAlternates: true,
+            ct);
+        if (urlData == null || string.IsNullOrWhiteSpace(urlData.Url))
+        {
+            return null;
+        }
+
+        var track = BuildTrackInfo(
+            urlData,
+            song.Hash ?? "",
+            FirstNonEmpty(urlData.SongName, song.SongName, keyword),
+            FirstNonEmpty(urlData.Artist, song.Artist),
+            FirstNonEmpty(urlData.SongId, urlData.Id, song.SongId, song.Id),
+            requester: "随机",
+            isRandom: true,
+            song.AlbumId,
+            song.AlbumAudioId);
+        return IsAcceptableForPlayback(track) ? track : null;
+    }
+
     private static TrackInfo BuildTrackInfo(
         KugouUrlData urlData,
         string hash,
@@ -467,7 +1033,9 @@ public sealed class KugouService
         bool isRandom,
         string? albumId = null,
         long albumAudioId = 0)
-        => new()
+    {
+        NormalizePreviewFlags(urlData);
+        return new()
         {
             SongName = songName?.Trim() ?? "",
             Artist = artist?.Trim() ?? "",
@@ -481,10 +1049,28 @@ public sealed class KugouService
             IsPreview = urlData.IsPreview,
             Requester = requester ?? ""
         };
+    }
+
+    /// <summary>直播完整音模式：拒绝试听链（含 URL 路径检测）。</summary>
+    public bool IsAcceptableForPlayback(TrackInfo? track)
+    {
+        if (track == null || string.IsNullOrWhiteSpace(track.PlayUrl))
+        {
+            return false;
+        }
+
+        if (!_settings.RequireFullPlayback)
+        {
+            return true;
+        }
+
+        return !track.IsPreview && !LooksLikePreviewUrl(track.PlayUrl);
+    }
 
     private async Task<bool> EnsureLoginReadyAsync(bool forceRefresh, CancellationToken ct)
     {
-        if (!forceRefresh && DateTime.UtcNow - _loginCheckedAt < TimeSpan.FromSeconds(45))
+        var cacheTtl = _settings.RequireFullPlayback ? TimeSpan.FromSeconds(30) : TimeSpan.FromSeconds(45);
+        if (!forceRefresh && DateTime.UtcNow - _loginCheckedAt < cacheTtl)
         {
             return _lastLoggedIn;
         }
@@ -528,6 +1114,53 @@ public sealed class KugouService
         }
 
         return "";
+    }
+
+    /// <summary>探测完整版播放是否可用（独立于 ResolveTrack 取链逻辑）。</summary>
+    public async Task<KugouFullPlaybackStatus> CheckFullPlaybackStatusAsync(CancellationToken ct = default)
+    {
+        var login = await RefreshLoginStatusAsync(ct);
+        var status = new KugouFullPlaybackStatus
+        {
+            LoggedIn = login.LoggedIn,
+            VipLabel = login.VipLabel,
+            CheckedAtUtc = DateTime.UtcNow
+        };
+
+        if (!login.LoggedIn)
+        {
+            status.FullPlaybackAvailable = false;
+            status.Reason = "未登录";
+            return status;
+        }
+
+        try
+        {
+            var probe = await HttpJson.PostAsync<KugouResponse<KugouUrlData>>(_client, "api/v1/song/url",
+                new { hash = "8574d02543b5f902469fb4e27e3a350d", mode = "full", quality = "auto" }, ct);
+            if (probe?.Code == 0 && !string.IsNullOrWhiteSpace(probe.Data?.Url))
+            {
+                status.FullPlaybackAvailable = true;
+                status.Reason = "";
+                return status;
+            }
+
+            var reason = probe?.Msg?.Trim() ?? "完整版不可用";
+            if (reason.Contains("旧版扫码", StringComparison.Ordinal) || reason.Contains("登录态无效", StringComparison.Ordinal))
+            {
+                reason = "session失效，请重新扫码登录";
+            }
+
+            status.FullPlaybackAvailable = false;
+            status.Reason = reason;
+            return status;
+        }
+        catch (Exception ex)
+        {
+            status.FullPlaybackAvailable = false;
+            status.Reason = ex.Message;
+            return status;
+        }
     }
 
     private async Task<T> SafeAsync<T>(string operation, Func<Task<T>> action, T fallback)

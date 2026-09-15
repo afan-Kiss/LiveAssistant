@@ -18,6 +18,13 @@ public sealed class DouyinService
         _client = HttpJson.CreateClient(settings.BaseUrl, settings.ApiToken);
     }
 
+    internal DouyinService(DouyinSettings settings, LogService log, HttpClient client)
+    {
+        _settings = settings;
+        _log = log;
+        _client = client;
+    }
+
     public Task<bool> HealthCheckAsync(CancellationToken ct = default)
         => SafeAsync("health", async () =>
         {
@@ -66,10 +73,41 @@ public sealed class DouyinService
     public Task<bool> SendMentionAsync(string webRid, string userId, string content, CancellationToken ct = default)
         => SafeAsync("send_mention", async () =>
         {
-            var result = await HttpJson.PostAsync<DouyinEnvelope<object>>(_client, "api/live/danmaku/mention",
-                new { web_rid = webRid, user_id = userId, content }, ct);
-            return result?.Ok == true;
+            var detail = await SendMentionDetailedAsync(webRid, userId, content, ct);
+            return detail.Ok;
         }, false);
+
+    public Task<MentionSendResult> SendMentionDetailedAsync(
+        string webRid, string userId, string content, CancellationToken ct = default)
+        => SafeAsync("send_mention", async () =>
+        {
+            var json = System.Text.Json.JsonSerializer.Serialize(
+                new { web_rid = webRid, user_id = userId, content }, HttpJson.Options);
+            using var body = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+            using var response = await _client.PostAsync("api/live/danmaku/mention", body, ct);
+            var text = await response.Content.ReadAsStringAsync(ct);
+            DouyinEnvelope<object>? envelope = null;
+            try
+            {
+                envelope = System.Text.Json.JsonSerializer.Deserialize<DouyinEnvelope<object>>(text, HttpJson.Options);
+            }
+            catch
+            {
+                // ignore parse errors; use raw body as reason
+            }
+
+            var ok = response.IsSuccessStatusCode && envelope?.Ok == true;
+            var reason = ok
+                ? ""
+                : envelope?.Message ?? (text.Length > 160 ? text[..160] : text);
+            return new MentionSendResult
+            {
+                Ok = ok,
+                HttpStatus = (int)response.StatusCode,
+                ErrorReason = reason,
+                ReplyType = "mention"
+            };
+        }, new MentionSendResult { Ok = false, ErrorReason = "request_failed", ReplyType = "mention" });
 
     public Task<bool> ReconnectAsync(string webRid, CancellationToken ct = default)
         => SafeAsync("reconnect", async () =>

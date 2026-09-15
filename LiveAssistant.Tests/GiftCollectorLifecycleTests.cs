@@ -268,6 +268,7 @@ public sealed class GiftCollectorLifecycleTests : IDisposable
     {
         public Dictionary<string, string> Map { get; } = new(StringComparer.Ordinal);
         public List<string> Resolved { get; } = new();
+        public string? ResolvedCookie => null;
 
         public Task<string> ResolveRoomIdAsync(string webRid, CancellationToken ct = default)
         {
@@ -278,6 +279,10 @@ public sealed class GiftCollectorLifecycleTests : IDisposable
             }
 
             return Task.FromResult(id);
+        }
+
+        public void ClearResolvedCookie()
+        {
         }
     }
 

@@ -203,32 +203,101 @@ public sealed class PlaybackStabilityTests : IDisposable
     }
 
     [Fact]
-    public void QueueRecoverPlaying_ResetsToWaiting()
+    public async Task RapidSkip_CoalescesAndAdvancesMultipleSongs()
+    {
+        var db = new AppDatabase(Path.Combine(_dir, "rapid-skip"));
+        Directory.CreateDirectory(Path.Combine(_dir, "rapid-skip"));
+        var queue = new QueueService(db);
+        var config = new ConfigManager();
+        config.Load();
+        config.Settings.Playback.Mode = PlaybackMode.RequestOnly;
+        config.Settings.RandomPlaylist.Items.Clear();
+
+        var log = new LogService(_dir);
+        var played = new List<string>();
+        foreach (var name in new[] { "歌1", "歌2", "歌3", "歌4" })
+        {
+            queue.Add(new QueueItem
+            {
+                UserId = "1",
+                Nickname = "A",
+                SongName = name,
+                Hash = name,
+                PlayUrl = "https://example/" + name + ".mp3"
+            });
+        }
+
+        using var commands = new PlaybackCommandQueue(
+            config,
+            queue,
+            new KugouService(config.Settings.Kugou, log),
+            new RandomPlaylistService(config, db),
+            new PlaybackService(log),
+            new ReplyService(config),
+            new SystemMessageService(20),
+            log,
+            resolveFresh: (item, _) => Task.FromResult<TrackInfo?>(new TrackInfo
+            {
+                SongName = item.SongName,
+                Hash = item.Hash,
+                PlayUrl = item.PlayUrl
+            }),
+            playAsync: (track, _, _) =>
+            {
+                played.Add(track.SongName);
+                return Task.FromResult(true);
+            });
+
+        await commands.EnqueueEnsurePlayingAsync();
+        Assert.True(await WaitUntil(() => played.Contains("歌1"), TimeSpan.FromSeconds(3)));
+
+        for (var i = 0; i < 3; i++)
+        {
+            await commands.EnqueueSkipAsync();
+        }
+
+        Assert.True(await WaitUntil(() => played.Contains("歌4"), TimeSpan.FromSeconds(5)));
+        Assert.Equal("歌4", queue.NowPlaying?.SongName);
+        Assert.Equal(4, played.Count);
+        Assert.Equal("歌4", played[^1]);
+        db.Dispose();
+    }
+
+    [Fact]
+    public void AbandonPendingQueueOnStartup_ClearsWaitingAndPlaying()
     {
         var data = Path.Combine(_dir, "recover");
         Directory.CreateDirectory(data);
         var db = new AppDatabase(data);
         var queue = new QueueService(db);
-        var item = queue.Add(new QueueItem
+        queue.Add(new QueueItem
         {
-            UserId = "u",
-            Nickname = "n",
-            SongName = "歌",
+            UserId = "u1",
+            Nickname = "n1",
+            SongName = "等待歌",
             Hash = "h1"
         });
+        queue.Add(new QueueItem
+        {
+            UserId = "u2",
+            Nickname = "n2",
+            SongName = "播放歌",
+            Hash = "h2"
+        });
         queue.DequeueNext();
-        Assert.Equal(QueueItemStatus.Playing, queue.NowPlaying?.Status);
+        Assert.NotNull(queue.NowPlaying);
+        Assert.Single(queue.Waiting);
 
         db.Dispose();
 
-        // 模拟重启
+        // 模拟重启：未播放点歌不应再进入等待队列
         var db2 = new AppDatabase(data);
-        var recovered = db2.RecoverPlayingQueueItems();
-        Assert.True(recovered >= 1);
+        var abandoned = db2.AbandonPendingQueueOnStartup();
+        Assert.Equal(2, abandoned);
 
         var queue2 = new QueueService(db2);
         Assert.Null(queue2.NowPlaying);
-        Assert.Contains(queue2.Waiting, x => x.Id == item.Id && x.Hash == "h1" && x.SongName == "歌");
+        Assert.Empty(queue2.Waiting);
         db2.Dispose();
     }
 
@@ -273,6 +342,11 @@ public sealed class PlaybackStabilityTests : IDisposable
         {
             var path = request.RequestUri?.AbsolutePath ?? "";
             var body = request.Content == null ? "" : await request.Content.ReadAsStringAsync(cancellationToken);
+
+            if (path.Contains("login/status", StringComparison.OrdinalIgnoreCase))
+            {
+                return Json(new { code = 0, data = new { logged_in = true, nickname = "test" } });
+            }
 
             if (path.Contains("song/url", StringComparison.OrdinalIgnoreCase))
             {

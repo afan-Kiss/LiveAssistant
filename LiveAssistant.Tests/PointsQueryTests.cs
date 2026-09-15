@@ -20,14 +20,15 @@ public sealed class PointsQueryTests : IDisposable
     public void TryHandle_RepliesWithUserPoints()
     {
         var db = new AppDatabase(_dir);
-        var users = new UserRepository(db);
+        var ledger = new PointsLedgerRepository(db);
+        var users = new UserRepository(db, ledger);
         users.EnsureUser("u1", "测试观众");
         users.AddPoints("u1", "测试观众", 88);
         users.SetLevel("u1", 3);
 
         var config = new ConfigManager();
         config.Load();
-        config.ReplyTemplates["pointsQuery"] = "@{name} 积分 {score}，等级 Lv{level}";
+        config.ReplyTemplates["pointsQuery"] = "@{name} 积分 {score}，等级 Lv{level} 明细:{details}";
 
         var reply = new ReplyService(config);
         var sent = new List<string>();
@@ -41,7 +42,7 @@ public sealed class PointsQueryTests : IDisposable
                 return Task.FromResult(true);
             });
 
-        var svc = new PointsQueryService(users);
+        var svc = new PointsQueryService(users, ledger);
         var handled = svc.TryHandle(new DanmakuItem
         {
             UserId = "u1",

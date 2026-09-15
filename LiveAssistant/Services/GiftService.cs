@@ -18,7 +18,12 @@ public sealed class GiftService : IDisposable
     private readonly SystemMessageService _system;
     private readonly ReplyService? _reply;
     private readonly ReplyQueue? _replyQueue;
+    private readonly object _thanksLock = new();
+    private readonly Dictionary<string, GiftThanksWindow> _thanksWindows = new(StringComparer.Ordinal);
     private string _webRid = "";
+
+    private static readonly TimeSpan GiftThanksWindowDuration = TimeSpan.FromSeconds(10);
+    private const int GiftThanksMaxPerWindow = 3;
 
     public event Action<GiftEvent>? GiftReceived;
 
@@ -113,21 +118,37 @@ public sealed class GiftService : IDisposable
         }
 
         var pointsAfter = before + points;
-
-        if (!_gifts.TryInsert(gift, points, pointsAfter, out var id))
+        var newLevel = points > 0 ? _levels.CalculateLevel(pointsAfter) : (_users.GetUser(gift.UserId)?.Level ?? 0);
+        var songPermissionUnlimited = false;
+        var songPermissionCredits = 0;
+        if (rule != null)
         {
-            _log.LogGiftDuplicate(gift.Nickname, gift.GiftName, gift.EventId, "插入冲突");
+            var perm = rule.EffectiveSongPermissionCount();
+            if (perm == -1)
+            {
+                songPermissionUnlimited = true;
+            }
+            else if (perm > 0)
+            {
+                songPermissionCredits = perm * gift.Count;
+            }
+        }
+
+        if (!_gifts.TryRecordGift(
+                gift,
+                points,
+                pointsAfter,
+                newLevel,
+                applyPointsAndLevel: points > 0,
+                setSongPermissionUnlimited: songPermissionUnlimited,
+                songPermissionCreditsDelta: songPermissionCredits,
+                out var id))
+        {
+            _log.LogGiftDuplicate(gift.Nickname, gift.GiftName, gift.EventId, "插入冲突或事务回滚");
             return false;
         }
 
         gift.Id = id;
-        if (points > 0)
-        {
-            _users.AddPoints(gift.UserId, gift.Nickname, points);
-            _levels.RefreshUserLevel(gift.UserId);
-        }
-
-        ApplySongPermission(gift, rule);
 
         var after = _users.GetUser(gift.UserId)?.Points ?? pointsAfter;
         _log.GiftInfo(
@@ -153,6 +174,13 @@ public sealed class GiftService : IDisposable
             return;
         }
 
+        if (ShouldThrottleGiftThanks(gift))
+        {
+            _log.GiftInfo(
+                $"[thanks-throttle] user={gift.UserId} gift={gift.GiftName} count={gift.Count}");
+            return;
+        }
+
         var msg = _reply.Render("giftThanks", new Dictionary<string, string>
         {
             ["name"] = gift.Nickname,
@@ -165,6 +193,36 @@ public sealed class GiftService : IDisposable
         }
 
         _replyQueue.EnqueueMention(_webRid, gift.UserId, msg);
+    }
+
+    private bool ShouldThrottleGiftThanks(GiftEvent gift)
+    {
+        var key = $"{gift.UserId}|{gift.GiftName}";
+        var now = DateTime.UtcNow;
+        lock (_thanksLock)
+        {
+            PurgeThanksWindowsLocked(now);
+            if (!_thanksWindows.TryGetValue(key, out var window)
+                || now - window.StartedUtc > GiftThanksWindowDuration)
+            {
+                _thanksWindows[key] = new GiftThanksWindow { Count = 1, StartedUtc = now };
+                return false;
+            }
+
+            window.Count++;
+            return window.Count > GiftThanksMaxPerWindow;
+        }
+    }
+
+    private void PurgeThanksWindowsLocked(DateTime now)
+    {
+        foreach (var key in _thanksWindows
+                     .Where(kv => now - kv.Value.StartedUtc > GiftThanksWindowDuration)
+                     .Select(kv => kv.Key)
+                     .ToList())
+        {
+            _thanksWindows.Remove(key);
+        }
     }
 
     private bool TryValidateAmounts(GiftEvent gift, out string reason)
@@ -214,25 +272,11 @@ public sealed class GiftService : IDisposable
         return true;
     }
 
-    private void ApplySongPermission(GiftEvent gift, GiftRule? rule)
-    {
-        if (rule == null)
-        {
-            return;
-        }
-
-        var perm = rule.EffectiveSongPermissionCount();
-        if (perm == -1)
-        {
-            _users.SetSongPermissionUnlimited(gift.UserId, true);
-            return;
-        }
-
-        if (perm > 0)
-        {
-            _users.AddSongPermissionCredits(gift.UserId, perm * gift.Count);
-        }
-    }
-
     public void Dispose() => Stop();
+
+    private sealed class GiftThanksWindow
+    {
+        public int Count;
+        public DateTime StartedUtc;
+    }
 }

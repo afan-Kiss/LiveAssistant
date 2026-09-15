@@ -14,3 +14,7 @@ LiveAssistant/Config/DeployCredentials.local.json
 sidecars/
 publish/
 
+# 打包产物与含明文密码的部署文件
+*.zip
+deploy/www/admin-accounts.json
+

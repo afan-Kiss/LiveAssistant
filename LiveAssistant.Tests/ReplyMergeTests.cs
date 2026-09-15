@@ -18,6 +18,7 @@ public sealed class ReplyMergeTests
         Assert.Contains("点歌成功《歌曲》", text);
         Assert.Contains("前面还有2首", text);
         Assert.DoesNotContain("@", text);
+        Assert.DoesNotContain("\n", text);
     }
 
     [Fact]
