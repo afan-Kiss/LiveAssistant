@@ -57,6 +57,11 @@ public sealed class AiSpeechSettings
     public bool WelcomeUser { get; set; }
     public bool ThankLike { get; set; }
     public bool AutoRoomSummary { get; set; }
+    /// <summary>点歌真实入队并扣积分成功后播报；默认关闭，兼容旧配置。</summary>
+    public bool AnnounceSongRequest { get; set; }
+
+    /// <summary>AI 语音软件增益百分比：100=原始，150≈+3.5dB，200≈+6dB。范围 50～200。</summary>
+    public int VolumePercent { get; set; } = 150;
 
     /// <summary>弹幕回复最小间隔（秒）；与 MinIntervalSeconds 保持同步。</summary>
     public int ReplyIntervalSeconds { get; set; } = 8;
@@ -450,6 +455,12 @@ public sealed class ConfigManager
         if (ai.Speed <= 0 || ai.Speed > 3)
         {
             ai.Speed = 1.0;
+            changed = true;
+        }
+
+        if (ai.VolumePercent < 50 || ai.VolumePercent > 200)
+        {
+            ai.VolumePercent = 150;
             changed = true;
         }
 

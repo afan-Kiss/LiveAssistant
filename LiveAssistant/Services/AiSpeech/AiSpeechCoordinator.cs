@@ -33,6 +33,9 @@ public sealed class AiSpeechCoordinator : IDisposable
     private readonly GiftMergeBuffer _giftBuffer = new();
     private readonly WelcomeBatchBuffer _welcomeBuffer = new();
     private readonly LikeAccumulateBuffer _likeBuffer = new();
+    private readonly object _giftAiDedupeLock = new();
+    private readonly Dictionary<string, DateTime> _giftAiDedupe = new(StringComparer.Ordinal);
+    private static readonly TimeSpan GiftAiDedupeTtl = TimeSpan.FromMinutes(2);
 
     private readonly object _recentContentLock = new();
     private readonly Dictionary<string, DateTime> _recentContents = new(StringComparer.Ordinal);
@@ -226,6 +229,7 @@ public sealed class AiSpeechCoordinator : IDisposable
         _ollama.Configure(Settings.OllamaUrl, TimeSpan.FromSeconds(Settings.OllamaTimeoutSeconds));
         _tts.Configure(Settings.TtsUrl, TimeSpan.FromSeconds(Settings.TtsTimeoutSeconds));
         ApplyDeviceFromSettings();
+        _player.SetVolumePercent(Math.Clamp(Settings.VolumePercent <= 0 ? 150 : Settings.VolumePercent, 50, 200));
         _config.Save();
         NotifyStatus();
     }
@@ -522,15 +526,52 @@ public sealed class AiSpeechCoordinator : IDisposable
     {
         try
         {
-            if (!IsInteractionEnabled() || !Settings.ThankGift || gift == null)
+            LogEventReceived("gift", gift?.UserId, gift?.Nickname,
+                featureEnabled: Settings.ThankGift,
+                enabled: IsInteractionEnabled());
+
+            if (gift == null)
             {
+                LogEventSkip("gift", "null_gift");
+                return;
+            }
+
+            if (!IsInteractionEnabled())
+            {
+                LogEventSkip("gift", "ai_disabled");
+                _log.AiInfo("AI_GIFT_SKIP reason=ai_disabled");
+                return;
+            }
+
+            if (!Settings.ThankGift)
+            {
+                LogEventSkip("gift", "thank_gift_disabled");
+                _log.AiInfo("AI_GIFT_SKIP reason=thank_gift_disabled");
+                return;
+            }
+
+            _log.AiInfo(
+                $"AI_GIFT_RECEIVED user={MaskId(gift.UserId)} nick={gift.Nickname} gift={gift.GiftName} " +
+                $"giftId={gift.GiftId} count={gift.Count} eventId={gift.EventId} group={gift.GroupId} repeat={gift.RepeatCount}");
+
+            if (!TryAdmitGiftAi(gift, out var dedupeKey))
+            {
+                LogEventSkip("gift", "duplicate");
+                _log.AiInfo($"AI_GIFT_SKIP reason=duplicate key={dedupeKey}");
                 return;
             }
 
             var count = gift.Count > 0 ? gift.Count : Math.Max(1, gift.RepeatCount);
-            _giftBuffer.Add(gift.UserId, gift.Nickname, gift.GiftName, count);
+            if (!_giftBuffer.TryAdd(gift.UserId, gift.Nickname, gift.GiftName, count, out var skipReason))
+            {
+                LogEventSkip("gift", skipReason);
+                _log.AiInfo($"AI_GIFT_SKIP reason={skipReason}");
+                return;
+            }
+
             _log.AiInfo(
                 $"AI_GIFT_BUFFER user={MaskId(gift.UserId)} nick={gift.Nickname} gift={gift.GiftName} count={count}");
+            LogEventState("gift", buffered: true);
         }
         catch (Exception ex)
         {
@@ -542,17 +583,127 @@ public sealed class AiSpeechCoordinator : IDisposable
     {
         try
         {
-            if (!IsInteractionEnabled() || !Settings.WelcomeUser || item == null)
+            LogEventReceived("member", item?.UserId, item?.Nickname,
+                featureEnabled: Settings.WelcomeUser,
+                enabled: IsInteractionEnabled());
+
+            if (item == null)
             {
+                LogEventSkip("member", "null_item");
+                _log.AiInfo("AI_MEMBER_SKIP reason=null_item");
                 return;
             }
 
-            _welcomeBuffer.Add(item.UserId, item.Nickname);
-            _log.AiInfo($"AI_WELCOME_BUFFER user={MaskId(item.UserId)} nick={item.Nickname}");
+            _log.AiInfo(
+                $"AI_MEMBER_RECEIVED user={MaskId(item.UserId)} nick={item.Nickname} msgId={item.MsgId}");
+
+            if (!IsInteractionEnabled())
+            {
+                LogEventSkip("member", "ai_disabled");
+                _log.AiInfo("AI_MEMBER_SKIP reason=ai_disabled");
+                return;
+            }
+
+            if (!Settings.WelcomeUser)
+            {
+                LogEventSkip("member", "welcome_disabled");
+                _log.AiInfo("AI_MEMBER_SKIP reason=welcome_disabled");
+                return;
+            }
+
+            if (!_welcomeBuffer.TryAdd(item.UserId, item.Nickname, out var skipReason))
+            {
+                LogEventSkip("member", skipReason);
+                _log.AiInfo($"AI_MEMBER_SKIP reason={skipReason}");
+                return;
+            }
+
+            _log.AiInfo($"AI_MEMBER_BUFFER user={MaskId(item.UserId)} nick={item.Nickname}");
+            LogEventState("member", buffered: true);
         }
         catch (Exception ex)
         {
             _log.Error("ai_speech", "TryEnqueueMemberJoin 异常（已隔离）", ex);
+        }
+    }
+
+    public void TryEnqueueSongRequest(SongRequestSucceededEvent e)
+    {
+        try
+        {
+            LogEventReceived("song", e?.UserId, e?.Nickname,
+                featureEnabled: Settings.AnnounceSongRequest,
+                enabled: IsInteractionEnabled());
+
+            if (e == null)
+            {
+                LogEventSkip("song", "null_event");
+                _log.AiInfo("AI_SONG_SKIP reason=null_event");
+                return;
+            }
+
+            _log.AiInfo(
+                $"AI_SONG_RECEIVED user={MaskId(e.UserId)} nick={e.Nickname} song={e.SongName} " +
+                $"artist={e.Artist} ahead={e.AheadCount} queueItemId={e.QueueItemId}");
+
+            if (!IsInteractionEnabled())
+            {
+                LogEventSkip("song", "ai_disabled");
+                _log.AiInfo("AI_SONG_SKIP reason=ai_disabled");
+                return;
+            }
+
+            if (!Settings.AnnounceSongRequest)
+            {
+                LogEventSkip("song", "announce_song_disabled");
+                _log.AiInfo("AI_SONG_SKIP reason=announce_song_disabled");
+                return;
+            }
+
+            var nick = SpeechNameCleaner.Clean(e.Nickname);
+            if (string.IsNullOrWhiteSpace(nick))
+            {
+                nick = "朋友";
+            }
+
+            var song = string.IsNullOrWhiteSpace(e.SongName) ? "这首歌" : e.SongName.Trim();
+            var artist = (e.Artist ?? "").Trim();
+            var ahead = Math.Max(0, e.AheadCount);
+            var aheadText = ahead <= 0
+                ? "马上就到你了"
+                : ahead == 1
+                    ? "前面还有一首"
+                    : $"前面还有{ahead}首";
+
+            var spoken = string.IsNullOrWhiteSpace(artist)
+                ? $"好的，{nick}点的《{song}》已经排上了，{aheadText}。"
+                : $"好的，{nick}点的《{song}》-{artist}已经排上了，{aheadText}。";
+
+            var task = new AiSpeechTask
+            {
+                UserId = e.UserId ?? "",
+                Nickname = e.Nickname ?? "",
+                MsgId = e.QueueItemId > 0 ? $"song-{e.QueueItemId}" : "",
+                Content = $"昵称：{nick}\n歌名：{song}\n歌手：{(string.IsNullOrWhiteSpace(artist) ? "未知" : artist)}\n前方排队：{ahead}",
+                Kind = AiSpeechEventKind.SongRequest,
+                Priority = AiSpeechPriority.SongRequest,
+                EmotionRequested = Settings.Emotion,
+                Speed = Settings.Speed,
+                PrebuiltText = spoken,
+                PromptVersion = _prompts.GetVersion(),
+                EnqueuedAt = DateTime.UtcNow,
+                ReceivedAt = DateTime.Now
+            };
+
+            _metrics.NoteReceived();
+            _log.AiInfo(
+                $"AI_SONG_ENQUEUE task={task.TaskId} user={MaskId(task.UserId)} song={song} ahead={ahead}");
+            Enqueue(task);
+            LogEventState("song", enqueued: true);
+        }
+        catch (Exception ex)
+        {
+            _log.Error("ai_speech", "TryEnqueueSongRequest 异常（已隔离）", ex);
         }
     }
 
@@ -591,7 +742,8 @@ public sealed class AiSpeechCoordinator : IDisposable
             _player.Stop();
             _log.AiInfo("AI_AUDIO_PLAY_CANCEL reason=user_stop");
             if (_phase is AiSpeechPhase.Playing or AiSpeechPhase.Thinking or AiSpeechPhase.Synthesizing
-                or AiSpeechPhase.GeneratingGift or AiSpeechPhase.GeneratingWelcome or AiSpeechPhase.GeneratingSummary)
+                or AiSpeechPhase.GeneratingGift or AiSpeechPhase.GeneratingWelcome
+                or AiSpeechPhase.GeneratingSongRequest or AiSpeechPhase.GeneratingSummary)
             {
                 SetPhase(AiSpeechPhase.Idle);
             }
@@ -645,11 +797,14 @@ public sealed class AiSpeechCoordinator : IDisposable
 
             _log.AiInfo($"AI_TTS_OK task=test_voice tts_ms={ttsSw.ElapsedMilliseconds} bytes={synth.AudioWav.Length}");
             SetPhase(AiSpeechPhase.Playing);
+            ApplyPlaybackVolumeFromSettings(taskId: "test_voice");
             _log.AiInfo("AI_AUDIO_PLAY_START task=test_voice");
             var playSw = Stopwatch.StartNew();
             await _player.PlayWavAsync(synth.AudioWav, _tempDir, playCts.Token);
             playSw.Stop();
-            _log.AiInfo($"AI_AUDIO_PLAY_END task=test_voice play_ms={playSw.ElapsedMilliseconds}");
+            _log.AiInfo(
+                $"AI_AUDIO_PLAY_END task=test_voice play_ms={playSw.ElapsedMilliseconds} " +
+                $"peak={_player.LastPeak:F3} rms={_player.LastRms:F3} gain={_player.LastGain:F2}");
             _ttsOk = true;
             _serviceHint = "";
             SetPhase(AiSpeechPhase.Idle);
@@ -728,6 +883,8 @@ public sealed class AiSpeechCoordinator : IDisposable
         {
             if (!IsInteractionEnabled() || !Settings.ThankGift)
             {
+                _log.AiInfo("AI_GIFT_SKIP reason=disabled_at_flush");
+                LogEventSkip("gift", "disabled_at_flush");
                 return;
             }
 
@@ -767,6 +924,8 @@ public sealed class AiSpeechCoordinator : IDisposable
                 $"AI_GIFT_FLUSH task={task.TaskId} user={MaskId(item.UserId)} gift={item.GiftName} count={item.Count} mode={(prebuilt != null ? "template" : "ai")}");
             _metrics.NoteReceived();
             Enqueue(task);
+            _log.AiInfo($"AI_GIFT_ENQUEUE task={task.TaskId} queue={_scheduler.Count}");
+            LogEventState("gift", enqueued: true);
         }
         catch (Exception ex)
         {
@@ -780,6 +939,13 @@ public sealed class AiSpeechCoordinator : IDisposable
         {
             if (!IsInteractionEnabled() || !Settings.WelcomeUser || batch.Nicknames.Count == 0)
             {
+                var reason = !IsInteractionEnabled()
+                    ? "ai_disabled"
+                    : !Settings.WelcomeUser
+                        ? "welcome_disabled"
+                        : "empty_batch";
+                _log.AiInfo($"AI_MEMBER_SKIP reason={reason}_at_flush");
+                LogEventSkip("member", reason + "_at_flush");
                 return;
             }
 
@@ -795,9 +961,12 @@ public sealed class AiSpeechCoordinator : IDisposable
                 PromptVersion = _prompts.GetVersion(),
                 EnqueuedAt = DateTime.UtcNow
             };
+            _log.AiInfo($"AI_MEMBER_FLUSH task={task.TaskId} names={names}");
             _log.AiInfo($"AI_WELCOME_FLUSH task={task.TaskId} names={names}");
             _metrics.NoteReceived();
             Enqueue(task);
+            _log.AiInfo($"AI_MEMBER_ENQUEUE task={task.TaskId} queue={_scheduler.Count}");
+            LogEventState("member", enqueued: true);
         }
         catch (Exception ex)
         {
@@ -1193,6 +1362,7 @@ public sealed class AiSpeechCoordinator : IDisposable
 
             SetPhase(AiSpeechPhase.Playing);
             ApplyDeviceFromSettings();
+            ApplyPlaybackVolumeFromSettings(task.TaskId);
             _log.AiInfo($"AI_AUDIO_PLAY_START task={task.TaskId}");
             var playSw = Stopwatch.StartNew();
             try
@@ -1225,6 +1395,8 @@ public sealed class AiSpeechCoordinator : IDisposable
 
             playSw.Stop();
             _metrics.NotePlaySuccess(totalSw.ElapsedMilliseconds);
+            _log.AiInfo(
+                $"AI_AUDIO_LEVEL task={task.TaskId} peak={_player.LastPeak:F3} rms={_player.LastRms:F3} gain={_player.LastGain:F2}");
             _log.AiInfo(
                 $"AI_SPEECH taskId={task.TaskId} kind={task.Kind} sourceMsgId={task.MsgId} queueWait={queueWaitMs} " +
                 $"generateMs={ollamaMs} ttsMs={ttsSw.ElapsedMilliseconds} " +
@@ -1332,6 +1504,7 @@ public sealed class AiSpeechCoordinator : IDisposable
         AiSpeechEventKind.Welcome => task.Content,
         AiSpeechEventKind.Like => task.Content,
         AiSpeechEventKind.Summary => task.Content,
+        AiSpeechEventKind.SongRequest => task.Content,
         _ => $"观众昵称：{task.Nickname}\n观众说：{task.Content}"
     };
 
@@ -1339,6 +1512,7 @@ public sealed class AiSpeechCoordinator : IDisposable
     {
         AiSpeechEventKind.Gift => AiSpeechPhase.GeneratingGift,
         AiSpeechEventKind.Welcome => AiSpeechPhase.GeneratingWelcome,
+        AiSpeechEventKind.SongRequest => AiSpeechPhase.GeneratingSongRequest,
         AiSpeechEventKind.Summary => AiSpeechPhase.GeneratingSummary,
         _ => AiSpeechPhase.Thinking
     };
@@ -1444,6 +1618,8 @@ public sealed class AiSpeechCoordinator : IDisposable
             s.Speed = Math.Clamp(s.Speed, 0.5, 2.0);
         }
 
+        s.VolumePercent = Math.Clamp(s.VolumePercent <= 0 ? 150 : s.VolumePercent, 50, 200);
+
         if (string.IsNullOrWhiteSpace(s.Model))
         {
             s.Model = AiSpeechModelsCatalog.DefaultModel;
@@ -1469,6 +1645,94 @@ public sealed class AiSpeechCoordinator : IDisposable
     {
         // 双向同步：以 ReplyIntervalSeconds 为准（已 clamp）
         s.MinIntervalSeconds = s.ReplyIntervalSeconds;
+    }
+
+    private void ApplyPlaybackVolumeFromSettings(string? taskId = null)
+    {
+        var pct = Math.Clamp(Settings.VolumePercent <= 0 ? 150 : Settings.VolumePercent, 50, 200);
+        _player.SetVolumePercent(pct);
+        _log.AiInfo(
+            $"AI_AUDIO_LEVEL task={taskId ?? "-"} peak=pending rms=pending gain={pct / 100.0:F2} volumePercent={pct}");
+    }
+
+    private bool TryAdmitGiftAi(GiftEvent gift, out string key)
+    {
+        key = BuildGiftAiDedupeKey(gift);
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return true;
+        }
+
+        var now = DateTime.UtcNow;
+        lock (_giftAiDedupeLock)
+        {
+            PruneGiftAiDedupe_NoLock(now);
+            if (_giftAiDedupe.TryGetValue(key, out var seenAt) && now - seenAt < GiftAiDedupeTtl)
+            {
+                return false;
+            }
+
+            _giftAiDedupe[key] = now;
+            return true;
+        }
+    }
+
+    private static string BuildGiftAiDedupeKey(GiftEvent gift)
+    {
+        var eventId = (gift.EventId ?? "").Trim();
+        if (eventId.Length > 0)
+        {
+            return "eid:" + eventId;
+        }
+
+        var userId = (gift.UserId ?? "").Trim();
+        var giftId = (gift.GiftId ?? "").Trim();
+        var group = (gift.GroupId ?? "").Trim();
+        if (userId.Length == 0)
+        {
+            return "";
+        }
+
+        return $"u:{userId}|g:{giftId}|grp:{group}|r:{gift.RepeatCount}|c:{gift.Count}";
+    }
+
+    private void PruneGiftAiDedupe_NoLock(DateTime now)
+    {
+        if (_giftAiDedupe.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var dead in _giftAiDedupe
+                     .Where(kv => now - kv.Value >= GiftAiDedupeTtl)
+                     .Select(kv => kv.Key)
+                     .ToList())
+        {
+            _giftAiDedupe.Remove(dead);
+        }
+    }
+
+    private void LogEventReceived(
+        string eventType,
+        string? userId,
+        string? nickname,
+        bool featureEnabled,
+        bool enabled)
+    {
+        _log.AiInfo(
+            $"AI_EVENT_RECEIVED event_type={eventType} enabled={(enabled ? 1 : 0)} " +
+            $"feature_enabled={(featureEnabled ? 1 : 0)} user={MaskId(userId)} nick={nickname}");
+    }
+
+    private void LogEventSkip(string eventType, string reason)
+    {
+        _log.AiInfo($"AI_EVENT_SKIP event={eventType} reason={reason} skipped=1");
+    }
+
+    private void LogEventState(string eventType, bool buffered = false, bool enqueued = false)
+    {
+        _log.AiInfo(
+            $"AI_EVENT_RECEIVED event_type={eventType} buffered={(buffered ? 1 : 0)} enqueued={(enqueued ? 1 : 0)}");
     }
 
     private bool IsSelfHostMessage(DanmakuItem item, string? roomOwnerNickname, string? loginNickname)

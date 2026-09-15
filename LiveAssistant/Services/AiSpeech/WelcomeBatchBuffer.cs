@@ -31,19 +31,25 @@ public sealed class WelcomeBatchBuffer : IDisposable
     }
 
     public void Add(string userId, string nickname)
+        => TryAdd(userId, nickname, out _);
+
+    /// <summary>返回 false 时 skipReason：empty_nickname / duplicate_user。</summary>
+    public bool TryAdd(string userId, string nickname, out string skipReason)
     {
         userId = (userId ?? "").Trim();
         nickname = SpeechNameCleaner.Clean(nickname);
         if (nickname.Length == 0)
         {
-            return;
+            skipReason = "empty_nickname";
+            return false;
         }
 
         lock (_gate)
         {
             if (userId.Length > 0 && !_seenIds.Add(userId))
             {
-                return;
+                skipReason = "duplicate_user";
+                return false;
             }
 
             if (_pending.Count == 0)
@@ -54,6 +60,9 @@ public sealed class WelcomeBatchBuffer : IDisposable
             _pending.Add((userId, nickname));
             EnsureTimer_NoLock();
         }
+
+        skipReason = "";
+        return true;
     }
 
     public WelcomeBatch? DrainReady()

@@ -15,7 +15,8 @@ public sealed class AiPromptStore : IDisposable
         Gift,
         Welcome,
         Summary,
-        Like
+        Like,
+        SongRequest
     }
 
     private static readonly object GlobalLock = new();
@@ -91,6 +92,7 @@ public sealed class AiPromptStore : IDisposable
     public string GetWelcome() => Get(PromptKind.Welcome);
     public string GetSummary() => Get(PromptKind.Summary);
     public string GetLike() => Get(PromptKind.Like);
+    public string GetSongRequest() => Get(PromptKind.SongRequest);
 
     public string Get(PromptKind kind)
     {
@@ -455,6 +457,7 @@ public sealed class AiPromptStore : IDisposable
         PromptKind.Welcome => "welcome_prompt.txt",
         PromptKind.Summary => "summary_prompt.txt",
         PromptKind.Like => "like_prompt.txt",
+        PromptKind.SongRequest => "song_request_prompt.txt",
         _ => "personality.txt"
     };
 
@@ -486,6 +489,12 @@ public sealed class AiPromptStore : IDisposable
             """
             【点赞感谢任务】
             口头感谢点赞，10～25字。
+            """.Trim() + "\n",
+        PromptKind.SongRequest =>
+            """
+            【点歌成功播报任务】
+            用主播口吻告知观众点歌已排上，提到昵称和歌名，可带前方排队数，15～40字。
+            只输出最终要朗读的话，不要分析过程。
             """.Trim() + "\n",
         _ => AiPersonalityLoader.DefaultPersonalityText
     };

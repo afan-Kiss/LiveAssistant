@@ -48,6 +48,12 @@ public sealed class SongRequestService
 
     public event Action? RequestHandled;
 
+    /// <summary>
+    /// 点歌真实入队且积分事务 commit 成功后触发。不含搜索/确认/失败路径。
+    /// 旧监听方可继续只用 <see cref="RequestHandled"/>。
+    /// </summary>
+    public event Action<SongRequestSucceededEvent>? SongRequestSucceeded;
+
     public async Task<bool> HandleDanmakuAsync(DanmakuItem item, string webRid, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(item.UserId))
@@ -482,6 +488,23 @@ public sealed class SongRequestService
             $"queueItemId={added.Id} pointsBefore={charge.PointsBefore} pointsAfter={charge.PointsAfter} result=enqueued");
         _log.LogSongRequest(displayUser, track.SongName, true);
         RequestHandled?.Invoke();
+        try
+        {
+            SongRequestSucceeded?.Invoke(new SongRequestSucceededEvent
+            {
+                UserId = item.UserId,
+                Nickname = item.Nickname,
+                SongName = track.SongName,
+                Artist = track.Artist,
+                AheadCount = ahead,
+                QueueItemId = added.Id
+            });
+        }
+        catch (Exception ex)
+        {
+            _log.Error("song_request", "SongRequestSucceeded 监听方异常（已隔离）", ex);
+        }
+
         return Task.FromResult(true);
     }
 
@@ -661,4 +684,15 @@ public sealed class SongRequestService
             _orphanHintAt[hintKey] = DateTime.UtcNow;
         }
     }
+}
+
+/// <summary>点歌成功（入队 + 积分事务已提交）详情。</summary>
+public sealed class SongRequestSucceededEvent
+{
+    public string UserId { get; init; } = "";
+    public string Nickname { get; init; } = "";
+    public string SongName { get; init; } = "";
+    public string Artist { get; init; } = "";
+    public int AheadCount { get; init; }
+    public long QueueItemId { get; init; }
 }

@@ -185,6 +185,11 @@ public sealed class LiveAppHost : IDisposable
             _health.RecordSongRequest();
             _ = _engine.EnsurePlayingAsync();
         };
+        _songRequest.SongRequestSucceeded += e =>
+        {
+            try { _aiSpeech.TryEnqueueSongRequest(e); }
+            catch (Exception ex) { _log.Error("ai_speech", "点歌成功投递 AI 模块异常（已隔离）", ex); }
+        };
         _playbackCommands.Playback.StateChanged += OnPlaybackStateChanged;
         _queue.QueueChanged += () => NotifyStateChanged();
         _log.ErrorRecorded += () => _health.RecordError();

@@ -75,6 +75,9 @@
     <EmbeddedResource Include="Config\AiSpeech\like_prompt.txt">
       <LogicalName>LiveAssistant.Packaged.Config.AiSpeech.like_prompt.txt</LogicalName>
     </EmbeddedResource>
+    <EmbeddedResource Include="Config\AiSpeech\song_request_prompt.txt">
+      <LogicalName>LiveAssistant.Packaged.Config.AiSpeech.song_request_prompt.txt</LogicalName>
+    </EmbeddedResource>
     <EmbeddedResource Include="Admin\wwwroot\index.html">
       <LogicalName>LiveAssistant.Packaged.Admin.wwwroot.index.html</LogicalName>
     </EmbeddedResource>

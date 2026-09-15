@@ -20,6 +20,7 @@ public static class EmotionPresets
     public static string AutoPick(AiSpeechEventKind kind) => kind switch
     {
         AiSpeechEventKind.Gift => Excited,
+        AiSpeechEventKind.SongRequest => Happy,
         AiSpeechEventKind.Welcome => Warm,
         AiSpeechEventKind.Like => Happy,
         AiSpeechEventKind.Summary => Calm,

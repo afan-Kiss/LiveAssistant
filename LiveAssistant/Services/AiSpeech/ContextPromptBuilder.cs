@@ -70,6 +70,7 @@ public static class ContextPromptBuilder
             AiSpeechEventKind.Welcome => prompts.GetWelcome(),
             AiSpeechEventKind.Summary => prompts.GetSummary(),
             AiSpeechEventKind.Like => prompts.GetLike(),
+            AiSpeechEventKind.SongRequest => prompts.GetSongRequest(),
             _ => prompts.GetDanmaku()
         };
 

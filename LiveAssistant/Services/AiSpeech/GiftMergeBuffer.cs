@@ -29,12 +29,23 @@ public sealed class GiftMergeBuffer : IDisposable
     }
 
     public void Add(string userId, string nickname, string giftName, int count = 1)
+        => TryAdd(userId, nickname, giftName, count, out _);
+
+    /// <summary>返回 false 时 skipReason 说明原因（empty_user / empty_gift）。</summary>
+    public bool TryAdd(string userId, string nickname, string giftName, int count, out string skipReason)
     {
         userId = (userId ?? "").Trim();
         giftName = (giftName ?? "").Trim();
-        if (userId.Length == 0 || giftName.Length == 0)
+        if (userId.Length == 0)
         {
-            return;
+            skipReason = "empty_user";
+            return false;
+        }
+
+        if (giftName.Length == 0)
+        {
+            skipReason = "empty_gift";
+            return false;
         }
 
         count = Math.Max(1, count);
@@ -58,6 +69,9 @@ public sealed class GiftMergeBuffer : IDisposable
 
             EnsureTimer_NoLock();
         }
+
+        skipReason = "";
+        return true;
     }
 
     public IReadOnlyList<GiftMergeItem> DrainReady()

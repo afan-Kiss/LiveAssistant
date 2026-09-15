@@ -6,6 +6,7 @@ public enum AiSpeechPhase
     Thinking,
     GeneratingGift,
     GeneratingWelcome,
+    GeneratingSongRequest,
     GeneratingSummary,
     Synthesizing,
     Playing
@@ -15,21 +16,23 @@ public enum AiSpeechEventKind
 {
     Danmaku,
     Gift,
+    SongRequest,
     Welcome,
     Like,
     Summary,
     System
 }
 
-/// <summary>优先级：数值越小越优先。Gift=P1 … Like=P5。</summary>
+/// <summary>优先级：数值越小越优先。Gift &gt; SongRequest &gt; Danmaku &gt; Welcome/Like。</summary>
 public enum AiSpeechPriority
 {
     P0 = 0,
     Gift = 1,
-    DanmakuImportant = 2,
-    Summary = 3,
-    Welcome = 4,
-    Like = 5
+    SongRequest = 2,
+    DanmakuImportant = 3,
+    Summary = 4,
+    Welcome = 5,
+    Like = 6
 }
 
 public enum AiContextMode
@@ -168,6 +171,7 @@ public static class AiSpeechPhaseText
         AiSpeechPhase.Thinking => "正在思考",
         AiSpeechPhase.GeneratingGift => "正在生成礼物感谢",
         AiSpeechPhase.GeneratingWelcome => "正在生成欢迎语",
+        AiSpeechPhase.GeneratingSongRequest => "正在生成点歌播报",
         AiSpeechPhase.GeneratingSummary => "正在生成总结",
         AiSpeechPhase.Synthesizing => "正在合成声音",
         AiSpeechPhase.Playing => "正在播放",

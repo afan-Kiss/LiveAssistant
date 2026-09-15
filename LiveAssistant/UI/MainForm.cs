@@ -61,6 +61,7 @@ public sealed class MainForm : Form
     private readonly CheckBox _chkAiWelcome = new();
     private readonly CheckBox _chkAiThankLike = new();
     private readonly CheckBox _chkAiAutoSummary = new();
+    private readonly CheckBox _chkAiAnnounceSong = new();
     private readonly ComboBox _cmbAiModel = new();
     private readonly ComboBox _cmbAiDevice = new();
     private readonly NumericUpDown _numAiInterval = new();
@@ -70,6 +71,7 @@ public sealed class MainForm : Form
     private readonly NumericUpDown _numAiWelcomeInterval = new();
     private readonly NumericUpDown _numAiLikeInterval = new();
     private readonly NumericUpDown _numAiSummaryInterval = new();
+    private readonly NumericUpDown _numAiVolume = new();
     private readonly ComboBox _cmbAiContext = new();
     private readonly ComboBox _cmbAiEmotion = new();
     private readonly ComboBox _cmbAiSpeed = new();
@@ -571,15 +573,18 @@ public sealed class MainForm : Form
         _chkAiReplyDanmaku.Checked = s.ReplyDanmaku;
         _chkAiThankGift.Text = "感谢礼物";
         _chkAiThankGift.Checked = s.ThankGift;
-        _chkAiWelcome.Text = "欢迎进房";
+        _chkAiWelcome.Text = "欢迎进入直播间";
         _chkAiWelcome.Checked = s.WelcomeUser;
         _chkAiThankLike.Text = "感谢点赞";
         _chkAiThankLike.Checked = s.ThankLike;
         _chkAiAutoSummary.Text = "自动总结";
         _chkAiAutoSummary.Checked = s.AutoRoomSummary;
+        _chkAiAnnounceSong.Text = "点歌成功播报";
+        _chkAiAnnounceSong.Checked = s.AnnounceSongRequest;
         foreach (var chk in new[]
                  {
-                     _chkAiReplyDanmaku, _chkAiThankGift, _chkAiWelcome, _chkAiThankLike, _chkAiAutoSummary
+                     _chkAiReplyDanmaku, _chkAiThankGift, _chkAiWelcome, _chkAiThankLike,
+                     _chkAiAutoSummary, _chkAiAnnounceSong
                  })
         {
             chk.AutoSize = true;
@@ -617,6 +622,10 @@ public sealed class MainForm : Form
         _numAiSummaryInterval.Minimum = 30;
         _numAiSummaryInterval.Maximum = 900;
         _numAiSummaryInterval.Value = Math.Clamp(s.SummaryIntervalSeconds, 30, 900);
+        _numAiVolume.Minimum = 50;
+        _numAiVolume.Maximum = 200;
+        _numAiVolume.Increment = 10;
+        _numAiVolume.Value = Math.Clamp(s.VolumePercent <= 0 ? 150 : s.VolumePercent, 50, 200);
 
         FillAiNamedCombo(_cmbAiContext, new[]
         {
@@ -709,6 +718,7 @@ public sealed class MainForm : Form
         featureRow.Controls.Add(_chkAiWelcome);
         featureRow.Controls.Add(_chkAiThankLike);
         featureRow.Controls.Add(_chkAiAutoSummary);
+        featureRow.Controls.Add(_chkAiAnnounceSong);
 
         var promptRow = new TableLayoutPanel { ColumnCount = 2, RowCount = 1, Dock = DockStyle.Fill, Margin = new Padding(0) };
         promptRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
@@ -749,7 +759,7 @@ public sealed class MainForm : Form
 
         AddRow("", _chkAiEnabled, 28);
         AddRow("", _chkAiTestMode, 28);
-        AddRow("功能开关", featureRow, 52);
+        AddRow("功能开关", featureRow, 72);
         AddRow("AI模型", modelRow, 32);
         var modelHint = new Label
         {
@@ -768,6 +778,7 @@ public sealed class MainForm : Form
         AddRow("模型状态", _lblAiModelStatus, 22);
         AddRow("AI语音状态", _lblAiHealthSummary, 54);
         AddRow("输出设备", _cmbAiDevice, 32);
+        AddRow("AI语音音量%", _numAiVolume, 30);
         AddRow("回复间隔", _numAiInterval, 30);
         AddRow("最大排队", _numAiQueue, 30);
         AddRow("最大字数", _numAiMaxChars, 30);
@@ -1184,6 +1195,7 @@ public sealed class MainForm : Form
         _chkAiWelcome.CheckedChanged += (_, _) => SaveAiFeatureFlags();
         _chkAiThankLike.CheckedChanged += (_, _) => SaveAiFeatureFlags();
         _chkAiAutoSummary.CheckedChanged += (_, _) => SaveAiFeatureFlags();
+        _chkAiAnnounceSong.CheckedChanged += (_, _) => SaveAiFeatureFlags();
 
         void SaveNumeric()
         {
@@ -1202,6 +1214,7 @@ public sealed class MainForm : Form
         _numAiWelcomeInterval.ValueChanged += (_, _) => SaveNumeric();
         _numAiLikeInterval.ValueChanged += (_, _) => SaveNumeric();
         _numAiSummaryInterval.ValueChanged += (_, _) => SaveNumeric();
+        _numAiVolume.ValueChanged += (_, _) => SaveNumeric();
 
         void SaveCombo()
         {
@@ -1397,6 +1410,7 @@ public sealed class MainForm : Form
         _chkAiWelcome.Checked = s.WelcomeUser;
         _chkAiThankLike.Checked = s.ThankLike;
         _chkAiAutoSummary.Checked = s.AutoRoomSummary;
+        _chkAiAnnounceSong.Checked = s.AnnounceSongRequest;
 
         var replyInterval = s.ReplyIntervalSeconds > 0 ? s.ReplyIntervalSeconds : s.MinIntervalSeconds;
         _numAiInterval.Value = Math.Clamp(replyInterval, (int)_numAiInterval.Minimum, (int)_numAiInterval.Maximum);
@@ -1406,6 +1420,7 @@ public sealed class MainForm : Form
         _numAiWelcomeInterval.Value = Math.Clamp(s.WelcomeIntervalSeconds, (int)_numAiWelcomeInterval.Minimum, (int)_numAiWelcomeInterval.Maximum);
         _numAiLikeInterval.Value = Math.Clamp(Math.Max(20, s.LikeIntervalSeconds), (int)_numAiLikeInterval.Minimum, (int)_numAiLikeInterval.Maximum);
         _numAiSummaryInterval.Value = Math.Clamp(s.SummaryIntervalSeconds, (int)_numAiSummaryInterval.Minimum, (int)_numAiSummaryInterval.Maximum);
+        _numAiVolume.Value = Math.Clamp(s.VolumePercent <= 0 ? 150 : s.VolumePercent, (int)_numAiVolume.Minimum, (int)_numAiVolume.Maximum);
 
         SelectAiNamedCombo(_cmbAiContext, s.ContextMode);
         SelectAiNamedCombo(_cmbAiEmotion, string.IsNullOrWhiteSpace(s.Emotion) ? "auto" : s.Emotion, preferLastDuplicate: true);
@@ -1511,6 +1526,8 @@ public sealed class MainForm : Form
             s.WelcomeUser = _chkAiWelcome.Checked;
             s.ThankLike = _chkAiThankLike.Checked;
             s.AutoRoomSummary = _chkAiAutoSummary.Checked;
+            s.AnnounceSongRequest = _chkAiAnnounceSong.Checked;
+            s.VolumePercent = (int)_numAiVolume.Value;
 
             var replyInterval = (int)_numAiInterval.Value;
             s.ReplyIntervalSeconds = replyInterval;
@@ -1652,6 +1669,7 @@ public sealed class MainForm : Form
             ("弹幕", AiPromptStore.PromptKind.Danmaku),
             ("礼物", AiPromptStore.PromptKind.Gift),
             ("欢迎", AiPromptStore.PromptKind.Welcome),
+            ("点歌成功", AiPromptStore.PromptKind.SongRequest),
             ("总结", AiPromptStore.PromptKind.Summary),
             ("点赞", AiPromptStore.PromptKind.Like)
         };
@@ -1712,6 +1730,7 @@ public sealed class MainForm : Form
     {
         AiSpeechEventKind.Danmaku => "弹幕回复",
         AiSpeechEventKind.Gift => "礼物感谢",
+        AiSpeechEventKind.SongRequest => "点歌成功",
         AiSpeechEventKind.Welcome => "进房欢迎",
         AiSpeechEventKind.Like => "点赞感谢",
         AiSpeechEventKind.Summary => "直播间总结",
