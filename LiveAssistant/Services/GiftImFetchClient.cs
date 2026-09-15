@@ -60,7 +60,18 @@ public sealed class GiftImFetchClient
         var parsed = WebcastGiftParser.ParseImFetchBody(body);
         if (!parsed.Success)
         {
-            throw new InvalidDataException(parsed.Error ?? "im/fetch protobuf parse failed");
+            // 解析失败不抛：避免采集循环反复重连；保留 cursor，下轮再试
+            var preview = body.Length == 0
+                ? "-"
+                : Convert.ToHexString(body.AsSpan(0, Math.Min(16, body.Length)));
+            return new ImFetchResult(
+                Array.Empty<GiftMessage>(),
+                cursor ?? "",
+                internalExt ?? "",
+                null,
+                ParseError: parsed.Error ?? "im/fetch protobuf parse failed",
+                BodyLength: body.Length,
+                BodyPreviewHex: preview);
         }
 
         var nextCursor = parsed.Response?.Cursor ?? cursor;
@@ -116,7 +127,13 @@ public sealed class GiftImFetchClient
         IReadOnlyList<GiftMessage> Gifts,
         string Cursor,
         string InternalExt,
-        Response? Response);
+        Response? Response,
+        string? ParseError = null,
+        int BodyLength = 0,
+        string? BodyPreviewHex = null)
+    {
+        public bool ParseFailed => !string.IsNullOrWhiteSpace(ParseError);
+    }
 }
 
 public sealed class CookieInvalidException : Exception

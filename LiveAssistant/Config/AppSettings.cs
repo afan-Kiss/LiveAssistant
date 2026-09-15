@@ -88,8 +88,8 @@ public sealed class AiSpeechSettings
     public string Emotion { get; set; } = "auto";
     public double Speed { get; set; } = 1.0;
 
-    /// <summary>礼物感谢：ai / template。</summary>
-    public string GiftThankMode { get; set; } = "ai";
+    /// <summary>礼物感谢：ai / template。默认 template，口播更稳、更自然。</summary>
+    public string GiftThankMode { get; set; } = "template";
     public string GiftThankTemplate { get; set; } = "感谢 {nickname} 送的 {giftName}，谢谢支持。";
     public int SummaryMinDanmaku { get; set; } = 8;
 

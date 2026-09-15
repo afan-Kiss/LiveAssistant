@@ -44,8 +44,8 @@ public class AiSpeechLoudnessNormalizationTests
         Assert.True(plan.PeakBefore < 0.1f, $"peak_before={plan.PeakBefore}");
         Assert.True(plan.NormalizeGain > 5f, $"normalize_gain={plan.NormalizeGain}");
         Assert.True(plan.NormalizeGainDb > 12f, $"normalize_db={plan.NormalizeGainDb}");
-        Assert.True(plan.EstimatedPeakAfter > 0.5f, $"peak_after={plan.EstimatedPeakAfter}");
-        Assert.True(plan.EstimatedPeakAfter <= 1.0001f);
+        Assert.True(plan.EstimatedPeakAfter > 0.35f, $"peak_after={plan.EstimatedPeakAfter}");
+        Assert.True(plan.EstimatedPeakAfter <= AiSpeechPlayer.SafePeakCeiling + 0.05f);
     }
 
     [Fact]
@@ -56,7 +56,7 @@ public class AiSpeechLoudnessNormalizationTests
         Assert.True(plan.PeakBefore > 0.4f);
         Assert.True(plan.NormalizeGain < 2.5f, $"normalize should be mild: {plan.NormalizeGain}");
         Assert.True(plan.NormalizeGainDb < 8f, $"normalize_db={plan.NormalizeGainDb}");
-        Assert.InRange(plan.EstimatedPeakAfter, 0.5f, 1.0001f);
+        Assert.InRange(plan.EstimatedPeakAfter, 0.35f, AiSpeechPlayer.SafePeakCeiling + 0.08f);
     }
 
     [Fact]
@@ -126,9 +126,9 @@ public class AiSpeechLoudnessNormalizationTests
     }
 
     [Fact]
-    public void TargetPeak_IsAboutMinusOneDbFs()
+    public void TargetPeak_IsAboutMinusSixDbFs()
     {
         var db = AiSpeechPlayer.LinearToDb(AiSpeechPlayer.TargetPeakLinear);
-        Assert.InRange(db, -1.05f, -0.95f);
+        Assert.InRange(db, -6.2f, -5.8f);
     }
 }

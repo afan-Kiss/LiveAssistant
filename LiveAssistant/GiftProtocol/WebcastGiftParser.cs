@@ -95,33 +95,40 @@ public static class WebcastGiftParser
             return ParseResult.Fail("empty im/fetch body");
         }
 
+        byte[] working;
         try
         {
-            body = MaybeGunzip(body, null);
+            working = MaybeGunzip(body, null);
         }
-        catch (InvalidDataException)
+        catch (InvalidDataException ex)
         {
-            // 非 gzip 时保留原字节
+            return ParseResult.Fail("gzip decompress failed: " + ex.Message);
         }
 
-        if (TryParsePushFrame(body, out var frame, out _) && frame != null && frame.Payload.Length > 0)
+        // PushFrame 优先；嵌套 Response 失败时回退裸 Response（避免误识别导致整轮失败）
+        if (TryParsePushFrame(working, out var frame, out _) && frame != null && frame.Payload.Length > 0)
         {
             if (string.Equals(frame.PayloadType, "hb", StringComparison.OrdinalIgnoreCase))
             {
                 return ParseResult.Ok(Array.Empty<GiftMessage>(), frame, null);
             }
 
-            if (TryParseResponse(frame.Payload.ToByteArray(), frame.PayloadEncoding, out var nested, out var nestedErr) && nested != null)
+            if (TryParseResponse(frame.Payload.ToByteArray(), frame.PayloadEncoding, out var nested, out _) && nested != null)
             {
                 return ParseResult.Ok(ExtractGifts(nested), frame, nested);
             }
-
-            return ParseResult.Fail(nestedErr ?? "response parse failed", frame);
         }
 
-        if (TryParseResponse(body, null, out var response, out var error) && response != null)
+        if (TryParseResponse(working, null, out var response, out var error) && response != null)
         {
             return ParseResult.Ok(ExtractGifts(response), null, response);
+        }
+
+        // 若 gunzip 过仍失败，再试原始 body（兼容误判 gzip）
+        if (!ReferenceEquals(working, body)
+            && TryParseResponse(body, null, out var rawResp, out _) && rawResp != null)
+        {
+            return ParseResult.Ok(ExtractGifts(rawResp), null, rawResp);
         }
 
         return ParseResult.Fail(error ?? "im/fetch body parse failed");
@@ -182,11 +189,19 @@ public static class WebcastGiftParser
             return payload;
         }
 
-        using var input = new MemoryStream(payload);
-        using var gzip = new GZipStream(input, CompressionMode.Decompress);
-        using var output = new MemoryStream();
-        gzip.CopyTo(output);
-        return output.ToArray();
+        try
+        {
+            using var input = new MemoryStream(payload);
+            using var gzip = new GZipStream(input, CompressionMode.Decompress);
+            using var output = new MemoryStream();
+            gzip.CopyTo(output);
+            return output.ToArray();
+        }
+        catch (Exception ex) when (ex is InvalidDataException or IOException)
+        {
+            // 明确 gzip 却解压失败：不要把压缩字节再当 protobuf 解析
+            throw new InvalidDataException("gzip payload decompress failed", ex);
+        }
     }
 
     public sealed class ParseResult

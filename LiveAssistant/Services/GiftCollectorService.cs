@@ -132,6 +132,14 @@ public sealed class GiftCollectorService : IDisposable
                 var result = await _imFetch.FetchAsync(
                     _roomId!, webRid, cookie, userUniqueId, _cursor, _internalExt, ct);
 
+                if (result.ParseFailed)
+                {
+                    _log.GiftWarn(
+                        $"[im-fetch-parse] soft_fail len={result.BodyLength} preview={result.BodyPreviewHex} err={result.ParseError}");
+                    await DelayAsync(Math.Max(idleMs, 1500), ct);
+                    continue;
+                }
+
                 _cursor = PreferNewerCursor(_cursor, result.Cursor);
                 if (!string.IsNullOrWhiteSpace(result.InternalExt))
                 {

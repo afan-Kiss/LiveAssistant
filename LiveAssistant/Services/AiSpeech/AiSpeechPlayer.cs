@@ -12,8 +12,14 @@ public sealed class AiSpeechPlayer : IDisposable
     /// <summary>单次播放硬超时，防止 PlaybackStopped 丢失导致永久 Playing。</summary>
     public static TimeSpan DefaultPlayTimeout { get; set; } = TimeSpan.FromMinutes(3);
 
-    /// <summary>归一化目标峰值（约 -1 dBFS）。</summary>
-    public const float TargetPeakLinear = 0.89125094f; // 10^(-1/20)
+    /// <summary>归一化目标峰值（约 -6 dBFS），给用户音量留出余量，避免 180% 顶满削波。</summary>
+    public const float TargetPeakLinear = 0.5011872f; // 10^(-6/20)
+
+    /// <summary>软限幅前安全峰值上限。</summary>
+    public const float SafePeakCeiling = 0.92f;
+
+    /// <summary>开头淡入时长，减轻起音糊/破音。</summary>
+    public static readonly TimeSpan FadeInDuration = TimeSpan.FromMilliseconds(28);
 
     /// <summary>归一化增益上限（约 +26 dB），避免把近乎静音的噪声拉爆。</summary>
     public const float MaxNormalizeGain = 20f;
@@ -153,10 +159,11 @@ public sealed class AiSpeechPlayer : IDisposable
             LastPeakAfter = plan.EstimatedPeakAfter;
 
             var sample = reader.ToSampleProvider();
-            // WAV → 自动归一化 → 用户 VolumePercent → soft clip
+            // WAV → 自动归一化 → 用户 VolumePercent → 淡入 → soft clip
             var normalize = new VolumeSampleProvider(sample) { Volume = plan.NormalizeGain };
             var user = new VolumeSampleProvider(normalize) { Volume = plan.UserGain };
-            var limited = new SoftLimitingSampleProvider(user);
+            var faded = new FadeInSampleProvider(user, FadeInDuration);
+            var limited = new SoftLimitingSampleProvider(faded);
             var waveProvider = limited.ToWaveProvider16();
 
             output = new WaveOutEvent();
@@ -250,7 +257,7 @@ public sealed class AiSpeechPlayer : IDisposable
     }
 
     /// <summary>
-    /// 根据 peak/rms 计算归一化增益：目标峰值约 -1 dBFS。
+    /// 根据 peak/rms 计算归一化增益：目标峰值约 -6 dBFS（给用户音量留头空间）。
     /// 小声素材按峰值拉高；已够响的素材避免再大幅放大。
     /// </summary>
     public static float ComputeNormalizeGain(float peak, float rms)
@@ -260,28 +267,22 @@ public sealed class AiSpeechPlayer : IDisposable
             return 1f;
         }
 
-        // 主策略：峰值归一到约 -1 dBFS
         var gain = TargetPeakLinear / peak;
 
-        // 人声响度保护：主体已经较响时，限制继续放大（正常 wav 不过度放大）
         if (!float.IsNaN(rms) && !float.IsInfinity(rms))
         {
             if (rms >= 0.20f)
             {
-                // 已很响：最多保持/微降，不允许再 boost
                 gain = Math.Min(gain, 1.0f);
             }
             else if (rms >= 0.12f)
             {
-                // 正常语音主体：最多约 +3 dB
-                gain = Math.Min(gain, 1.4f);
+                gain = Math.Min(gain, 1.35f);
             }
             else if (rms >= 0.06f)
             {
-                // 偏轻但仍可听：最多约 +9 dB
-                gain = Math.Min(gain, 2.8f);
+                gain = Math.Min(gain, 2.5f);
             }
-            // rms 更低：允许接近完整峰值归一（很小的 wav 自动提高）
         }
 
         if (float.IsNaN(gain) || float.IsInfinity(gain) || gain <= 0)
@@ -312,7 +313,23 @@ public sealed class AiSpeechPlayer : IDisposable
         userGain = Math.Clamp(userGain, 0.5f, 2.0f);
         var normalize = ComputeNormalizeGain(peakBefore, rmsBefore);
         var combined = normalize * userGain;
-        // 限幅前估算；实际输出会经 soft-limit 压到 ≤1
+
+        // 防止 normalize×用户音量顶满削波（听感像“说一半断了 / 开头听不清”）
+        var peak = Math.Max(peakBefore, 1e-5f);
+        var maxCombined = SafePeakCeiling / peak;
+        if (combined > maxCombined)
+        {
+            combined = maxCombined;
+            // 优先保留归一化，压缩超额用户增益
+            userGain = combined / Math.Max(normalize, 1e-5f);
+            userGain = Math.Clamp(userGain, 0.5f, 2.0f);
+            combined = normalize * userGain;
+            if (combined > maxCombined)
+            {
+                combined = maxCombined;
+            }
+        }
+
         var estimatedRaw = peakBefore * combined;
         var estimatedAfter = SoftLimitingSampleProvider.SoftLimit(estimatedRaw);
         estimatedAfter = Math.Abs(estimatedAfter);
@@ -350,7 +367,8 @@ public sealed class AiSpeechPlayer : IDisposable
         var sample = reader.ToSampleProvider();
         var normalize = new VolumeSampleProvider(sample) { Volume = plan.NormalizeGain };
         var user = new VolumeSampleProvider(normalize) { Volume = plan.UserGain };
-        var limited = new SoftLimitingSampleProvider(user);
+        var faded = new FadeInSampleProvider(user, FadeInDuration);
+        var limited = new SoftLimitingSampleProvider(faded);
         var buf = new float[4096];
         float peakAfter = 0f;
         int read;
@@ -466,8 +484,51 @@ public sealed class AiSpeechPlayer : IDisposable
     }
 }
 
+/// <summary>开头短淡入，减轻起音爆破/糊字。</summary>
+internal sealed class FadeInSampleProvider : ISampleProvider
+{
+    private readonly ISampleProvider _source;
+    private readonly int _fadeSamples;
+    private int _position;
+
+    public FadeInSampleProvider(ISampleProvider source, TimeSpan fadeDuration)
+    {
+        _source = source ?? throw new ArgumentNullException(nameof(source));
+        var ms = Math.Clamp(fadeDuration.TotalMilliseconds, 0, 200);
+        _fadeSamples = (int)(_source.WaveFormat.SampleRate * _source.WaveFormat.Channels * ms / 1000.0);
+    }
+
+    public WaveFormat WaveFormat => _source.WaveFormat;
+
+    public int Read(float[] buffer, int offset, int count)
+    {
+        var read = _source.Read(buffer, offset, count);
+        if (_fadeSamples <= 0 || _position >= _fadeSamples)
+        {
+            _position += read;
+            return read;
+        }
+
+        for (var i = 0; i < read; i++)
+        {
+            if (_position + i >= _fadeSamples)
+            {
+                break;
+            }
+
+            var t = (_position + i) / (float)_fadeSamples;
+            // 平滑起音
+            var g = t * t * (3f - 2f * t);
+            buffer[offset + i] *= g;
+        }
+
+        _position += read;
+        return read;
+    }
+}
+
 /// <summary>
-/// 软件增益后的软限幅：先 soft-knee，再硬夹到 [-1,1]，避免 200% 明显爆音。
+/// 软件增益后的软限幅：先 soft-knee，再硬夹到 [-1,1]，避免明显爆音。
 /// </summary>
 internal sealed class SoftLimitingSampleProvider : ISampleProvider
 {
@@ -495,13 +556,14 @@ internal sealed class SoftLimitingSampleProvider : ISampleProvider
     {
         var sign = sample < 0 ? -1f : 1f;
         var a = Math.Abs(sample);
-        if (a <= 0.9f)
+        // 更早进入软膝，减少“砸顶”感
+        if (a <= 0.85f)
         {
             return sample;
         }
 
-        var over = (a - 0.9f) / 0.1f;
-        var shaped = 0.9f + 0.1f * MathF.Tanh(over);
+        var over = (a - 0.85f) / 0.15f;
+        var shaped = 0.85f + 0.15f * MathF.Tanh(over);
         var result = sign * shaped;
         if (result > 1f)
         {
