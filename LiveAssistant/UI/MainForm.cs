@@ -81,6 +81,11 @@ public sealed class MainForm : Form
     private readonly Label _lblAiVoiceStatus = new();
     private readonly Label _lblAiPhase = new();
     private readonly Label _lblAiQueue = new();
+    private readonly Label _lblAiRuntimeStatus = new();
+    private readonly Label _lblAiTodayReplies = new();
+    private readonly Label _lblAiSuccessRate = new();
+    private readonly Label _lblAiAvgLatency = new();
+    private readonly Label _lblAiLastError = new();
     private readonly Label _lblAiLatestUser = new();
     private readonly Label _lblAiLatestContent = new();
     private readonly Label _lblAiReply = new();
@@ -639,6 +644,7 @@ public sealed class MainForm : Form
         foreach (var lbl in new[]
                  {
                      _lblAiOllamaStatus, _lblAiTtsStatus, _lblAiVoiceStatus, _lblAiPhase, _lblAiQueue,
+                     _lblAiRuntimeStatus, _lblAiTodayReplies, _lblAiSuccessRate, _lblAiAvgLatency, _lblAiLastError,
                      _lblAiLatestUser, _lblAiLatestContent, _lblAiReply, _lblAiHint, _lblAiTestStats,
                      _lblAiPromptInfo, _lblAiEmotionSpeed, _lblAiTaskKind
                  })
@@ -651,7 +657,12 @@ public sealed class MainForm : Form
         _lblAiTtsStatus.Text = "● GPT-SoVITS检测中";
         _lblAiVoiceStatus.Text = "● 声音检测中";
         _lblAiPhase.Text = "空闲";
+        _lblAiRuntimeStatus.Text = "空闲";
         _lblAiQueue.Text = "0 / 5";
+        _lblAiTodayReplies.Text = "0";
+        _lblAiSuccessRate.Text = "-";
+        _lblAiAvgLatency.Text = "-";
+        _lblAiLastError.Text = "-";
         _lblAiLatestUser.Text = "-";
         _lblAiLatestContent.Text = "-";
         _lblAiReply.Text = "-";
@@ -661,6 +672,7 @@ public sealed class MainForm : Form
         _lblAiEmotionSpeed.Text = "-";
         _lblAiPromptInfo.Text = "提示词未加载";
         _lblAiHint.ForeColor = Color.FromArgb(160, 80, 0);
+        _lblAiLastError.ForeColor = Color.FromArgb(160, 80, 0);
         _lblAiTestStats.ForeColor = Color.DimGray;
         _lblAiPromptInfo.ForeColor = Color.DimGray;
 
@@ -745,10 +757,15 @@ public sealed class MainForm : Form
         AddRow("礼物模式", _cmbAiGiftMode, 32);
         AddRow("提示词", promptRow, 36);
         AddRow("操作", btnRow, 36);
+        AddRow("AI状态", _lblAiRuntimeStatus, 24);
         AddRow("当前状态", _lblAiPhase, 24);
         AddRow("任务类型", _lblAiTaskKind, 24);
         AddRow("情绪语速", _lblAiEmotionSpeed, 24);
-        AddRow("队列", _lblAiQueue, 24);
+        AddRow("今日回复", _lblAiTodayReplies, 24);
+        AddRow("成功率", _lblAiSuccessRate, 24);
+        AddRow("平均延迟", _lblAiAvgLatency, 24);
+        AddRow("当前队列", _lblAiQueue, 24);
+        AddRow("最近错误", _lblAiLastError, 24);
         AddRow("最新弹幕", _lblAiLatestUser, 24);
         AddRow("", _lblAiLatestContent, 24);
         AddRow("AI回复", _lblAiReply, 40);
@@ -1458,6 +1475,9 @@ public sealed class MainForm : Form
         }
 
         var status = _host.AiSpeech.GetStatus();
+        _lblAiRuntimeStatus.Text = string.IsNullOrWhiteSpace(status.RuntimeStatusText)
+            ? AiSpeechPhaseText.ToRuntimeStatus(status.Phase)
+            : status.RuntimeStatusText;
         _lblAiPhase.Text = status.PhaseText;
         _lblAiTaskKind.Text = FormatAiTaskKind(status.TaskKind);
         var emotion = string.IsNullOrWhiteSpace(status.Emotion) ? "-" : status.Emotion;
@@ -1481,7 +1501,11 @@ public sealed class MainForm : Form
             _lblAiPromptInfo.Text = "提示词未加载";
         }
 
-        _lblAiQueue.Text = $"{status.QueueCount} / {status.MaxQueueSize}";
+        _lblAiTodayReplies.Text = status.TodayReplyCount.ToString();
+        _lblAiSuccessRate.Text = $"{status.SuccessRatePercent:0}%";
+        _lblAiAvgLatency.Text = status.AverageTotalMs > 0 ? $"{status.AverageTotalMs} ms" : "-";
+        _lblAiQueue.Text = $"{status.QueueCount}/{status.MaxQueueSize}";
+        _lblAiLastError.Text = string.IsNullOrWhiteSpace(status.LastError) ? "-" : status.LastError;
         _lblAiOllamaStatus.Text = status.OllamaOk ? "● Ollama正常" : "● Ollama不可用";
         _lblAiOllamaStatus.ForeColor = status.OllamaOk ? Color.ForestGreen : Color.Firebrick;
         _lblAiTtsStatus.Text = status.TtsOk ? "● GPT-SoVITS正常" : "● GPT-SoVITS不可用";

@@ -22,6 +22,8 @@ public sealed class AiSpeechCoordinator : IDisposable
     private readonly string _tempDir;
 
     private readonly AiSpeechScheduler _scheduler = new();
+    private readonly AiSpeechMetrics _metrics = new();
+    private readonly AiReplyDuplicateGuard _replyDupGuard = new(20, TimeSpan.FromMinutes(5));
     private readonly AiPromptStore _prompts;
     private readonly UserConversationContext _userContext;
     private readonly RoomConversationContext _roomContext;
@@ -32,11 +34,10 @@ public sealed class AiSpeechCoordinator : IDisposable
 
     private readonly object _recentContentLock = new();
     private readonly Dictionary<string, DateTime> _recentContents = new(StringComparer.Ordinal);
-    private readonly object _aiReplyLock = new();
-    private readonly Dictionary<string, DateTime> _recentAiReplies = new(StringComparer.Ordinal);
 
     private CancellationTokenSource _cts = new();
     private Task? _worker;
+    private Task? _metricsLoop;
     private int _disposed;
     private volatile AiSpeechPhase _phase = AiSpeechPhase.Idle;
     private volatile AiSpeechEventKind _latestKind = AiSpeechEventKind.Danmaku;
@@ -99,6 +100,7 @@ public sealed class AiSpeechCoordinator : IDisposable
 
         ApplyDeviceFromSettings();
         _worker = Task.Run(() => WorkerLoopAsync(_cts.Token));
+        _metricsLoop = Task.Run(() => MetricsSnapshotLoopAsync(_cts.Token));
         _ = RefreshHealthAsync();
     }
 
@@ -107,16 +109,24 @@ public sealed class AiSpeechCoordinator : IDisposable
     /// <summary>提示词仓库（UI 编辑器用）。</summary>
     public AiPromptStore Prompts => _prompts;
 
+    /// <summary>运行指标（测试/诊断）。</summary>
+    public AiSpeechMetrics Metrics => _metrics;
+
     public AiSpeechStatusSnapshot GetStatus()
     {
+        var maxQ = Math.Clamp(Settings.MaxQueueSize, 1, 20);
+        var q = _scheduler.Count;
+        _metrics.NoteQueueSize(q);
+        var m = _metrics.Snapshot(q, maxQ);
         return new AiSpeechStatusSnapshot
         {
             Enabled = Settings.Enabled || Settings.TestMode,
             TestMode = Settings.TestMode,
             Phase = _phase,
             PhaseText = AiSpeechPhaseText.ToText(_phase),
-            QueueCount = _scheduler.Count,
-            MaxQueueSize = Math.Clamp(Settings.MaxQueueSize, 1, 20),
+            RuntimeStatusText = AiSpeechPhaseText.ToRuntimeStatus(_phase),
+            QueueCount = q,
+            MaxQueueSize = maxQ,
             LatestNickname = _latestNickname,
             LatestContent = _latestContent,
             LatestReply = _latestReply,
@@ -132,7 +142,12 @@ public sealed class AiSpeechCoordinator : IDisposable
             Emotion = _latestEmotion,
             Speed = GetLatestSpeed(),
             PromptLoadedAt = _prompts.GetLoadedAt(),
-            PromptVersion = _prompts.GetVersion()
+            PromptVersion = _prompts.GetVersion(),
+            TodayReplyCount = m.TodayReplyCount,
+            SuccessRatePercent = m.SuccessRatePercent,
+            AverageTotalMs = m.AverageTotalMs,
+            LastError = m.LastError,
+            MaxQueueSizeSeen = m.MaxQueueSizeSeen
         };
     }
 
@@ -295,6 +310,7 @@ public sealed class AiSpeechCoordinator : IDisposable
 
             if (!scored.EnterAi)
             {
+                _metrics.NoteFiltered();
                 _log.AiInfo(
                     $"AI_DANMAKU_FILTERED reason={scored.Reason} score={scored.Score} threshold={scored.Threshold} user={MaskId(item?.UserId)} nick={item?.Nickname} len={contentLen} enter_ai=0");
                 return;
@@ -302,6 +318,7 @@ public sealed class AiSpeechCoordinator : IDisposable
 
             if (IsSelfHostMessage(item!, roomOwnerNickname, loginNickname))
             {
+                _metrics.NoteFiltered();
                 _log.AiInfo(
                     $"AI_SELF_MESSAGE_SKIP reason=host_or_login nick={item!.Nickname} user={MaskId(item.UserId)} len={contentLen} score={scored.Score} enter_ai=0");
                 return;
@@ -309,6 +326,7 @@ public sealed class AiSpeechCoordinator : IDisposable
 
             if (_outboundTracker.MatchesTrackedMessageId(item!.MsgId))
             {
+                _metrics.NoteFiltered();
                 _log.AiInfo(
                     $"AI_SELF_MESSAGE_SKIP reason=outbound_msg_id nick={item.Nickname} len={item.Content.Length} score={scored.Score} enter_ai=0");
                 return;
@@ -316,6 +334,7 @@ public sealed class AiSpeechCoordinator : IDisposable
 
             if (IsDuplicateRecent(item))
             {
+                _metrics.NoteFiltered();
                 _log.AiInfo(
                     $"AI_DANMAKU_FILTERED reason=duplicate user={MaskId(item.UserId)} len={item.Content.Length} score={scored.Score} enter_ai=0");
                 return;
@@ -346,6 +365,7 @@ public sealed class AiSpeechCoordinator : IDisposable
                 PromptVersion = _prompts.GetVersion()
             };
 
+            _metrics.NoteReceived();
             _log.AiInfo(
                 $"AI_DANMAKU_RECEIVED task={task.TaskId} room={_config.Settings.Douyin.WebRid} user={MaskId(task.UserId)} nick={task.Nickname} len={task.Content.Length} score={task.Score} enter_ai=1 detail={task.ScoreDetail}");
 
@@ -604,6 +624,7 @@ public sealed class AiSpeechCoordinator : IDisposable
             };
             _log.AiInfo(
                 $"AI_GIFT_FLUSH task={task.TaskId} user={MaskId(item.UserId)} gift={item.GiftName} count={item.Count} mode={(prebuilt != null ? "template" : "ai")}");
+            _metrics.NoteReceived();
             Enqueue(task);
         }
         catch (Exception ex)
@@ -634,6 +655,7 @@ public sealed class AiSpeechCoordinator : IDisposable
                 EnqueuedAt = DateTime.UtcNow
             };
             _log.AiInfo($"AI_WELCOME_FLUSH task={task.TaskId} names={names}");
+            _metrics.NoteReceived();
             Enqueue(task);
         }
         catch (Exception ex)
@@ -663,6 +685,7 @@ public sealed class AiSpeechCoordinator : IDisposable
                 EnqueuedAt = DateTime.UtcNow
             };
             _log.AiInfo($"AI_LIKE_FLUSH task={task.TaskId} count={batch.Count}");
+            _metrics.NoteReceived();
             Enqueue(task);
         }
         catch (Exception ex)
@@ -675,12 +698,40 @@ public sealed class AiSpeechCoordinator : IDisposable
     {
         ApplySchedulerLimits();
         _scheduler.Enqueue(task);
+        var q = _scheduler.Count;
+        _metrics.NoteQueueSize(q);
         _log.AiInfo(
-            $"AI_QUEUE_ADD task={task.TaskId} kind={task.Kind} priority={task.Priority} queue={_scheduler.Count}/{_scheduler.MaxSize} nick={task.Nickname}");
+            $"AI_QUEUE_ADD task={task.TaskId} kind={task.Kind} priority={task.Priority} queue={q}/{_scheduler.MaxSize} nick={task.Nickname}");
         _latestNickname = task.Nickname;
         _latestContent = task.Content;
         _latestKind = task.Kind;
         NotifyStatus();
+    }
+
+    private async Task MetricsSnapshotLoopAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromMinutes(5), ct);
+                if (Volatile.Read(ref _disposed) != 0)
+                {
+                    break;
+                }
+
+                var line = _metrics.FormatSnapshotLog(_scheduler.Count, _scheduler.MaxSize);
+                _log.AiInfo(line);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                try { _log.AiWarn($"AI_METRIC_SNAPSHOT_FAIL {ex.GetType().Name}: {ex.Message}"); } catch { /* ignore */ }
+            }
+        }
     }
 
     private async Task WorkerLoopAsync(CancellationToken ct)
@@ -697,10 +748,21 @@ public sealed class AiSpeechCoordinator : IDisposable
 
                 MaybeEnqueueRoomSummary();
 
-                if (!_scheduler.TryDequeue(out var next) || next == null)
+                if (!_scheduler.TryDequeue(out var next, out var expired) || next == null)
                 {
+                    if (expired > 0)
+                    {
+                        _metrics.NoteSkip("EXPIRED");
+                        for (var i = 1; i < expired; i++) _metrics.NoteSkip("EXPIRED");
+                    }
+
                     await Task.Delay(200, ct);
                     continue;
+                }
+
+                if (expired > 0)
+                {
+                    for (var i = 0; i < expired; i++) _metrics.NoteSkip("EXPIRED");
                 }
 
                 var wait = ComputeGapWait(next.Kind);
@@ -821,7 +883,7 @@ public sealed class AiSpeechCoordinator : IDisposable
                 var sanitizedPre = ModelOutputSanitizer.Sanitize(task.PrebuiltText);
                 if (!sanitizedPre.Ok)
                 {
-                    _log.AiWarn($"AI_OUTPUT_REJECTED reason={sanitizedPre.RejectReason} task={task.TaskId} kind={task.Kind}");
+                    NoteSanitizeReject(task, sanitizedPre.RejectReason);
                     SetPhase(AiSpeechPhase.Idle);
                     NotifyStatus();
                     return FailResult(task, $"输出被拒绝：{sanitizedPre.RejectReason}", 0, totalSw.ElapsedMilliseconds);
@@ -830,10 +892,13 @@ public sealed class AiSpeechCoordinator : IDisposable
                 cleaned = SpeechTextCleaner.Clean(sanitizedPre.Text, Settings.MaxReplyLength);
                 if (string.IsNullOrWhiteSpace(cleaned))
                 {
+                    _metrics.NoteSkip("EMPTY_REPLY");
                     _log.AiWarn($"AI_GENERATE_FAIL task={task.TaskId} err=empty_after_clean");
                     SetPhase(AiSpeechPhase.Idle);
                     return FailResult(task, "预置文本清洗后为空", 0, totalSw.ElapsedMilliseconds);
                 }
+
+                _metrics.NoteGenerated(0, queueWaitMs);
             }
             else
             {
@@ -861,6 +926,7 @@ public sealed class AiSpeechCoordinator : IDisposable
 
                 if (!gen.Success)
                 {
+                    _metrics.NoteOllamaError(gen.Error);
                     if (gen.ResourceError)
                     {
                         _log.AiWarn($"AI_OLLAMA_RESOURCE_ERROR task={task.TaskId} status={gen.StatusCode} err={gen.Error}");
@@ -899,7 +965,7 @@ public sealed class AiSpeechCoordinator : IDisposable
                 var sanitized = ModelOutputSanitizer.Sanitize(gen.Text);
                 if (!sanitized.Ok)
                 {
-                    _log.AiWarn($"AI_OUTPUT_REJECTED reason={sanitized.RejectReason} task={task.TaskId} kind={task.Kind}");
+                    NoteSanitizeReject(task, sanitized.RejectReason);
                     SetPhase(AiSpeechPhase.Idle);
                     NotifyStatus();
                     return FailResult(task, $"输出被拒绝：{sanitized.RejectReason}", ollamaMs, totalSw.ElapsedMilliseconds);
@@ -908,13 +974,24 @@ public sealed class AiSpeechCoordinator : IDisposable
                 cleaned = SpeechTextCleaner.Clean(sanitized.Text, Settings.MaxReplyLength);
                 if (string.IsNullOrWhiteSpace(cleaned))
                 {
+                    _metrics.NoteSkip("EMPTY_REPLY");
                     _log.AiWarn($"AI_GENERATE_FAIL task={task.TaskId} err=empty_after_clean");
                     SetPhase(AiSpeechPhase.Idle);
                     return FailResult(task, "AI 回复清洗后为空", ollamaMs, totalSw.ElapsedMilliseconds);
                 }
 
+                _metrics.NoteGenerated(ollamaMs, queueWaitMs);
                 _log.AiInfo(
                     $"AI_GENERATE_OK task={task.TaskId} kind={task.Kind} ollama_ms={ollamaMs} reply_len={cleaned.Length} ai_reply_ms={ollamaMs}");
+            }
+
+            if (_replyDupGuard.IsDuplicate(cleaned))
+            {
+                _metrics.NoteSkip("DUPLICATE_REPLY");
+                _log.AiInfo($"AI_DUPLICATE_SKIP task={task.TaskId} kind={task.Kind} reply_len={cleaned.Length}");
+                SetPhase(AiSpeechPhase.Idle);
+                NotifyStatus();
+                return FailResult(task, "重复回复已跳过", ollamaMs, totalSw.ElapsedMilliseconds);
             }
 
             _latestReply = cleaned;
@@ -956,6 +1033,7 @@ public sealed class AiSpeechCoordinator : IDisposable
             {
                 _ttsOk = false;
                 _serviceHint = "语音服务不可用";
+                _metrics.NoteTtsFailed(synth.Error);
                 _log.AiWarn($"AI_TTS_FAIL task={task.TaskId} status={synth.StatusCode} err={synth.Error}");
                 SetPhase(AiSpeechPhase.Idle);
                 NotifyStatus();
@@ -973,6 +1051,7 @@ public sealed class AiSpeechCoordinator : IDisposable
             }
 
             _ttsOk = true;
+            _metrics.NoteTtsSuccess(ttsSw.ElapsedMilliseconds);
             _log.AiInfo(
                 $"AI_TTS_OK task={task.TaskId} tts_ms={ttsSw.ElapsedMilliseconds} bytes={synth.AudioWav.Length}");
 
@@ -980,8 +1059,36 @@ public sealed class AiSpeechCoordinator : IDisposable
             ApplyDeviceFromSettings();
             _log.AiInfo($"AI_AUDIO_PLAY_START task={task.TaskId}");
             var playSw = Stopwatch.StartNew();
-            await _player.PlayWavAsync(synth.AudioWav, _tempDir, playCt);
+            try
+            {
+                await _player.PlayWavAsync(synth.AudioWav, _tempDir, playCt);
+            }
+            catch (OperationCanceledException)
+            {
+                _metrics.NotePlayFailed("cancelled");
+                throw;
+            }
+            catch (Exception playEx)
+            {
+                _metrics.NotePlayFailed(playEx.Message);
+                _log.AiWarn($"AI_AUDIO_PLAY_FAIL task={task.TaskId} err={playEx.Message}");
+                SetPhase(AiSpeechPhase.Idle);
+                NotifyStatus();
+                return new AiSpeechTestResult
+                {
+                    Success = false,
+                    Nickname = task.Nickname,
+                    Danmaku = task.Content,
+                    Reply = cleaned,
+                    Error = playEx.Message,
+                    OllamaMs = ollamaMs,
+                    TtsMs = ttsSw.ElapsedMilliseconds,
+                    TotalMs = totalSw.ElapsedMilliseconds
+                };
+            }
+
             playSw.Stop();
+            _metrics.NotePlaySuccess(totalSw.ElapsedMilliseconds);
             _log.AiInfo(
                 $"AI_SPEECH taskId={task.TaskId} kind={task.Kind} sourceMsgId={task.MsgId} queueWait={queueWaitMs} " +
                 $"generateMs={ollamaMs} ttsMs={ttsSw.ElapsedMilliseconds} " +
@@ -1053,6 +1160,20 @@ public sealed class AiSpeechCoordinator : IDisposable
                 // Dispose 与活动任务并发时闸门可能已释放
             }
         }
+    }
+
+    private void NoteSanitizeReject(AiSpeechTask task, string? reason)
+    {
+        var r = (reason ?? "EMPTY").Trim().ToUpperInvariant();
+        if (r == "SKIP")
+        {
+            _metrics.NoteSkip("SKIP");
+            _log.AiInfo($"AI_SKIP_BY_MODEL task={task.TaskId} kind={task.Kind}");
+            return;
+        }
+
+        _metrics.NoteSkip(r);
+        _log.AiWarn($"AI_OUTPUT_REJECTED reason={reason} task={task.TaskId} kind={task.Kind}");
     }
 
     private static string BuildCurrentUserMessage(AiSpeechTask task) => task.Kind switch
@@ -1317,6 +1438,28 @@ public sealed class AiSpeechCoordinator : IDisposable
             {
                 _ = _worker.Wait(TimeSpan.FromSeconds(5));
             }
+        }
+        catch
+        {
+            // ignore
+        }
+
+        try
+        {
+            if (_metricsLoop != null)
+            {
+                _ = _metricsLoop.Wait(TimeSpan.FromSeconds(2));
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+
+        try
+        {
+            var line = _metrics.FormatSnapshotLog(_scheduler.Count, _scheduler.MaxSize);
+            _log.AiInfo(line + " final=1");
         }
         catch
         {

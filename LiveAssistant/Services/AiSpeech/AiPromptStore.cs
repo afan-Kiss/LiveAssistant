@@ -256,25 +256,30 @@ public sealed class AiPromptStore : IDisposable
 
     private void ReloadKind(PromptKind kind, bool force)
     {
+        string? previousText = null;
+        lock (_gate)
+        {
+            if (_cache.TryGetValue(kind, out var existing) && !string.IsNullOrWhiteSpace(existing.Text))
+            {
+                previousText = existing.Text;
+            }
+        }
+
         try
         {
             var path = ResolvePath(kind);
             string text = "";
             DateTime mtime = DateTime.MinValue;
+            long length = -1;
             if (path != null && File.Exists(path))
             {
-                // 短暂重试，避免编辑器写一半
-                for (var i = 0; i < 3; i++)
+                // 稳定读：重试 + 连续两次内容/长度一致，避免编辑器写一半
+                if (!TryReadStable(path, out text, out mtime, out length))
                 {
-                    try
+                    if (!string.IsNullOrWhiteSpace(previousText))
                     {
-                        text = File.ReadAllText(path);
-                        mtime = File.GetLastWriteTimeUtc(path);
-                        break;
-                    }
-                    catch (IOException) when (i < 2)
-                    {
-                        Thread.Sleep(40);
+                        _log?.Invoke($"AI_PROMPT_KEEP_OLD type={kind} reason=unstable_read path={Path.GetFileName(path)}");
+                        return;
                     }
                 }
             }
@@ -287,11 +292,24 @@ public sealed class AiPromptStore : IDisposable
                     // 永不覆盖有效缓存为空读
                     if (_cache.TryGetValue(kind, out var existing) && !string.IsNullOrWhiteSpace(existing.Text))
                     {
+                        _log?.Invoke($"AI_PROMPT_KEEP_OLD type={kind} reason=empty_read");
                         return;
                     }
 
                     text = GetBuiltInDefault(kind).Trim();
                     path ??= Path.Combine(_configDir, FileName(kind));
+                }
+
+                // 半文件启发式：新内容明显短于旧版且旧版非空 → 保留旧版
+                if (!string.IsNullOrWhiteSpace(previousText)
+                    && previousText.Length >= 40
+                    && text.Length < previousText.Length / 3
+                    && length >= 0
+                    && length < previousText.Length / 3)
+                {
+                    _log?.Invoke(
+                        $"AI_PROMPT_KEEP_OLD type={kind} reason=truncated_suspect old_len={previousText.Length} new_len={text.Length}");
+                    return;
                 }
 
                 var ver = ShortHash(text);
@@ -311,6 +329,12 @@ public sealed class AiPromptStore : IDisposable
         catch (Exception ex)
         {
             _log?.Invoke($"AI_PROMPT_RELOAD type={kind} error={ex.Message}");
+            if (!string.IsNullOrWhiteSpace(previousText))
+            {
+                _log?.Invoke($"AI_PROMPT_KEEP_OLD type={kind} reason=exception");
+                return;
+            }
+
             if (force)
             {
                 lock (_gate)
@@ -329,6 +353,50 @@ public sealed class AiPromptStore : IDisposable
                 }
             }
         }
+    }
+
+    /// <summary>连续两次读到相同内容才接受；IO 失败时返回 false。</summary>
+    private static bool TryReadStable(string path, out string text, out DateTime mtime, out long length)
+    {
+        text = "";
+        mtime = DateTime.MinValue;
+        length = -1;
+        string? last = null;
+        for (var i = 0; i < 4; i++)
+        {
+            try
+            {
+                var bytes = File.ReadAllBytes(path);
+                length = bytes.LongLength;
+                mtime = File.GetLastWriteTimeUtc(path);
+                var current = Encoding.UTF8.GetString(bytes);
+                if (last != null && string.Equals(last, current, StringComparison.Ordinal))
+                {
+                    text = current;
+                    return true;
+                }
+
+                last = current;
+                Thread.Sleep(40);
+            }
+            catch (IOException) when (i < 3)
+            {
+                Thread.Sleep(40);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        // 最后一次读到的内容作为兜底（已尽量稳定）
+        if (last != null)
+        {
+            text = last;
+            return true;
+        }
+
+        return false;
     }
 
     private string? ResolvePath(PromptKind kind)
@@ -426,8 +494,21 @@ public sealed class AiPromptStore : IDisposable
     {
         var tmp = path + ".tmp";
         File.WriteAllText(tmp, content);
-        File.Copy(tmp, path, overwrite: true);
-        try { File.Delete(tmp); } catch { /* ignore */ }
+        // 尽量用替换，减少读者看到半文件的窗口
+        try
+        {
+            File.Replace(tmp, path, null);
+        }
+        catch (IOException)
+        {
+            File.Copy(tmp, path, overwrite: true);
+            try { File.Delete(tmp); } catch { /* ignore */ }
+        }
+        catch (PlatformNotSupportedException)
+        {
+            File.Copy(tmp, path, overwrite: true);
+            try { File.Delete(tmp); } catch { /* ignore */ }
+        }
     }
 
     private static string ShortHash(string text)

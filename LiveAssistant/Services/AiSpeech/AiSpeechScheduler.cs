@@ -12,6 +12,8 @@ public sealed class AiSpeechScheduler
     private int _maxAgeSeconds = 30;
     private int _maxConsecutiveSameKind = 3;
     private long _maxSeen;
+    private long _expiredTotal;
+    private long _droppedTotal;
 
     private AiSpeechEventKind? _lastDequeuedKind;
     private int _consecutiveSameKind;
@@ -52,6 +54,16 @@ public sealed class AiSpeechScheduler
         get { lock (_gate) return _maxSeen; }
     }
 
+    public long ExpiredTotal
+    {
+        get { lock (_gate) return _expiredTotal; }
+    }
+
+    public long DroppedTotal
+    {
+        get { lock (_gate) return _droppedTotal; }
+    }
+
     /// <summary>当前同类型连续已出队次数（测试/诊断用）。</summary>
     public int ConsecutiveSameKindCount
     {
@@ -79,11 +91,12 @@ public sealed class AiSpeechScheduler
         }
     }
 
-    public bool TryDequeue(out AiSpeechTask? task)
+    /// <summary>出队；同时返回本轮过期丢弃数（供指标）。</summary>
+    public bool TryDequeue(out AiSpeechTask? task, out int expiredThisCall)
     {
         lock (_gate)
         {
-            Expire_NoLock();
+            expiredThisCall = Expire_NoLock();
             if (_items.Count == 0)
             {
                 task = null;
@@ -97,6 +110,9 @@ public sealed class AiSpeechScheduler
             return true;
         }
     }
+
+    public bool TryDequeue(out AiSpeechTask? task)
+        => TryDequeue(out task, out _);
 
     public AiSpeechTask? Peek()
     {
@@ -181,11 +197,17 @@ public sealed class AiSpeechScheduler
         }
     }
 
-    private void Expire_NoLock()
+    private int Expire_NoLock()
     {
         var now = DateTime.UtcNow;
         var maxAge = TimeSpan.FromSeconds(_maxAgeSeconds);
-        _items.RemoveAll(t => now - t.EnqueuedAt > maxAge);
+        var removed = _items.RemoveAll(t => now - t.EnqueuedAt > maxAge);
+        if (removed > 0)
+        {
+            _expiredTotal += removed;
+        }
+
+        return removed;
     }
 
     private void DropLowest_NoLock()
@@ -208,6 +230,7 @@ public sealed class AiSpeechScheduler
         }
 
         _items.RemoveAt(worstIdx);
+        _droppedTotal++;
     }
 
     private static int Compare(AiSpeechTask a, AiSpeechTask b)

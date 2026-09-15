@@ -36,7 +36,7 @@ public sealed class UserConversationContext
             _userMax = Math.Clamp(userMax, 1, 40);
             _hostMax = Math.Clamp(hostMax, 1, 20);
             _ttl = TimeSpan.FromMinutes(Math.Clamp(ttlMinutes, 1, 180));
-            _maxUsers = Math.Clamp(maxUsers, 16, 50_000);
+            _maxUsers = Math.Clamp(maxUsers, 1, 50_000);
             EvictOverCapacity_NoLock();
         }
     }

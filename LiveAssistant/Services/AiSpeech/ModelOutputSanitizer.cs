@@ -42,10 +42,10 @@ public static partial class ModelOutputSanitizer
     [GeneratedRegex(@"(?is)(?:Reasoning|Thinking|Analysis|思考|分析|推理)\s*[:：]\s*[\s\S]*?(?=(?:Final\s*Answer|最终回答|回复)\s*[:：]|$)")]
     private static partial Regex ReasoningSection();
 
-    [GeneratedRegex(@"(?im)^\s*(System|Assistant|User|Human|AI)\s*[:：]\s*.*$")]
+    [GeneratedRegex(@"(?im)^\s*(System|User|Human)\s*[:：]\s*.*$")]
     private static partial Regex RoleLabelLine();
 
-    [GeneratedRegex(@"(?is)\b(System|Assistant)\s*[:：]\s*")]
+    [GeneratedRegex(@"(?is)\b(System|User|Human)\s*[:：]\s*")]
     private static partial Regex RoleLabelInline();
 
     [GeneratedRegex("`[^`]*`")]
@@ -65,6 +65,13 @@ public static partial class ModelOutputSanitizer
         }
 
         var original = raw.Trim();
+
+        // 模型主动沉默：整段仅为 [SKIP] / SKIP，不进入 TTS
+        if (IsModelSkip(original))
+        {
+            return SanitizeResult.Reject("SKIP");
+        }
+
         var s = original;
         s = ThinkBlock().Replace(s, " ");
         s = AnalysisBlock().Replace(s, " ");
@@ -78,6 +85,11 @@ public static partial class ModelOutputSanitizer
         s = MdNoise().Replace(s, "");
         s = StripCommonPrefixes(s);
         s = MultiSpace().Replace(s.Replace('\r', ' ').Replace('\n', ' ').Replace('\t', ' '), " ").Trim();
+
+        if (IsModelSkip(s))
+        {
+            return SanitizeResult.Reject("SKIP");
+        }
 
         if (DetectPromptLeak(original) || DetectPromptLeak(s))
         {
@@ -106,7 +118,36 @@ public static partial class ModelOutputSanitizer
             return SanitizeResult.Reject("NO_FINAL_ANSWER");
         }
 
+        if (IsModelSkip(s))
+        {
+            return SanitizeResult.Reject("SKIP");
+        }
+
         return SanitizeResult.Accept(s);
+    }
+
+    /// <summary>
+    /// 仅当整段输出为 SKIP / [SKIP]（可带空白）时判定为主动沉默。
+    /// 不允许「[SKIP] 因为……」这类带解释的输出进入 TTS。
+    /// </summary>
+    public static bool IsModelSkip(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        var t = text.Trim();
+        if (t.Equals("SKIP", StringComparison.OrdinalIgnoreCase)
+            || t.Equals("[SKIP]", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        // 去掉常见括号/空白后再比一次
+        t = MultiSpace().Replace(t.Replace('\r', ' ').Replace('\n', ' '), " ").Trim();
+        return t.Equals("SKIP", StringComparison.OrdinalIgnoreCase)
+               || t.Equals("[SKIP]", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

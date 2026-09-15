@@ -108,6 +108,8 @@ public sealed class AiSpeechStatusSnapshot
     public bool TestMode { get; init; }
     public AiSpeechPhase Phase { get; init; } = AiSpeechPhase.Idle;
     public string PhaseText { get; init; } = "空闲";
+    /// <summary>面板简化状态：空闲 / 生成回复 / 合成声音 / 播放中。</summary>
+    public string RuntimeStatusText { get; init; } = "空闲";
     public int QueueCount { get; init; }
     public int MaxQueueSize { get; init; } = 5;
     public string LatestNickname { get; init; } = "";
@@ -127,6 +129,12 @@ public sealed class AiSpeechStatusSnapshot
     public double Speed { get; init; } = 1.0;
     public DateTime? PromptLoadedAt { get; init; }
     public string PromptVersion { get; init; } = "";
+
+    public long TodayReplyCount { get; init; }
+    public double SuccessRatePercent { get; init; }
+    public long AverageTotalMs { get; init; }
+    public string LastError { get; init; } = "";
+    public long MaxQueueSizeSeen { get; init; }
 }
 
 public sealed class AiSpeechTestResult
@@ -159,5 +167,14 @@ public static class AiSpeechPhaseText
         AiSpeechPhase.Synthesizing => "正在合成声音",
         AiSpeechPhase.Playing => "正在播放",
         _ => "空闲"
+    };
+
+    /// <summary>运行监控面板用的四态文案。</summary>
+    public static string ToRuntimeStatus(AiSpeechPhase phase) => phase switch
+    {
+        AiSpeechPhase.Synthesizing => "合成声音",
+        AiSpeechPhase.Playing => "播放中",
+        AiSpeechPhase.Idle => "空闲",
+        _ => "生成回复"
     };
 }

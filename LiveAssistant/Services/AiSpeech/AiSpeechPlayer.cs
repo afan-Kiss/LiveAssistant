@@ -4,10 +4,14 @@ namespace LiveAssistant.Services.AiSpeech;
 
 /// <summary>
 /// 独立于点歌 PlaybackService 的 WAV 播放器，可指定输出设备。
-/// 临时 wav：播放完成 / 失败 / 取消 / Dispose 均删除。
+/// 临时 wav：播放完成 / 失败 / 取消 / Dispose / 超时 均删除。
+/// 任意异常或挂起：调用方最终应回到 Idle（本类保证 await 不会永久卡住）。
 /// </summary>
 public sealed class AiSpeechPlayer : IDisposable
 {
+    /// <summary>单次播放硬超时，防止 PlaybackStopped 丢失导致永久 Playing。</summary>
+    public static TimeSpan DefaultPlayTimeout { get; set; } = TimeSpan.FromMinutes(3);
+
     private readonly object _lock = new();
     private WaveOutEvent? _output;
     private WaveStream? _reader;
@@ -41,9 +45,17 @@ public sealed class AiSpeechPlayer : IDisposable
         }
     }
 
-    public async Task PlayWavAsync(byte[] wavBytes, string tempDirectory, CancellationToken ct)
+    public Task PlayWavAsync(byte[] wavBytes, string tempDirectory, CancellationToken ct)
+        => PlayWavAsync(wavBytes, tempDirectory, DefaultPlayTimeout, ct);
+
+    public async Task PlayWavAsync(byte[] wavBytes, string tempDirectory, TimeSpan playTimeout, CancellationToken ct)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        if (wavBytes == null || wavBytes.Length == 0)
+        {
+            throw new InvalidOperationException("音频数据为空");
+        }
+
         Directory.CreateDirectory(tempDirectory);
 
         StopInternal(cancel: true);
@@ -59,9 +71,19 @@ public sealed class AiSpeechPlayer : IDisposable
             throw;
         }
 
+        if (!File.Exists(path))
+        {
+            throw new FileNotFoundException("临时 wav 写入后不存在", path);
+        }
+
         var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         WaveOutEvent? output = null;
         WaveStream? reader = null;
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        if (playTimeout > TimeSpan.Zero && playTimeout < Timeout.InfiniteTimeSpan)
+        {
+            timeoutCts.CancelAfter(playTimeout);
+        }
 
         try
         {
@@ -98,14 +120,22 @@ public sealed class AiSpeechPlayer : IDisposable
                 _playTcs = tcs;
             }
 
-            output.Init(reader);
-            output.Play();
-
-            using var reg = ct.Register(() =>
+            using var reg = timeoutCts.Token.Register(() =>
             {
                 try { StopInternal(cancel: true); } catch { /* ignore */ }
-                tcs.TrySetCanceled(ct);
+                if (ct.IsCancellationRequested)
+                {
+                    tcs.TrySetCanceled(ct);
+                }
+                else
+                {
+                    tcs.TrySetException(new TimeoutException("AI 语音播放超时，已强制释放播放器"));
+                }
             });
+
+            // Init/Play 也可能因设备异常挂起；注册超时后再启动
+            output.Init(reader);
+            output.Play();
 
             await tcs.Task;
         }
