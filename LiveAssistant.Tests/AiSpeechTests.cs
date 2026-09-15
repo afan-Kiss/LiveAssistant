@@ -17,7 +17,8 @@ public class AiSpeechFilterTests
     [InlineData("查我", true)]
     [InlineData("切歌", true)]
     [InlineData("哈哈", true)]
-    [InlineData("天气不错", true)] // 无加分，低于阈值
+    [InlineData("天气不错", false)] // 阈值0：短闲聊也可回复
+    [InlineData("你好", false)]
     [InlineData("主播这个软件是自己写的吗", false)]
     [InlineData("今天天气怎么样呀", false)]
     [InlineData("主播你好", false)]

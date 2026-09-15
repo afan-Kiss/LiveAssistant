@@ -47,7 +47,7 @@ public sealed class AiSpeechSettings
     public int TtsTimeoutSeconds { get; set; } = 30;
     public int MaxAgeSeconds { get; set; } = 30;
     /// <summary>弹幕评分阈值；低于此分不进入 AI。</summary>
-    public int ScoreThreshold { get; set; } = 2;
+    public int ScoreThreshold { get; set; } = 0;
     /// <summary>兼容旧配置的回退人格；优先使用 Config/AiSpeech/personality.txt。</summary>
     public string SystemPrompt { get; set; } = "";
 
@@ -405,7 +405,7 @@ public sealed class ConfigManager
 
         if (ai.ScoreThreshold < 0 || ai.ScoreThreshold > 20)
         {
-            ai.ScoreThreshold = 2;
+            ai.ScoreThreshold = 0;
             changed = true;
         }
 

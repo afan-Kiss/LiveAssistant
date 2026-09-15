@@ -8,7 +8,7 @@ namespace LiveAssistant.Services.AiSpeech;
 /// </summary>
 public static class AiDanmakuFilter
 {
-    public const int DefaultScoreThreshold = 2;
+    public const int DefaultScoreThreshold = 0;
 
     private static readonly string[] DefaultHostKeywords =
     {
@@ -158,19 +158,14 @@ public static class AiDanmakuFilter
             parts.Add("+软件/商品+2");
         }
 
-        // 降低分：夹杂刷屏语气
+        // 降低分：夹杂刷屏语气（纯噪声仍由上方 Hard 拦截）
         if (ContainsNoiseToken(content))
         {
             score -= 2;
             parts.Add("-刷屏语气-2");
         }
 
-        // 过短闲聊且无加分项
-        if (compact.Length <= 4 && score <= 0)
-        {
-            score -= 2;
-            parts.Add("-过短-2");
-        }
+        // 短弹幕（如「你好」）允许进入：阈值=0 时 score=0 即可回复，不再额外扣「过短」分
 
         var detail = parts.Count == 0 ? "无加分项" : string.Join(" ", parts);
         var enter = score >= scoreThreshold;
