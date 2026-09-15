@@ -2,7 +2,7 @@
 
 Generated: 2026-09-16
 
-Commit: `fix: add AI speech startup health check and auto recovery`
+Commit: `f0cb8f9` — `fix: add AI speech startup health check and auto recovery`
 
 ## Goal
 
