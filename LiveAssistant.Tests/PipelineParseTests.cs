@@ -20,6 +20,7 @@ public sealed class PipelineParseTests
     public void PointsQueryParser_AcceptsCommonFormats()
     {
         Assert.True(PointsQueryParser.TryParse("查积分"));
+        Assert.True(PointsQueryParser.TryParse("查我"));
         Assert.True(PointsQueryParser.TryParse("我的积分"));
         Assert.True(PointsQueryParser.TryParse("积分查询"));
         Assert.False(PointsQueryParser.TryParse("查积分 张三"));
