@@ -4,6 +4,7 @@ namespace LiveAssistant.Services.AiSpeech;
 
 /// <summary>
 /// 独立于点歌 PlaybackService 的 WAV 播放器，可指定输出设备。
+/// 临时 wav：播放完成 / 失败 / 取消 / Dispose 均删除。
 /// </summary>
 public sealed class AiSpeechPlayer : IDisposable
 {
@@ -26,6 +27,12 @@ public sealed class AiSpeechPlayer : IDisposable
         }
     }
 
+    /// <summary>当前临时文件路径（诊断用；播放结束后应为 null）。</summary>
+    public string? CurrentTempFile
+    {
+        get { lock (_lock) return _tempFile; }
+    }
+
     public void SetDeviceNumber(int deviceNumber)
     {
         lock (_lock)
@@ -42,7 +49,15 @@ public sealed class AiSpeechPlayer : IDisposable
         StopInternal(cancel: true);
 
         var path = Path.Combine(tempDirectory, $"{Guid.NewGuid():N}.wav");
-        await File.WriteAllBytesAsync(path, wavBytes, ct);
+        try
+        {
+            await File.WriteAllBytesAsync(path, wavBytes, ct);
+        }
+        catch
+        {
+            CleanupTemp(path);
+            throw;
+        }
 
         var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         WaveOutEvent? output = null;
@@ -96,6 +111,7 @@ public sealed class AiSpeechPlayer : IDisposable
         }
         catch (OperationCanceledException)
         {
+            CleanupTemp(path);
             throw;
         }
         catch
@@ -106,6 +122,7 @@ public sealed class AiSpeechPlayer : IDisposable
         finally
         {
             StopInternal(cancel: false);
+            CleanupTemp(path);
         }
     }
 
@@ -155,16 +172,35 @@ public sealed class AiSpeechPlayer : IDisposable
             return;
         }
 
-        try
+        for (var i = 0; i < 3; i++)
         {
-            if (File.Exists(path))
+            try
             {
-                File.Delete(path);
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+
+                return;
+            }
+            catch
+            {
+                Thread.Sleep(20);
             }
         }
-        catch
+    }
+
+    /// <summary>清理目录下全部临时 wav（协调器退出时调用）。</summary>
+    public static void CleanupTempDirectory(string? directory)
+    {
+        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
         {
-            // 播放中偶发占用，忽略
+            return;
+        }
+
+        foreach (var f in Directory.EnumerateFiles(directory, "*.wav"))
+        {
+            CleanupTemp(f);
         }
     }
 

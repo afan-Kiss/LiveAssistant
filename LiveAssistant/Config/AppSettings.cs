@@ -74,6 +74,10 @@ public sealed class AiSpeechSettings
     public int RoomContextCount { get; set; } = 40;
     public int ContextTtlMinutes { get; set; } = 15;
     public int RoomWindowSeconds { get; set; } = 60;
+    /// <summary>单用户上下文最大跟踪用户数；超限 LRU 淘汰，防止长直播内存增长。</summary>
+    public int MaxTrackedUsers { get; set; } = 2000;
+    /// <summary>同类型任务连续出队上限；达到后插入异类任务，避免礼物洪峰饿死弹幕。</summary>
+    public int SameKindBurstLimit { get; set; } = 3;
 
     /// <summary>情感预设 id；auto 表示按事件类型选择。</summary>
     public string Emotion { get; set; } = "auto";

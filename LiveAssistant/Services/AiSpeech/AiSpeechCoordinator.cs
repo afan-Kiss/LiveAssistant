@@ -83,7 +83,11 @@ public sealed class AiSpeechCoordinator : IDisposable
                 try { _log.AiInfo(msg); } catch { /* ignore */ }
             });
 
-        _userContext = new UserConversationContext(s.UserContextCount, s.HostReplyContextCount, s.ContextTtlMinutes);
+        _userContext = new UserConversationContext(
+            s.UserContextCount,
+            s.HostReplyContextCount,
+            s.ContextTtlMinutes,
+            s.MaxTrackedUsers > 0 ? s.MaxTrackedUsers : 2000);
         _roomContext = new RoomConversationContext(s.RoomContextCount, s.RoomWindowSeconds);
         _roomSummary = new RoomContextSummary();
 
@@ -157,7 +161,11 @@ public sealed class AiSpeechCoordinator : IDisposable
         SyncReplyInterval(Settings);
         ApplySchedulerLimits();
         ApplyBufferIntervals();
-        _userContext.Configure(Settings.UserContextCount, Settings.HostReplyContextCount, Settings.ContextTtlMinutes);
+        _userContext.Configure(
+            Settings.UserContextCount,
+            Settings.HostReplyContextCount,
+            Settings.ContextTtlMinutes,
+            Settings.MaxTrackedUsers > 0 ? Settings.MaxTrackedUsers : 2000);
         _roomContext.Configure(Settings.RoomContextCount, Settings.RoomWindowSeconds);
 
         AiPersonalityLoader.EnsureDefaultFileExists();
@@ -1120,6 +1128,8 @@ public sealed class AiSpeechCoordinator : IDisposable
     {
         _scheduler.MaxSize = Math.Clamp(Settings.MaxQueueSize, 1, 20);
         _scheduler.MaxAgeSeconds = Math.Clamp(Settings.MaxAgeSeconds, 5, 120);
+        _scheduler.MaxConsecutiveSameKind = Math.Clamp(
+            Settings.SameKindBurstLimit > 0 ? Settings.SameKindBurstLimit : 3, 1, 20);
     }
 
     private void ApplyBufferIntervals()
@@ -1151,6 +1161,8 @@ public sealed class AiSpeechCoordinator : IDisposable
         s.RoomContextCount = Math.Clamp(s.RoomContextCount, 5, 100);
         s.ContextTtlMinutes = Math.Clamp(s.ContextTtlMinutes, 1, 180);
         s.RoomWindowSeconds = Math.Clamp(s.RoomWindowSeconds, 10, 600);
+        s.MaxTrackedUsers = Math.Clamp(s.MaxTrackedUsers <= 0 ? 2000 : s.MaxTrackedUsers, 16, 50_000);
+        s.SameKindBurstLimit = Math.Clamp(s.SameKindBurstLimit <= 0 ? 3 : s.SameKindBurstLimit, 1, 20);
         s.SummaryMinDanmaku = Math.Clamp(s.SummaryMinDanmaku, 1, 100);
         if (s.Speed <= 0 || s.Speed > 3 || double.IsNaN(s.Speed) || double.IsInfinity(s.Speed))
         {
@@ -1326,19 +1338,6 @@ public sealed class AiSpeechCoordinator : IDisposable
         try { _tts.Dispose(); } catch { /* ignore */ }
         try { _cts.Dispose(); } catch { /* ignore */ }
 
-        try
-        {
-            if (Directory.Exists(_tempDir))
-            {
-                foreach (var f in Directory.EnumerateFiles(_tempDir, "*.wav"))
-                {
-                    try { File.Delete(f); } catch { /* ignore */ }
-                }
-            }
-        }
-        catch
-        {
-            // ignore
-        }
+        try { AiSpeechPlayer.CleanupTempDirectory(_tempDir); } catch { /* ignore */ }
     }
 }

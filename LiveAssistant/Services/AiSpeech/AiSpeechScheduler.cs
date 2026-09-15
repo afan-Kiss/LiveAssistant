@@ -2,6 +2,7 @@ namespace LiveAssistant.Services.AiSpeech;
 
 /// <summary>
 /// 优先级队列：Priority 升序，同优先级按 EnqueuedAt；超限丢最低优最旧。
+/// 同类型连续出队限流：避免礼物洪峰饿死弹幕。
 /// </summary>
 public sealed class AiSpeechScheduler
 {
@@ -9,7 +10,11 @@ public sealed class AiSpeechScheduler
     private readonly List<AiSpeechTask> _items = new();
     private int _maxSize = 5;
     private int _maxAgeSeconds = 30;
+    private int _maxConsecutiveSameKind = 3;
     private long _maxSeen;
+
+    private AiSpeechEventKind? _lastDequeuedKind;
+    private int _consecutiveSameKind;
 
     public int MaxSize
     {
@@ -21,6 +26,13 @@ public sealed class AiSpeechScheduler
     {
         get { lock (_gate) return _maxAgeSeconds; }
         set { lock (_gate) _maxAgeSeconds = Math.Clamp(value, 5, 300); }
+    }
+
+    /// <summary>同 Kind 连续出队上限；达到后优先让其它类型进入（默认 3）。</summary>
+    public int MaxConsecutiveSameKind
+    {
+        get { lock (_gate) return _maxConsecutiveSameKind; }
+        set { lock (_gate) _maxConsecutiveSameKind = Math.Clamp(value, 1, 20); }
     }
 
     public int Count
@@ -38,6 +50,12 @@ public sealed class AiSpeechScheduler
     public long PeekMaxSeen
     {
         get { lock (_gate) return _maxSeen; }
+    }
+
+    /// <summary>当前同类型连续已出队次数（测试/诊断用）。</summary>
+    public int ConsecutiveSameKindCount
+    {
+        get { lock (_gate) return _consecutiveSameKind; }
     }
 
     public bool Enqueue(AiSpeechTask task)
@@ -72,17 +90,10 @@ public sealed class AiSpeechScheduler
                 return false;
             }
 
-            var bestIdx = 0;
-            for (var i = 1; i < _items.Count; i++)
-            {
-                if (Compare(_items[i], _items[bestIdx]) < 0)
-                {
-                    bestIdx = i;
-                }
-            }
-
+            var bestIdx = SelectIndex_NoLock();
             task = _items[bestIdx];
             _items.RemoveAt(bestIdx);
+            NoteDequeued_NoLock(task.Kind);
             return true;
         }
     }
@@ -97,22 +108,77 @@ public sealed class AiSpeechScheduler
                 return null;
             }
 
-            var best = _items[0];
-            for (var i = 1; i < _items.Count; i++)
-            {
-                if (Compare(_items[i], best) < 0)
-                {
-                    best = _items[i];
-                }
-            }
-
-            return best;
+            return _items[SelectIndex_NoLock()];
         }
     }
 
     public void Clear()
     {
-        lock (_gate) _items.Clear();
+        lock (_gate)
+        {
+            _items.Clear();
+            _lastDequeuedKind = null;
+            _consecutiveSameKind = 0;
+        }
+    }
+
+    /// <summary>重置同类型连出计数（测试用）。</summary>
+    public void ResetFairness()
+    {
+        lock (_gate)
+        {
+            _lastDequeuedKind = null;
+            _consecutiveSameKind = 0;
+        }
+    }
+
+    private int SelectIndex_NoLock()
+    {
+        var forceOtherKind = _lastDequeuedKind is { } last
+                             && _consecutiveSameKind >= _maxConsecutiveSameKind
+                             && _items.Exists(t => t.Kind != last);
+
+        var bestIdx = -1;
+        for (var i = 0; i < _items.Count; i++)
+        {
+            if (forceOtherKind && _items[i].Kind == _lastDequeuedKind)
+            {
+                continue;
+            }
+
+            if (bestIdx < 0 || Compare(_items[i], _items[bestIdx]) < 0)
+            {
+                bestIdx = i;
+            }
+        }
+
+        // 理论上 forceOtherKind 时必有异类；兜底回退全量最优
+        if (bestIdx < 0)
+        {
+            bestIdx = 0;
+            for (var i = 1; i < _items.Count; i++)
+            {
+                if (Compare(_items[i], _items[bestIdx]) < 0)
+                {
+                    bestIdx = i;
+                }
+            }
+        }
+
+        return bestIdx;
+    }
+
+    private void NoteDequeued_NoLock(AiSpeechEventKind kind)
+    {
+        if (_lastDequeuedKind == kind)
+        {
+            _consecutiveSameKind++;
+        }
+        else
+        {
+            _lastDequeuedKind = kind;
+            _consecutiveSameKind = 1;
+        }
     }
 
     private void Expire_NoLock()
@@ -132,7 +198,6 @@ public sealed class AiSpeechScheduler
         var worstIdx = 0;
         for (var i = 1; i < _items.Count; i++)
         {
-            // 丢弃优先级更差（数值更大）且更旧的
             var a = _items[i];
             var b = _items[worstIdx];
             var cmp = ((int)a.Priority).CompareTo((int)b.Priority);
