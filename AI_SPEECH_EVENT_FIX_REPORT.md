@@ -92,7 +92,8 @@
 
 ## 7. Commit
 
-`fix: restore AI event speech and add voice gain control`
+`a025945` — `fix: restore AI event speech and add voice gain control`  
+已推送 `origin/main`。
 
 ## 8. 新 EXE 路径
 
