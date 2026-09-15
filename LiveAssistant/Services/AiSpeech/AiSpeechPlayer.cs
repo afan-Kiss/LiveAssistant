@@ -4,14 +4,22 @@ using NAudio.Wave.SampleProviders;
 namespace LiveAssistant.Services.AiSpeech;
 
 /// <summary>
-/// 独立于点歌 PlaybackService 的 WAV 播放器，可指定输出设备与软件增益。
+/// 独立于点歌 PlaybackService 的 WAV 播放器：自动响度归一化 + 用户音量 + 软限幅。
 /// 临时 wav：播放完成 / 失败 / 取消 / Dispose / 超时 均删除。
-/// 任意异常或挂起：调用方最终应回到 Idle（本类保证 await 不会永久卡住）。
 /// </summary>
 public sealed class AiSpeechPlayer : IDisposable
 {
     /// <summary>单次播放硬超时，防止 PlaybackStopped 丢失导致永久 Playing。</summary>
     public static TimeSpan DefaultPlayTimeout { get; set; } = TimeSpan.FromMinutes(3);
+
+    /// <summary>归一化目标峰值（约 -1 dBFS）。</summary>
+    public const float TargetPeakLinear = 0.89125094f; // 10^(-1/20)
+
+    /// <summary>归一化增益上限（约 +26 dB），避免把近乎静音的噪声拉爆。</summary>
+    public const float MaxNormalizeGain = 20f;
+
+    /// <summary>归一化增益下限，避免把已经很响的素材压得过狠。</summary>
+    public const float MinNormalizeGain = 0.25f;
 
     private readonly object _lock = new();
     private WaveOutEvent? _output;
@@ -20,7 +28,7 @@ public sealed class AiSpeechPlayer : IDisposable
     private string? _tempFile;
     private TaskCompletionSource<bool>? _playTcs;
     private int _deviceNumber = -1;
-    private float _volumeGain = 1.5f;
+    private float _userGain = 1.8f;
     private volatile bool _disposed;
 
     public bool IsPlaying
@@ -40,10 +48,20 @@ public sealed class AiSpeechPlayer : IDisposable
         get { lock (_lock) return _tempFile; }
     }
 
-    /// <summary>最近一次分析的 peak / rms / gain（诊断）。</summary>
-    public float LastPeak { get; private set; }
-    public float LastRms { get; private set; }
-    public float LastGain { get; private set; }
+    public float LastPeakBefore { get; private set; }
+    public float LastRmsBefore { get; private set; }
+    public float LastNormalizeGain { get; private set; } = 1f;
+    public float LastUserGain { get; private set; } = 1f;
+    public float LastPeakAfter { get; private set; }
+
+    /// <summary>兼容旧诊断字段：归一化前 peak。</summary>
+    public float LastPeak => LastPeakBefore;
+
+    /// <summary>兼容旧诊断字段：归一化前 rms。</summary>
+    public float LastRms => LastRmsBefore;
+
+    /// <summary>兼容旧诊断字段：总增益 = normalize * user。</summary>
+    public float LastGain => LastNormalizeGain * LastUserGain;
 
     public void SetDeviceNumber(int deviceNumber)
     {
@@ -53,7 +71,7 @@ public sealed class AiSpeechPlayer : IDisposable
         }
     }
 
-    /// <summary>软件增益；允许 &gt;1.0。100%=1.0，150%=1.5，200%=2.0。</summary>
+    /// <summary>用户软件增益；允许 &gt;1.0。100%=1.0，180%=1.8，200%=2.0。</summary>
     public void SetVolumeGain(float gain)
     {
         if (float.IsNaN(gain) || float.IsInfinity(gain) || gain <= 0)
@@ -63,11 +81,11 @@ public sealed class AiSpeechPlayer : IDisposable
 
         lock (_lock)
         {
-            _volumeGain = Math.Clamp(gain, 0.5f, 2.0f);
+            _userGain = Math.Clamp(gain, 0.5f, 2.0f);
         }
     }
 
-    /// <summary>按 VolumePercent（50～200）设置增益。</summary>
+    /// <summary>按 VolumePercent（50～200）设置用户增益。</summary>
     public void SetVolumePercent(int volumePercent)
     {
         var pct = Math.Clamp(volumePercent, 50, 200);
@@ -86,7 +104,6 @@ public sealed class AiSpeechPlayer : IDisposable
         }
 
         Directory.CreateDirectory(tempDirectory);
-
         StopInternal(cancel: true);
 
         var path = Path.Combine(tempDirectory, $"{Guid.NewGuid():N}.wav");
@@ -108,7 +125,6 @@ public sealed class AiSpeechPlayer : IDisposable
         var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         WaveOutEvent? output = null;
         WaveFileReader? reader = null;
-        IDisposable? providerChain = null;
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         if (playTimeout > TimeSpan.Zero && playTimeout < Timeout.InfiniteTimeSpan)
         {
@@ -118,26 +134,30 @@ public sealed class AiSpeechPlayer : IDisposable
         try
         {
             reader = new WaveFileReader(path);
-            float gain;
+            float userGain;
             int device;
             lock (_lock)
             {
                 device = _deviceNumber;
-                gain = _volumeGain;
+                userGain = _userGain;
             }
 
             var levels = AnalyzeLevels(reader);
             reader.Position = 0;
-            LastPeak = levels.Peak;
-            LastRms = levels.Rms;
-            LastGain = gain;
+            var plan = BuildGainPlan(levels.Peak, levels.Rms, userGain);
+
+            LastPeakBefore = plan.PeakBefore;
+            LastRmsBefore = plan.RmsBefore;
+            LastNormalizeGain = plan.NormalizeGain;
+            LastUserGain = plan.UserGain;
+            LastPeakAfter = plan.EstimatedPeakAfter;
 
             var sample = reader.ToSampleProvider();
-            var volume = new VolumeSampleProvider(sample) { Volume = gain };
-            var limited = new SoftLimitingSampleProvider(volume);
+            // WAV → 自动归一化 → 用户 VolumePercent → soft clip
+            var normalize = new VolumeSampleProvider(sample) { Volume = plan.NormalizeGain };
+            var user = new VolumeSampleProvider(normalize) { Volume = plan.UserGain };
+            var limited = new SoftLimitingSampleProvider(user);
             var waveProvider = limited.ToWaveProvider16();
-            // 仅用于 Stop 时释放链；WaveFileReader 仍由 _reader 负责
-            providerChain = null;
 
             output = new WaveOutEvent();
             if (device >= 0)
@@ -161,7 +181,7 @@ public sealed class AiSpeechPlayer : IDisposable
             {
                 _tempFile = path;
                 _reader = reader;
-                _providerChain = providerChain;
+                _providerChain = null;
                 _output = output;
                 _playTcs = tcs;
             }
@@ -179,10 +199,8 @@ public sealed class AiSpeechPlayer : IDisposable
                 }
             });
 
-            // Init/Play 也可能因设备异常挂起；注册超时后再启动
             output.Init(waveProvider);
             output.Play();
-
             await tcs.Task;
         }
         catch (OperationCanceledException)
@@ -231,16 +249,108 @@ public sealed class AiSpeechPlayer : IDisposable
         return (peak, rms);
     }
 
-    /// <summary>离线分析字节流电平与应用增益后的限幅峰值（测试用）。</summary>
-    public static (float Peak, float Rms, float PeakAfterGain) AnalyzeBytes(byte[] wavBytes, float gain)
+    /// <summary>
+    /// 根据 peak/rms 计算归一化增益：目标峰值约 -1 dBFS。
+    /// 小声素材按峰值拉高；已够响的素材避免再大幅放大。
+    /// </summary>
+    public static float ComputeNormalizeGain(float peak, float rms)
+    {
+        if (float.IsNaN(peak) || float.IsInfinity(peak) || peak < 1e-5f)
+        {
+            return 1f;
+        }
+
+        // 主策略：峰值归一到约 -1 dBFS
+        var gain = TargetPeakLinear / peak;
+
+        // 人声响度保护：主体已经较响时，限制继续放大（正常 wav 不过度放大）
+        if (!float.IsNaN(rms) && !float.IsInfinity(rms))
+        {
+            if (rms >= 0.20f)
+            {
+                // 已很响：最多保持/微降，不允许再 boost
+                gain = Math.Min(gain, 1.0f);
+            }
+            else if (rms >= 0.12f)
+            {
+                // 正常语音主体：最多约 +3 dB
+                gain = Math.Min(gain, 1.4f);
+            }
+            else if (rms >= 0.06f)
+            {
+                // 偏轻但仍可听：最多约 +9 dB
+                gain = Math.Min(gain, 2.8f);
+            }
+            // rms 更低：允许接近完整峰值归一（很小的 wav 自动提高）
+        }
+
+        if (float.IsNaN(gain) || float.IsInfinity(gain) || gain <= 0)
+        {
+            return 1f;
+        }
+
+        return Math.Clamp(gain, MinNormalizeGain, MaxNormalizeGain);
+    }
+
+    public readonly record struct GainPlan(
+        float PeakBefore,
+        float RmsBefore,
+        float NormalizeGain,
+        float UserGain,
+        float CombinedGain,
+        float EstimatedPeakAfter,
+        float NormalizeGainDb,
+        float UserGainDb);
+
+    public static GainPlan BuildGainPlan(float peakBefore, float rmsBefore, float userGain)
+    {
+        if (float.IsNaN(userGain) || float.IsInfinity(userGain) || userGain <= 0)
+        {
+            userGain = 1f;
+        }
+
+        userGain = Math.Clamp(userGain, 0.5f, 2.0f);
+        var normalize = ComputeNormalizeGain(peakBefore, rmsBefore);
+        var combined = normalize * userGain;
+        // 限幅前估算；实际输出会经 soft-limit 压到 ≤1
+        var estimatedRaw = peakBefore * combined;
+        var estimatedAfter = SoftLimitingSampleProvider.SoftLimit(estimatedRaw);
+        estimatedAfter = Math.Abs(estimatedAfter);
+
+        return new GainPlan(
+            peakBefore,
+            rmsBefore,
+            normalize,
+            userGain,
+            combined,
+            estimatedAfter,
+            LinearToDb(normalize),
+            LinearToDb(userGain));
+    }
+
+    public static float LinearToDb(float linear)
+    {
+        if (linear <= 1e-8f || float.IsNaN(linear) || float.IsInfinity(linear))
+        {
+            return -80f;
+        }
+
+        return 20f * MathF.Log10(linear);
+    }
+
+    /// <summary>离线走完整播放增益链（归一化 → 用户增益 → 软限幅），供测试。</summary>
+    public static GainPlan AnalyzeBytesFullChain(byte[] wavBytes, float userGain)
     {
         using var ms = new MemoryStream(wavBytes);
         using var reader = new WaveFileReader(ms);
         var (peak, rms) = AnalyzeLevels(reader);
         reader.Position = 0;
+        var plan = BuildGainPlan(peak, rms, userGain);
+
         var sample = reader.ToSampleProvider();
-        var volume = new VolumeSampleProvider(sample) { Volume = Math.Clamp(gain, 0.5f, 2.0f) };
-        var limited = new SoftLimitingSampleProvider(volume);
+        var normalize = new VolumeSampleProvider(sample) { Volume = plan.NormalizeGain };
+        var user = new VolumeSampleProvider(normalize) { Volume = plan.UserGain };
+        var limited = new SoftLimitingSampleProvider(user);
         var buf = new float[4096];
         float peakAfter = 0f;
         int read;
@@ -256,13 +366,17 @@ public sealed class AiSpeechPlayer : IDisposable
             }
         }
 
-        return (peak, rms, peakAfter);
+        return plan with { EstimatedPeakAfter = peakAfter };
     }
 
-    public void Stop()
+    /// <summary>兼容旧测试 API。</summary>
+    public static (float Peak, float Rms, float PeakAfterGain) AnalyzeBytes(byte[] wavBytes, float gain)
     {
-        StopInternal(cancel: true);
+        var plan = AnalyzeBytesFullChain(wavBytes, gain);
+        return (plan.PeakBefore, plan.RmsBefore, plan.EstimatedPeakAfter);
     }
+
+    public void Stop() => StopInternal(cancel: true);
 
     private void StopInternal(bool cancel)
     {
@@ -327,7 +441,6 @@ public sealed class AiSpeechPlayer : IDisposable
         }
     }
 
-    /// <summary>清理目录下全部临时 wav（协调器退出时调用）。</summary>
     public static void CleanupTempDirectory(string? directory)
     {
         if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
@@ -387,7 +500,6 @@ internal sealed class SoftLimitingSampleProvider : ISampleProvider
             return sample;
         }
 
-        // soft knee：超过 0.9 后用 tanh 压缩到接近 1.0
         var over = (a - 0.9f) / 0.1f;
         var shaped = 0.9f + 0.1f * MathF.Tanh(over);
         var result = sign * shaped;

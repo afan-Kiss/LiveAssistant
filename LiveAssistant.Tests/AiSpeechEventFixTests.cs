@@ -27,7 +27,7 @@ public class AiSpeechEventFixTests
         config.Settings.AiSpeech.WelcomeIntervalSeconds = 5;
         config.Settings.AiSpeech.WelcomeMaxNames = 3;
         config.Settings.AiSpeech.GiftMergeSeconds = 1;
-        config.Settings.AiSpeech.VolumePercent = 150;
+        config.Settings.AiSpeech.VolumePercent = 180;
         config.Settings.AiSpeech.OllamaUrl = "http://127.0.0.1:1";
         config.Settings.AiSpeech.TtsUrl = "http://127.0.0.1:1";
         config.Settings.AiSpeech.OllamaTimeoutSeconds = 2;
@@ -343,17 +343,17 @@ public class AiSpeechEventFixTests
     public void Volume_GainChangesOutputAmplitude_And_200PercentDoesNotOverflow()
     {
         var wav = BuildSineWav(0.3f);
-        var a100 = AiSpeechPlayer.AnalyzeBytes(wav, 1.0f);
-        var a150 = AiSpeechPlayer.AnalyzeBytes(wav, 1.5f);
-        var a200 = AiSpeechPlayer.AnalyzeBytes(wav, 2.0f);
+        var a100 = AiSpeechPlayer.AnalyzeBytesFullChain(wav, 1.0f);
+        var a150 = AiSpeechPlayer.AnalyzeBytesFullChain(wav, 1.5f);
+        var a180 = AiSpeechPlayer.AnalyzeBytesFullChain(wav, 1.8f);
+        var a200 = AiSpeechPlayer.AnalyzeBytesFullChain(wav, 2.0f);
 
-        Assert.True(a150.PeakAfterGain > a100.PeakAfterGain * 1.2f,
-            $"150% should be louder: 100={a100.PeakAfterGain} 150={a150.PeakAfterGain}");
-        Assert.True(a200.PeakAfterGain > a100.PeakAfterGain * 1.4f,
-            $"200% should be louder: 100={a100.PeakAfterGain} 200={a200.PeakAfterGain}");
-        Assert.True(a200.PeakAfterGain <= 1.0001f, $"200% must clamp: peak={a200.PeakAfterGain}");
-        Assert.True(a100.Peak > 0.01f);
-        Assert.True(a100.Rms > 0);
+        Assert.True(a150.CombinedGain > a100.CombinedGain);
+        Assert.True(a180.CombinedGain > a150.CombinedGain);
+        Assert.True(a200.CombinedGain > a180.CombinedGain);
+        Assert.True(a200.EstimatedPeakAfter <= 1.0001f, $"200% must clamp: peak={a200.EstimatedPeakAfter}");
+        Assert.True(a100.PeakBefore > 0.01f);
+        Assert.True(a100.RmsBefore > 0);
     }
 
     [Fact]

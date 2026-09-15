@@ -229,7 +229,7 @@ public sealed class AiSpeechCoordinator : IDisposable
         _ollama.Configure(Settings.OllamaUrl, TimeSpan.FromSeconds(Settings.OllamaTimeoutSeconds));
         _tts.Configure(Settings.TtsUrl, TimeSpan.FromSeconds(Settings.TtsTimeoutSeconds));
         ApplyDeviceFromSettings();
-        _player.SetVolumePercent(Math.Clamp(Settings.VolumePercent <= 0 ? 150 : Settings.VolumePercent, 50, 200));
+        _player.SetVolumePercent(Math.Clamp(Settings.VolumePercent <= 0 ? 180 : Settings.VolumePercent, 50, 200));
         _config.Save();
         NotifyStatus();
     }
@@ -803,8 +803,10 @@ public sealed class AiSpeechCoordinator : IDisposable
             await _player.PlayWavAsync(synth.AudioWav, _tempDir, playCts.Token);
             playSw.Stop();
             _log.AiInfo(
-                $"AI_AUDIO_PLAY_END task=test_voice play_ms={playSw.ElapsedMilliseconds} " +
-                $"peak={_player.LastPeak:F3} rms={_player.LastRms:F3} gain={_player.LastGain:F2}");
+                $"AI_AUDIO_LEVEL task=test_voice peak_before={_player.LastPeakBefore:F4} rms_before={_player.LastRmsBefore:F4} " +
+                $"normalize_gain={_player.LastNormalizeGain:F3} user_gain={_player.LastUserGain:F3} peak_after={_player.LastPeakAfter:F4}");
+            _log.AiInfo(
+                $"AI_AUDIO_PLAY_END task=test_voice play_ms={playSw.ElapsedMilliseconds}");
             _ttsOk = true;
             _serviceHint = "";
             SetPhase(AiSpeechPhase.Idle);
@@ -1396,7 +1398,8 @@ public sealed class AiSpeechCoordinator : IDisposable
             playSw.Stop();
             _metrics.NotePlaySuccess(totalSw.ElapsedMilliseconds);
             _log.AiInfo(
-                $"AI_AUDIO_LEVEL task={task.TaskId} peak={_player.LastPeak:F3} rms={_player.LastRms:F3} gain={_player.LastGain:F2}");
+                $"AI_AUDIO_LEVEL task={task.TaskId} peak_before={_player.LastPeakBefore:F4} rms_before={_player.LastRmsBefore:F4} " +
+                $"normalize_gain={_player.LastNormalizeGain:F3} user_gain={_player.LastUserGain:F3} peak_after={_player.LastPeakAfter:F4}");
             _log.AiInfo(
                 $"AI_SPEECH taskId={task.TaskId} kind={task.Kind} sourceMsgId={task.MsgId} queueWait={queueWaitMs} " +
                 $"generateMs={ollamaMs} ttsMs={ttsSw.ElapsedMilliseconds} " +
@@ -1618,7 +1621,7 @@ public sealed class AiSpeechCoordinator : IDisposable
             s.Speed = Math.Clamp(s.Speed, 0.5, 2.0);
         }
 
-        s.VolumePercent = Math.Clamp(s.VolumePercent <= 0 ? 150 : s.VolumePercent, 50, 200);
+        s.VolumePercent = Math.Clamp(s.VolumePercent <= 0 ? 180 : s.VolumePercent, 50, 200);
 
         if (string.IsNullOrWhiteSpace(s.Model))
         {
@@ -1649,10 +1652,9 @@ public sealed class AiSpeechCoordinator : IDisposable
 
     private void ApplyPlaybackVolumeFromSettings(string? taskId = null)
     {
-        var pct = Math.Clamp(Settings.VolumePercent <= 0 ? 150 : Settings.VolumePercent, 50, 200);
+        var pct = Math.Clamp(Settings.VolumePercent <= 0 ? 180 : Settings.VolumePercent, 50, 200);
         _player.SetVolumePercent(pct);
-        _log.AiInfo(
-            $"AI_AUDIO_LEVEL task={taskId ?? "-"} peak=pending rms=pending gain={pct / 100.0:F2} volumePercent={pct}");
+        _log.AiInfo($"AI_AUDIO_VOLUME task={taskId ?? "-"} volumePercent={pct} user_gain={pct / 100.0:F2}");
     }
 
     private bool TryAdmitGiftAi(GiftEvent gift, out string key)

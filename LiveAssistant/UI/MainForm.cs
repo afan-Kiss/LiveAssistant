@@ -625,7 +625,7 @@ public sealed class MainForm : Form
         _numAiVolume.Minimum = 50;
         _numAiVolume.Maximum = 200;
         _numAiVolume.Increment = 10;
-        _numAiVolume.Value = Math.Clamp(s.VolumePercent <= 0 ? 150 : s.VolumePercent, 50, 200);
+        _numAiVolume.Value = Math.Clamp(s.VolumePercent <= 0 ? 180 : s.VolumePercent, 50, 200);
 
         FillAiNamedCombo(_cmbAiContext, new[]
         {
@@ -1420,7 +1420,7 @@ public sealed class MainForm : Form
         _numAiWelcomeInterval.Value = Math.Clamp(s.WelcomeIntervalSeconds, (int)_numAiWelcomeInterval.Minimum, (int)_numAiWelcomeInterval.Maximum);
         _numAiLikeInterval.Value = Math.Clamp(Math.Max(20, s.LikeIntervalSeconds), (int)_numAiLikeInterval.Minimum, (int)_numAiLikeInterval.Maximum);
         _numAiSummaryInterval.Value = Math.Clamp(s.SummaryIntervalSeconds, (int)_numAiSummaryInterval.Minimum, (int)_numAiSummaryInterval.Maximum);
-        _numAiVolume.Value = Math.Clamp(s.VolumePercent <= 0 ? 150 : s.VolumePercent, (int)_numAiVolume.Minimum, (int)_numAiVolume.Maximum);
+        _numAiVolume.Value = Math.Clamp(s.VolumePercent <= 0 ? 180 : s.VolumePercent, (int)_numAiVolume.Minimum, (int)_numAiVolume.Maximum);
 
         SelectAiNamedCombo(_cmbAiContext, s.ContextMode);
         SelectAiNamedCombo(_cmbAiEmotion, string.IsNullOrWhiteSpace(s.Emotion) ? "auto" : s.Emotion, preferLastDuplicate: true);
