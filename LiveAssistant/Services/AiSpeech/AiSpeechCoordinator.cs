@@ -25,6 +25,7 @@ public sealed class AiSpeechCoordinator : IDisposable
     private readonly AiSpeechMetrics _metrics = new();
     private readonly AiReplyDuplicateGuard _replyDupGuard = new(20, TimeSpan.FromMinutes(5));
     private readonly AiPromptStore _prompts;
+    private readonly AiSpeechHealthChecker _health;
     private readonly UserConversationContext _userContext;
     private readonly RoomConversationContext _roomContext;
     private readonly RoomContextSummary _roomSummary;
@@ -51,6 +52,11 @@ public sealed class AiSpeechCoordinator : IDisposable
     private volatile bool _ollamaOk;
     private volatile bool _ttsOk;
     private volatile bool _voiceReady = true;
+    private volatile bool _modelAvailable;
+    private volatile string _healthSummary = "正在检测 AI 服务…";
+    private volatile string _configuredModelName = "";
+    private string[] _installedModels = Array.Empty<string>();
+    private readonly object _installedModelsLock = new();
     private readonly SemaphoreSlim _executionGate = new(1, 1);
     private CancellationTokenSource? _activePlayCts;
     private long _lastOllamaMs;
@@ -92,6 +98,21 @@ public sealed class AiSpeechCoordinator : IDisposable
         _roomContext = new RoomConversationContext(s.RoomContextCount, s.RoomWindowSeconds);
         _roomSummary = new RoomContextSummary();
 
+        _health = new AiSpeechHealthChecker(
+            _ollama,
+            _tts,
+            () => Settings.OllamaUrl,
+            () => Settings.OllamaTimeoutSeconds,
+            () => Settings.TtsUrl,
+            () => Settings.TtsTimeoutSeconds,
+            () => string.IsNullOrWhiteSpace(Settings.Model) ? AiSpeechModelsCatalog.DefaultModel : Settings.Model,
+            () => string.IsNullOrWhiteSpace(Settings.Voice) ? "my_voice" : Settings.Voice,
+            msg =>
+            {
+                try { _log.AiInfo(msg); } catch { /* ignore */ }
+            });
+        _health.Updated += OnHealthUpdated;
+
         ApplySchedulerLimits();
         ApplyBufferIntervals();
         _giftBuffer.Flushed += OnGiftFlushed;
@@ -101,7 +122,10 @@ public sealed class AiSpeechCoordinator : IDisposable
         ApplyDeviceFromSettings();
         _worker = Task.Run(() => WorkerLoopAsync(_cts.Token));
         _metricsLoop = Task.Run(() => MetricsSnapshotLoopAsync(_cts.Token));
-        _ = RefreshHealthAsync();
+        // 非阻塞：启动探测 + 运行中自动恢复（绝不拉起外部进程）
+        _health.StartBackgroundStartupChecks(_cts.Token);
+        _health.StartBackgroundRuntimeRecovery(_cts.Token);
+        ApplyHealthReport(_health.Latest);
     }
 
     public AiSpeechSettings Settings => _config.Settings.AiSpeech;
@@ -118,6 +142,8 @@ public sealed class AiSpeechCoordinator : IDisposable
         var q = _scheduler.Count;
         _metrics.NoteQueueSize(q);
         var m = _metrics.Snapshot(q, maxQ);
+        string[] installed;
+        lock (_installedModelsLock) installed = _installedModels;
         return new AiSpeechStatusSnapshot
         {
             Enabled = Settings.Enabled || Settings.TestMode,
@@ -134,6 +160,13 @@ public sealed class AiSpeechCoordinator : IDisposable
             OllamaOk = _ollamaOk,
             TtsOk = _ttsOk,
             VoiceReady = _voiceReady,
+            ModelAvailable = _modelAvailable,
+            ModelName = string.IsNullOrWhiteSpace(_configuredModelName)
+                ? (string.IsNullOrWhiteSpace(Settings.Model) ? AiSpeechModelsCatalog.DefaultModel : Settings.Model)
+                : _configuredModelName,
+            InstalledModels = installed,
+            HealthSummary = _healthSummary,
+            AiReady = _ollamaOk && _modelAvailable && _ttsOk && _voiceReady,
             VoiceName = string.IsNullOrWhiteSpace(Settings.Voice) ? "my_voice" : Settings.Voice,
             LastOllamaMs = Interlocked.Read(ref _lastOllamaMs),
             LastTtsMs = Interlocked.Read(ref _lastTtsMs),
@@ -196,44 +229,48 @@ public sealed class AiSpeechCoordinator : IDisposable
     {
         try
         {
-            _ollama.Configure(Settings.OllamaUrl, TimeSpan.FromSeconds(Settings.OllamaTimeoutSeconds));
-            _tts.Configure(Settings.TtsUrl, TimeSpan.FromSeconds(Settings.TtsTimeoutSeconds));
-            var ollamaTask = _ollama.HealthAsync(ct);
-            var ttsTask = _tts.HealthAsync(ct);
-            await Task.WhenAll(ollamaTask, ttsTask);
-            _ollamaOk = await ollamaTask;
-            var health = await ttsTask;
-            ApplyTtsHealth(health, Settings.Voice, out var ttsOk, out var voiceReady);
-            _ttsOk = ttsOk;
-            _voiceReady = voiceReady;
-            if (!_ollamaOk && !_ttsOk)
-            {
-                _serviceHint = "AI模型不可用 / 语音服务不可用";
-            }
-            else if (!_ollamaOk)
-            {
-                _serviceHint = "AI模型不可用";
-            }
-            else if (!_ttsOk)
-            {
-                _serviceHint = "语音服务不可用";
-            }
-            else if (!_voiceReady)
-            {
-                _serviceHint = "声音未就绪";
-            }
-            else
-            {
-                _serviceHint = "";
-            }
+            var report = await _health.RefreshAsync(ct);
+            ApplyHealthReport(report);
         }
         catch (Exception ex)
         {
             _ollamaOk = false;
             _ttsOk = false;
             _voiceReady = false;
+            _modelAvailable = false;
             _serviceHint = "健康检查失败";
+            _healthSummary = "❌ AI服务异常";
             _log.AiWarn($"health_fail {ex.GetType().Name}: {ex.Message}");
+            NotifyStatus();
+        }
+    }
+
+    private void OnHealthUpdated(AiSpeechHealthReport report)
+    {
+        try
+        {
+            ApplyHealthReport(report);
+        }
+        catch (Exception ex)
+        {
+            try { _log.AiWarn($"health_apply_fail {ex.GetType().Name}: {ex.Message}"); } catch { /* ignore */ }
+        }
+    }
+
+    private void ApplyHealthReport(AiSpeechHealthReport report)
+    {
+        _ollamaOk = report.OllamaAvailable;
+        _modelAvailable = report.ModelAvailable;
+        _ttsOk = report.TtsAvailable && report.TtsReady;
+        _voiceReady = report.VoiceReady;
+        _configuredModelName = report.ModelConfigured;
+        _serviceHint = report.ServiceHint ?? "";
+        _healthSummary = report.SummaryLines.Count == 0
+            ? (report.FullyReady ? "✅ 可以发言" : "❌ 暂不可发言")
+            : string.Join("\n", report.SummaryLines);
+        lock (_installedModelsLock)
+        {
+            _installedModels = report.InstalledModels?.ToArray() ?? Array.Empty<string>();
         }
 
         NotifyStatus();
@@ -272,20 +309,16 @@ public sealed class AiSpeechCoordinator : IDisposable
     {
         try
         {
-            _ollama.Configure(Settings.OllamaUrl, TimeSpan.FromSeconds(Settings.OllamaTimeoutSeconds));
-            var models = await _ollama.ListModelsAsync(ct);
-            _ollamaOk = true;
-            if (string.IsNullOrWhiteSpace(_serviceHint) || _serviceHint.Contains("AI模型", StringComparison.Ordinal))
-            {
-                await RefreshHealthAsync(ct);
-            }
-
-            return models;
+            var report = await _health.RefreshAsync(ct);
+            ApplyHealthReport(report);
+            return report.InstalledModels;
         }
         catch (Exception ex)
         {
             _ollamaOk = false;
-            _serviceHint = "AI模型不可用";
+            _modelAvailable = false;
+            _serviceHint = "Ollama未启动";
+            _healthSummary = "❌ Ollama未连接";
             _log.AiWarn($"list_models_fail {ex.GetType().Name}: {ex.Message}");
             NotifyStatus();
             return Array.Empty<string>();
@@ -936,16 +969,11 @@ public sealed class AiSpeechCoordinator : IDisposable
                         _log.AiWarn($"AI_GENERATE_FAIL task={task.TaskId} status={gen.StatusCode} err={gen.Error}");
                     }
 
-                    var ollamaAlive = await _ollama.HealthAsync(CancellationToken.None);
-                    _ollamaOk = ollamaAlive;
-                    var modelMissing = LooksLikeModelMissing(gen.Error, model);
-                    _serviceHint = !ollamaAlive
-                        ? "AI模型不可用"
-                        : modelMissing
-                            ? $"模型未安装：{model}（请 ollama pull）"
-                            : gen.ResourceError
-                                ? "AI显存不足，请改用 qwen3:8b"
-                                : $"AI生成失败：{TrimHint(gen.Error)}";
+                    _ollamaOk = false;
+                    _serviceHint = "AI服务异常";
+                    _healthSummary = "❌ AI服务异常\n⏳ 将自动重试恢复";
+                    // 触发一次非阻塞恢复检查（运行中循环也会继续）
+                    _ = SafeRecoverHealthAsync();
                     SetPhase(AiSpeechPhase.Idle);
                     NotifyStatus();
                     return new AiSpeechTestResult
@@ -953,9 +981,7 @@ public sealed class AiSpeechCoordinator : IDisposable
                         Success = false,
                         Nickname = task.Nickname,
                         Danmaku = task.Content,
-                        Error = modelMissing
-                            ? $"模型未安装：{model}"
-                            : (gen.Error ?? "AI模型不可用"),
+                        Error = gen.Error ?? "AI服务异常",
                         OllamaMs = ollamaMs,
                         TotalMs = totalSw.ElapsedMilliseconds
                     };
@@ -1032,9 +1058,11 @@ public sealed class AiSpeechCoordinator : IDisposable
             if (!synth.Success)
             {
                 _ttsOk = false;
-                _serviceHint = "语音服务不可用";
+                _serviceHint = "AI服务异常";
+                _healthSummary = "❌ TTS不可用\n⏳ 将自动重试恢复";
                 _metrics.NoteTtsFailed(synth.Error);
                 _log.AiWarn($"AI_TTS_FAIL task={task.TaskId} status={synth.StatusCode} err={synth.Error}");
+                _ = SafeRecoverHealthAsync();
                 SetPhase(AiSpeechPhase.Idle);
                 NotifyStatus();
                 return new AiSpeechTestResult
@@ -1174,6 +1202,20 @@ public sealed class AiSpeechCoordinator : IDisposable
 
         _metrics.NoteSkip(r);
         _log.AiWarn($"AI_OUTPUT_REJECTED reason={reason} task={task.TaskId} kind={task.Kind}");
+    }
+
+    private async Task SafeRecoverHealthAsync()
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(2));
+            var report = await _health.CheckOnceAsync("task_fail_recover", CancellationToken.None);
+            ApplyHealthReport(report);
+        }
+        catch
+        {
+            // ignore — 运行恢复循环会继续
+        }
     }
 
     private static string BuildCurrentUserMessage(AiSpeechTask task) => task.Kind switch
@@ -1466,6 +1508,7 @@ public sealed class AiSpeechCoordinator : IDisposable
             // ignore
         }
 
+        try { _health.Updated -= OnHealthUpdated; } catch { /* ignore */ }
         try { _giftBuffer.Flushed -= OnGiftFlushed; } catch { /* ignore */ }
         try { _welcomeBuffer.Flushed -= OnWelcomeFlushed; } catch { /* ignore */ }
         try { _likeBuffer.Flushed -= OnLikeFlushed; } catch { /* ignore */ }

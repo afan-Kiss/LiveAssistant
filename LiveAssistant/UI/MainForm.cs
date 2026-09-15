@@ -94,7 +94,10 @@ public sealed class MainForm : Form
     private readonly Label _lblAiPromptInfo = new();
     private readonly Label _lblAiEmotionSpeed = new();
     private readonly Label _lblAiTaskKind = new();
+    private readonly Label _lblAiHealthSummary = new();
+    private readonly Label _lblAiModelStatus = new();
     private readonly Button _btnAiRefreshModels = new();
+    private readonly Button _btnAiRefreshHealth = new();
     private readonly Button _btnAiTestVoice = new();
     private readonly Button _btnAiTestAi = new();
     private readonly Button _btnAiStop = new();
@@ -645,6 +648,7 @@ public sealed class MainForm : Form
                  {
                      _lblAiOllamaStatus, _lblAiTtsStatus, _lblAiVoiceStatus, _lblAiPhase, _lblAiQueue,
                      _lblAiRuntimeStatus, _lblAiTodayReplies, _lblAiSuccessRate, _lblAiAvgLatency, _lblAiLastError,
+                     _lblAiHealthSummary, _lblAiModelStatus,
                      _lblAiLatestUser, _lblAiLatestContent, _lblAiReply, _lblAiHint, _lblAiTestStats,
                      _lblAiPromptInfo, _lblAiEmotionSpeed, _lblAiTaskKind
                  })
@@ -656,6 +660,9 @@ public sealed class MainForm : Form
         _lblAiOllamaStatus.Text = "● Ollama检测中";
         _lblAiTtsStatus.Text = "● GPT-SoVITS检测中";
         _lblAiVoiceStatus.Text = "● 声音检测中";
+        _lblAiModelStatus.Text = "模型：检测中";
+        _lblAiHealthSummary.Text = "正在检测 AI 服务…";
+        _lblAiHealthSummary.AutoSize = false;
         _lblAiPhase.Text = "空闲";
         _lblAiRuntimeStatus.Text = "空闲";
         _lblAiQueue.Text = "0 / 5";
@@ -675,6 +682,7 @@ public sealed class MainForm : Form
         _lblAiLastError.ForeColor = Color.FromArgb(160, 80, 0);
         _lblAiTestStats.ForeColor = Color.DimGray;
         _lblAiPromptInfo.ForeColor = Color.DimGray;
+        _lblAiHealthSummary.ForeColor = Color.FromArgb(40, 40, 40);
 
         var modelRow = new TableLayoutPanel { ColumnCount = 2, RowCount = 1, Dock = DockStyle.Fill, Margin = new Padding(0) };
         modelRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -709,14 +717,22 @@ public sealed class MainForm : Form
         promptRow.Controls.Add(_btnAiEditPrompts, 0, 0);
         promptRow.Controls.Add(_lblAiPromptInfo, 1, 0);
 
-        var btnRow = new TableLayoutPanel { ColumnCount = 3, RowCount = 1, Dock = DockStyle.Fill, Margin = new Padding(0) };
-        btnRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.33f));
-        btnRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.33f));
-        btnRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.34f));
+        var btnRow = new TableLayoutPanel
+        {
+            ColumnCount = 4,
+            RowCount = 1,
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0)
+        };
+        btnRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+        btnRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+        btnRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+        btnRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
         StyleButton(_btnAiTestAi, "测试AI", 0);
         StyleButton(_btnAiTestVoice, "测试声音", 0);
         StyleButton(_btnAiStop, "停止播放", 0);
-        foreach (var b in new[] { _btnAiTestAi, _btnAiTestVoice, _btnAiStop })
+        StyleButton(_btnAiRefreshHealth, "刷新AI状态", 0);
+        foreach (var b in new[] { _btnAiTestAi, _btnAiTestVoice, _btnAiStop, _btnAiRefreshHealth })
         {
             b.Dock = DockStyle.Fill;
             b.Margin = new Padding(2, 0, 2, 0);
@@ -724,6 +740,7 @@ public sealed class MainForm : Form
         btnRow.Controls.Add(_btnAiTestAi, 0, 0);
         btnRow.Controls.Add(_btnAiTestVoice, 1, 0);
         btnRow.Controls.Add(_btnAiStop, 2, 0);
+        btnRow.Controls.Add(_btnAiRefreshHealth, 3, 0);
 
         AddRow("", _chkAiEnabled, 28);
         AddRow("", _chkAiTestMode, 28);
@@ -740,9 +757,11 @@ public sealed class MainForm : Form
         AddRow("", modelHint, 22);
         AddRow("声音", _lblAiVoice, 24);
         AddRow("GPT-SoVITS", _lblAiTtsUrl, 24);
-        AddRow("状态", _lblAiOllamaStatus, 22);
+        AddRow("服务状态", _lblAiOllamaStatus, 22);
         AddRow("", _lblAiTtsStatus, 22);
         AddRow("", _lblAiVoiceStatus, 22);
+        AddRow("模型状态", _lblAiModelStatus, 22);
+        AddRow("AI语音状态", _lblAiHealthSummary, 54);
         AddRow("输出设备", _cmbAiDevice, 32);
         AddRow("回复间隔", _numAiInterval, 30);
         AddRow("最大排队", _numAiQueue, 30);
@@ -1211,6 +1230,26 @@ public sealed class MainForm : Form
             }
         };
 
+        _btnAiRefreshHealth.Click += async (_, _) =>
+        {
+            _btnAiRefreshHealth.Enabled = false;
+            try
+            {
+                await _host.AiSpeech.RefreshHealthAsync();
+                await RefreshAiModelsAsync();
+                RefreshAiSpeechStatus();
+                AppendSystem("已刷新 AI 服务状态");
+            }
+            catch (Exception ex)
+            {
+                AppendSystem("刷新 AI 状态失败：" + ex.Message);
+            }
+            finally
+            {
+                _btnAiRefreshHealth.Enabled = true;
+            }
+        };
+
         _btnAiStop.Click += (_, _) =>
         {
             _host.AiSpeech.StopCurrentPlayback();
@@ -1506,15 +1545,40 @@ public sealed class MainForm : Form
         _lblAiAvgLatency.Text = status.AverageTotalMs > 0 ? $"{status.AverageTotalMs} ms" : "-";
         _lblAiQueue.Text = $"{status.QueueCount}/{status.MaxQueueSize}";
         _lblAiLastError.Text = string.IsNullOrWhiteSpace(status.LastError) ? "-" : status.LastError;
-        _lblAiOllamaStatus.Text = status.OllamaOk ? "● Ollama正常" : "● Ollama不可用";
+        _lblAiOllamaStatus.Text = status.OllamaOk ? "● Ollama正常" : "● Ollama未启动";
         _lblAiOllamaStatus.ForeColor = status.OllamaOk ? Color.ForestGreen : Color.Firebrick;
-        _lblAiTtsStatus.Text = status.TtsOk ? "● GPT-SoVITS正常" : "● GPT-SoVITS不可用";
+        _lblAiTtsStatus.Text = status.TtsOk ? "● GPT-SoVITS正常" : "● 语音服务未启动";
         _lblAiTtsStatus.ForeColor = status.TtsOk ? Color.ForestGreen : Color.Firebrick;
         _lblAiVoiceStatus.Text = status.VoiceReady
-            ? $"● 我的声音已加载（{status.VoiceName}）"
-            : "● 声音未就绪";
+            ? $"● 声音正常（{status.VoiceName}）"
+            : "● 声音模型未加载";
         _lblAiVoiceStatus.ForeColor = status.VoiceReady ? Color.ForestGreen : Color.Firebrick;
         _lblAiVoice.Text = status.VoiceName;
+
+        var modelName = string.IsNullOrWhiteSpace(status.ModelName) ? "-" : status.ModelName;
+        if (!status.OllamaOk)
+        {
+            _lblAiModelStatus.Text = $"模型：{modelName}（Ollama未连接）";
+            _lblAiModelStatus.ForeColor = Color.Firebrick;
+        }
+        else if (!status.ModelAvailable)
+        {
+            var installed = status.InstalledModels != null && status.InstalledModels.Count > 0
+                ? string.Join("、", status.InstalledModels.Take(4))
+                : "无";
+            _lblAiModelStatus.Text = $"模型未安装：{modelName}｜已安装：{installed}";
+            _lblAiModelStatus.ForeColor = Color.Firebrick;
+        }
+        else
+        {
+            _lblAiModelStatus.Text = $"模型可用：{modelName}";
+            _lblAiModelStatus.ForeColor = Color.ForestGreen;
+        }
+
+        _lblAiHealthSummary.Text = string.IsNullOrWhiteSpace(status.HealthSummary)
+            ? (status.AiReady ? "✅ 可以发言" : "❌ 暂不可发言")
+            : status.HealthSummary.Replace("\n", "  ");
+        _lblAiHealthSummary.ForeColor = status.AiReady ? Color.ForestGreen : Color.Firebrick;
         if (!string.IsNullOrWhiteSpace(status.LatestNickname))
         {
             _lblAiLatestUser.Text = status.LatestNickname;

@@ -119,6 +119,11 @@ public sealed class AiSpeechStatusSnapshot
     public bool OllamaOk { get; init; }
     public bool TtsOk { get; init; }
     public bool VoiceReady { get; init; }
+    public bool ModelAvailable { get; init; }
+    public string ModelName { get; init; } = "";
+    public IReadOnlyList<string> InstalledModels { get; init; } = Array.Empty<string>();
+    public string HealthSummary { get; init; } = "";
+    public bool AiReady { get; init; }
     public string VoiceName { get; init; } = "my_voice";
     public long LastOllamaMs { get; init; }
     public long LastTtsMs { get; init; }
