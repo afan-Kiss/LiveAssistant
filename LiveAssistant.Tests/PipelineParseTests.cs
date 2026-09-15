@@ -46,6 +46,8 @@ public sealed class PipelineParseTests
         Assert.True(SongNameParser.IsBotReply("点歌成功《泡沫》"));
         Assert.True(SongNameParser.IsBotReply("@1155 是否确定点歌《社会摇》- 萧全？回复 确定 开始点歌"));
         Assert.True(SongNameParser.IsBotReply("@一只小青蛙 你当前有 99999 积分，等级 Lv4"));
+        Assert.True(SongNameParser.IsBotReply("@用户 当前没有待确认的点歌，请重新发送：点歌 歌名"));
+        Assert.True(SongNameParser.IsBotReply("@用户 《泡沫》播放地址获取失败，请稍后重试"));
     }
 
     [Fact]

@@ -18,8 +18,11 @@ public static partial class SongNameParser
                || content.StartsWith("是否点歌", StringComparison.Ordinal)
                || content.StartsWith("请回复 确定", StringComparison.Ordinal)
                || content.StartsWith("是否确定点歌", StringComparison.Ordinal)
+               || content.StartsWith("当前没有待确认", StringComparison.Ordinal)
                || content.StartsWith("已投票禁言", StringComparison.Ordinal)
-               || content.StartsWith("你当前有", StringComparison.Ordinal);
+               || content.StartsWith("你当前有", StringComparison.Ordinal)
+               || content.Contains("播放地址获取失败", StringComparison.Ordinal)
+               || content.Contains("播放地址无效", StringComparison.Ordinal);
     }
 
     internal static string StripMentionPrefix(string content)

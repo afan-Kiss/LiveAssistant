@@ -954,6 +954,7 @@
           <p class="hint">关闭后观众点歌将回复暂停提示，保存后立即生效。</p>
           <div class="row">
             <label><input type="checkbox" id="pEnabled" ${p.requestEnabled !== false ? 'checked' : ''}> 开启点歌</label>
+            <p class="hint" style="margin:8px 0 0">点歌后固定询问「是否确定点歌《歌名》- 歌手」；回复「确定」后才入队（多结果自动用搜索第一首）。</p>
           </div>
           <div class="form-field" style="margin-top:10px">
             <label>关闭时的回复</label>
@@ -1009,7 +1010,7 @@
         </div>
         <div class="panel">
           <h3>弹幕指令</h3>
-          <p class="hint">点歌流程：<b>点歌 歌名</b> → 多结果时选择歌手 → 回复 <b>确定</b> 后才入队。<br>
+          <p class="hint">点歌流程：<b>点歌 歌名</b> → 询问 <b>是否确定点歌《歌名》- 歌手</b> → 回复 <b>确定</b> 后才入队。<br>
             其他指令：<b>查积分</b> / <b>查我</b> / <b>切歌</b> / <b>下一首</b>。</p>
         </div>`;
       selectPolicyMode(p.mode || 'Free');
@@ -1019,6 +1020,7 @@
       const mode = policyDraft?.mode || 'Free';
       await api('PUT', '/api/song-request-policy', {
         requestEnabled: document.getElementById('pEnabled').checked,
+        requireConfirm: true,
         pausedReplyMessage: document.getElementById('pPausedMsg').value || '当前暂停点歌，请稍后再试',
         maxDailyRequestsPerUser: +(document.getElementById('pDailyMax').value || 0),
         cooldownSeconds: +(document.getElementById('pCooldown').value || 30),
@@ -1149,9 +1151,13 @@
     }
 
     async function addKeyword() {
+      const keyword = (document.getElementById('kwWord').value || '').trim();
+      const replyContent = (document.getElementById('kwReply').value || '').trim();
+      if (!keyword) { alert('关键词不能为空'); return; }
+      if (!replyContent) { alert('回复内容不能为空'); return; }
       await api('POST', '/api/keywords', {
-        keyword: document.getElementById('kwWord').value,
-        replyContent: document.getElementById('kwReply').value,
+        keyword,
+        replyContent,
         enabled: true
       });
       renderKeywords();

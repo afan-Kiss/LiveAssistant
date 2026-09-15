@@ -2,6 +2,7 @@ using LiveAssistant.Admin;
 using LiveAssistant.Config;
 using LiveAssistant.Database;
 using LiveAssistant.Models;
+using LiveAssistant.Services.AiSpeech;
 
 namespace LiveAssistant.Services;
 
@@ -53,6 +54,7 @@ public sealed class LiveAppHost : IDisposable
     private readonly SongRequestControlService _songRequestControl;
     private readonly UserDetailService _userDetail;
     private readonly ReplyTemplatePreviewService _templatePreview;
+    private readonly AiSpeechCoordinator _aiSpeech;
     private readonly DateTime _startedAt = DateTime.Now;
     private string _lastPlayedTrackKey = "";
     private CancellationTokenSource? _watchCts;
@@ -109,7 +111,13 @@ public sealed class LiveAppHost : IDisposable
         _queue = new QueueService(_db);
         _reply = new ReplyService(_config);
         _outboundTracker = new OutboundReplyTracker();
-        _replyQueue = new ReplyQueue(_douyin, _log, _config.Settings.Reply, outboundTracker: _outboundTracker);
+        _replyQueue = new ReplyQueue(
+            _douyin,
+            _log,
+            _config.Settings.Reply,
+            outboundTracker: _outboundTracker,
+            onSendFailed: msg => _system.Add(msg),
+            onSendSucceeded: content => _system.Add($"弹幕已发出：{TruncateForUi(content, 80)}"));
         _random = new RandomPlaylistService(_config, _db);
         _playback = new PlaybackService(_log);
         _playback.SetVolume(_config.Settings.Playback.Volume);
@@ -134,7 +142,7 @@ public sealed class LiveAppHost : IDisposable
         _giftCollector = new GiftCollectorService(_config, _douyin, _gift, _log, giftRepo: _giftRepo);
         _banVote = new BanVoteService(_config, _banVoteRepo, _users, _douyin, _replyQueue, _reply, _system, _log);
         _welcome = new WelcomeService(_config, _reply, _replyQueue, _system, _welcomeCooldownRepo);
-        _keywordReply = new KeywordReplyService(_config, _keywordReplyRepo, new NullAIReplyService());
+        _keywordReply = new KeywordReplyService(_config, _keywordReplyRepo, new NullAIReplyService(), _log);
         _pointsQuery = new PointsQueryService(_users, pointsLedgerRepo);
         _skipSong = new SkipSongService(
             _config, _users, _playback, _queue, _engine, _reply, _replyQueue, _system, _log);
@@ -168,6 +176,8 @@ public sealed class LiveAppHost : IDisposable
             Reply = _reply
         });
         _adminTunnel = new AdminTunnelService(_config, _log, _system);
+        _aiSpeech = new AiSpeechCoordinator(_config, _log, _outboundTracker);
+        _aiSpeech.StatusChanged += () => NotifyStateChanged();
 
         _danmaku.DanmakuReceived += OnDanmakuReceived;
         _songRequest.RequestHandled += () =>
@@ -219,6 +229,7 @@ public sealed class LiveAppHost : IDisposable
     public DateTime StartedAt => _startedAt;
     public LiveHealthService Health => _health;
     public SongRequestControlService SongRequestControl => _songRequestControl;
+    public AiSpeechCoordinator AiSpeech => _aiSpeech;
 
     public event Action<DanmakuItem>? DanmakuReceived;
     public event Action? StateChanged;
@@ -327,61 +338,122 @@ public sealed class LiveAppHost : IDisposable
         await StartAsync(ct);
     }
 
-    private async void OnDanmakuReceived(DanmakuItem item)
+    private void OnDanmakuReceived(DanmakuItem item)
+    {
+        _ = ProcessDanmakuSafeAsync(item);
+    }
+
+    private async Task ProcessDanmakuSafeAsync(DanmakuItem item)
     {
         try
         {
-            DanmakuReceived?.Invoke(item);
-
-            if (_config.Settings.Emergency.PauseInteraction)
-            {
-                return;
-            }
-
-            var webRid = _config.Settings.Douyin.WebRid;
-            if (string.IsNullOrWhiteSpace(webRid))
-            {
-                return;
-            }
-
-            _users.EnsureUser(item.UserId, item.Nickname);
-            _users.TouchInteraction(item.UserId, item.Nickname);
-            if (item.MsgType != "member" && item.MsgType != "gift")
-            {
-                _health.RecordDanmaku();
-            }
-
-            if (item.MsgType == "member")
-            {
-                _welcome.HandleMemberJoin(item, webRid);
-                return;
-            }
-
-            if (item.MsgType == "gift")
-            {
-                return;
-            }
-
-            if (_pointsQuery.TryHandle(item, webRid, _reply, _replyQueue))
-            {
-                return;
-            }
-
-            if (_skipSong.TryHandle(item, webRid))
-            {
-                return;
-            }
-
-            await _keywordReply.TryHandleAsync(item, _replyQueue, _reply, _users, webRid);
-            await _banVote.HandleDanmakuAsync(item, webRid);
-            await _songRequest.HandleDanmakuAsync(item, webRid);
-            NotifyStateChanged();
+            await ProcessDanmakuAsync(item);
         }
         catch (Exception ex)
         {
             _log.Error("app", "处理弹幕异常", ex);
             _log.SetLastError("app", ex.Message);
         }
+    }
+
+    private async Task ProcessDanmakuAsync(DanmakuItem item)
+    {
+        DanmakuReceived?.Invoke(item);
+
+        if (_config.Settings.Emergency.PauseInteraction)
+        {
+            return;
+        }
+
+        var webRid = _config.Settings.Douyin.WebRid;
+        if (string.IsNullOrWhiteSpace(webRid))
+        {
+            return;
+        }
+
+        _users.EnsureUser(item.UserId, item.Nickname);
+        _users.TouchInteraction(item.UserId, item.Nickname);
+        if (item.MsgType != "member" && item.MsgType != "gift")
+        {
+            _health.RecordDanmaku();
+        }
+
+        if (item.MsgType == "member")
+        {
+            _welcome.HandleMemberJoin(item, webRid);
+            return;
+        }
+
+        if (item.MsgType == "gift")
+        {
+            return;
+        }
+
+        var contentSummary = TruncateForRoute(item.Content);
+        var msgId = item.MsgId ?? "";
+
+        if (_pointsQuery.TryHandle(item, webRid, _reply, _replyQueue))
+        {
+            _log.DouyinInfo(
+                $"DANMAKU_ROUTE msgId={msgId} userId={item.UserId} content={contentSummary} route=points consumed=true");
+            return;
+        }
+
+        if (await _skipSong.TryHandleAsync(item, webRid))
+        {
+            _log.DouyinInfo(
+                $"DANMAKU_ROUTE msgId={msgId} userId={item.UserId} content={contentSummary} route=skip consumed=true");
+            return;
+        }
+
+        if (await _banVote.TryHandleAsync(item, webRid))
+        {
+            _log.DouyinInfo(
+                $"DANMAKU_ROUTE msgId={msgId} userId={item.UserId} content={contentSummary} route=ban consumed=true");
+            return;
+        }
+
+        if (await _songRequest.HandleDanmakuAsync(item, webRid))
+        {
+            _log.DouyinInfo(
+                $"DANMAKU_ROUTE msgId={msgId} userId={item.UserId} content={contentSummary} route=song consumed=true");
+            return;
+        }
+
+        if (await _keywordReply.TryHandleAsync(item, _replyQueue, _reply, _users, webRid))
+        {
+            _log.DouyinInfo(
+                $"DANMAKU_ROUTE msgId={msgId} userId={item.UserId} content={contentSummary} route=keyword consumed=true");
+            return;
+        }
+
+        // 仅未被业务模块消费的普通聊天进入 AI 语音
+        try
+        {
+            _aiSpeech.TryEnqueueDanmaku(
+                item,
+                _danmaku.RoomOwnerNickname,
+                string.IsNullOrWhiteSpace(_adminNickname) ? _danmaku.DouyinLoginNickname : _adminNickname);
+            _log.DouyinInfo(
+                $"DANMAKU_ROUTE msgId={msgId} userId={item.UserId} content={contentSummary} route=ai consumed=false");
+        }
+        catch (Exception aiEx)
+        {
+            _log.Error("ai_speech", "弹幕投递 AI 模块异常（已隔离）", aiEx);
+        }
+
+        NotifyStateChanged();
+    }
+
+    private static string TruncateForRoute(string? s, int max = 40)
+    {
+        if (string.IsNullOrEmpty(s))
+        {
+            return "";
+        }
+
+        s = s.Replace('\r', ' ').Replace('\n', ' ');
+        return s.Length <= max ? s : s[..max] + "...";
     }
 
     private async Task WatchSidecarsAsync(CancellationToken ct)
@@ -391,26 +463,26 @@ public sealed class LiveAppHost : IDisposable
         {
             try
             {
+                var kgOk = await _kugou.HealthCheckAsync(ct);
                 await _watchdog.EnsureSidecarsAsync(
                     () => _douyin.HealthCheckAsync(ct),
-                    () => _kugou.HealthCheckAsync(ct),
+                    () => Task.FromResult(kgOk),
                     ct);
 
                 var health = await _douyin.GetHealthAsync(ct);
                 var dyOk = health != null;
-                var kgOk = await _kugou.HealthCheckAsync(ct);
                 _douyinSidecarOk = dyOk;
                 _kugouSidecarOk = kgOk;
 
                 if (kgOk)
                 {
-                    var login = await _kugou.RefreshLoginStatusAsync(ct);
+                    var login = await _kugou.RefreshLoginStatusAsync(forceRefresh: true, ct);
                     if (login.LoggedIn)
                     {
                         var claim = await _kugou.TryAutoClaimVipAsync(ct);
                         if (claim != null && (claim.Claimed || claim.Upgraded))
                         {
-                            login = await _kugou.RefreshLoginStatusAsync(ct);
+                            login = await _kugou.RefreshLoginStatusAsync(forceRefresh: true, ct);
                             _system.Add($"酷狗试用会员: {claim.Message}");
                         }
                     }
@@ -418,7 +490,7 @@ public sealed class LiveAppHost : IDisposable
                     _kugouLoginStatus = login.DisplayStatus;
                     _kugouVipLabel = login.VipLabel;
 
-                    var fullStatus = await _kugou.CheckFullPlaybackStatusAsync(ct);
+                    var fullStatus = await _kugou.CheckFullPlaybackStatusAsync(login, forceProbe: false, ct);
                     _kugouFullPlaybackAvailable = fullStatus.FullPlaybackAvailable;
                     _kugouFullPlaybackReason = fullStatus.Reason;
                     _kugouStatusCheckedAtTicks = fullStatus.CheckedAtUtc.Ticks;
@@ -440,7 +512,10 @@ public sealed class LiveAppHost : IDisposable
                         }
                         else if (!fullStatus.FullPlaybackAvailable)
                         {
-                            _system.Add($"酷狗已登录但完整版不可用：{fullStatus.Reason}");
+                            var reason = string.IsNullOrWhiteSpace(fullStatus.Reason)
+                                ? "完整版不可用"
+                                : fullStatus.Reason;
+                            _system.Add($"酷狗完整版不可用：{reason}");
                         }
 
                         _kugouLoginWarned = true;
@@ -514,6 +589,17 @@ public sealed class LiveAppHost : IDisposable
 
     public void NotifyStateChanged() => StateChanged?.Invoke();
 
+    private static string TruncateForUi(string content, int max)
+    {
+        content = content.Trim();
+        if (content.Length <= max)
+        {
+            return content;
+        }
+
+        return content[..max] + "…";
+    }
+
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
@@ -522,6 +608,8 @@ public sealed class LiveAppHost : IDisposable
         }
 
         try { _watchCts?.Cancel(); } catch { /* ignore */ }
+        try { _banVote.Dispose(); } catch { /* ignore */ }
+        try { _aiSpeech.Dispose(); } catch { /* ignore */ }
         try { _dataCleanup.Dispose(); } catch { /* ignore */ }
         try { _backendSync.Dispose(); } catch { /* ignore */ }
         try { _adminTunnel.Dispose(); } catch { /* ignore */ }

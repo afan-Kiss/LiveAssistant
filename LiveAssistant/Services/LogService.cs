@@ -90,6 +90,9 @@ public sealed class LogService
     public void GiftWarn(string message) => Write("gift", "WARN", message);
     public void AdminInfo(string message) => Write("admin", "INFO", message);
 
+    public void AiInfo(string message) => Write("ai_speech", "INFO", message);
+    public void AiWarn(string message) => Write("ai_speech", "WARN", message);
+
     /// <summary>供后台运营日志页读取，面向非开发人员。</summary>
     public IReadOnlyList<OpsLogEntry> ReadRecentOpsEntries(int limit = 100)
     {

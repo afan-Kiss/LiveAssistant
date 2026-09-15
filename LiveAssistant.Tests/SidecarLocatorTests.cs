@@ -76,6 +76,9 @@ public sealed class SidecarLocatorTests
             File.WriteAllBytes(Path.Combine(root, SidecarLocator.PreferredDouyinFileName), new byte[] { 0 });
             File.WriteAllBytes(Path.Combine(root, SidecarLocator.PreferredKugouFileName), new byte[] { 0 });
             Directory.CreateDirectory(Path.Combine(root, SidecarLocator.KugouJsFolderName));
+            File.WriteAllText(
+                Path.Combine(root, SidecarLocator.KugouJsFolderName, SidecarLocator.KgapiJsEntryFileName),
+                "// test");
 
             var missing = SidecarLocator.GetMissingRequiredFiles(
                 Path.Combine(root, SidecarLocator.PreferredDouyinFileName),
@@ -99,7 +102,9 @@ public sealed class SidecarLocatorTests
         File.WriteAllBytes(Path.Combine(donor, SidecarLocator.PreferredDouyinFileName), new byte[] { 1 });
         File.WriteAllBytes(Path.Combine(donor, SidecarLocator.PreferredKugouFileName), new byte[] { 2 });
         Directory.CreateDirectory(Path.Combine(donor, SidecarLocator.KugouJsFolderName));
-        File.WriteAllText(Path.Combine(donor, SidecarLocator.KugouJsFolderName, "index.js"), "ok");
+        File.WriteAllText(
+            Path.Combine(donor, SidecarLocator.KugouJsFolderName, SidecarLocator.KgapiJsEntryFileName),
+            "console.log('ok');");
 
         Environment.SetEnvironmentVariable("LA_TEST_EXE_DIR", publish);
         try
@@ -115,6 +120,55 @@ public sealed class SidecarLocatorTests
         {
             Environment.SetEnvironmentVariable("LA_TEST_EXE_DIR", null);
             Directory.Delete(repo, true);
+        }
+    }
+
+    [Fact]
+    public void Bootstrap_RepairsEmptyKgapiJsDirectory()
+    {
+        var repo = CreateTempRoot();
+        var publish = Path.Combine(repo, "publish", "app");
+        var donor = Path.Combine(repo, "sidecars");
+        Directory.CreateDirectory(publish);
+        Directory.CreateDirectory(Path.Combine(publish, SidecarLocator.KugouJsFolderName));
+        Directory.CreateDirectory(donor);
+        File.WriteAllBytes(Path.Combine(donor, SidecarLocator.PreferredKugouFileName), new byte[] { 2 });
+        Directory.CreateDirectory(Path.Combine(donor, SidecarLocator.KugouJsFolderName));
+        File.WriteAllText(
+            Path.Combine(donor, SidecarLocator.KugouJsFolderName, SidecarLocator.KgapiJsEntryFileName),
+            "console.log('ok');");
+
+        Environment.SetEnvironmentVariable("LA_TEST_EXE_DIR", publish);
+        try
+        {
+            SidecarBootstrap.EnsureReady();
+            Assert.True(SidecarLocator.IsKgapiJsReady(Path.Combine(publish, SidecarLocator.KugouJsFolderName)));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("LA_TEST_EXE_DIR", null);
+            Directory.Delete(repo, true);
+        }
+    }
+
+    [Fact]
+    public void GetMissingRequiredFiles_ReportsEmptyKgapiJsDirectory()
+    {
+        var root = CreateTempRoot();
+        try
+        {
+            File.WriteAllBytes(Path.Combine(root, SidecarLocator.PreferredDouyinFileName), new byte[] { 0 });
+            File.WriteAllBytes(Path.Combine(root, SidecarLocator.PreferredKugouFileName), new byte[] { 0 });
+            Directory.CreateDirectory(Path.Combine(root, SidecarLocator.KugouJsFolderName));
+
+            var missing = SidecarLocator.GetMissingRequiredFiles(
+                Path.Combine(root, SidecarLocator.PreferredDouyinFileName),
+                Path.Combine(root, SidecarLocator.PreferredKugouFileName));
+            Assert.Contains($"{SidecarLocator.KugouJsFolderName}\\", missing);
+        }
+        finally
+        {
+            Directory.Delete(root, true);
         }
     }
 

@@ -10,7 +10,7 @@ public sealed class SongRequestSessionStore
 
     public SongRequestSessionStore(TimeSpan? ttl = null)
     {
-        _ttl = ttl ?? TimeSpan.FromMinutes(3);
+        _ttl = ttl ?? TimeSpan.FromMinutes(5);
     }
 
     public SongRequestSession? Get(string userId)

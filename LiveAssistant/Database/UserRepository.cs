@@ -32,25 +32,41 @@ public sealed class UserRepository
             return existing;
         }
 
+        // 并发安全：INSERT OR IGNORE，避免两条弹幕同时 EnsureUser 触发 UNIQUE 冲突
         var now = DateTime.Now.ToString("O");
-        using var conn = _db.Open();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
-            INSERT INTO users (user_id, nickname, role, status, points, level, request_count, created_at, updated_at)
-            VALUES ($uid, $nick, 'normal', 'active', 0, 0, 0, $now, $now)
-            """;
-        cmd.Parameters.AddWithValue("$uid", userId);
-        cmd.Parameters.AddWithValue("$nick", nickname);
-        cmd.Parameters.AddWithValue("$now", now);
-        cmd.ExecuteNonQuery();
-
-        return new UserProfile
+        using (var conn = _db.Open())
+        using (var cmd = conn.CreateCommand())
         {
-            UserId = userId,
-            Nickname = nickname,
-            Role = UserRole.Normal,
-            Status = UserStatus.Active
-        };
+            cmd.CommandText = """
+                INSERT OR IGNORE INTO users (user_id, nickname, role, status, points, level, request_count, created_at, updated_at)
+                VALUES ($uid, $nick, 'normal', 'active', 0, 0, 0, $now, $now)
+                """;
+            cmd.Parameters.AddWithValue("$uid", userId);
+            cmd.Parameters.AddWithValue("$nick", string.IsNullOrWhiteSpace(nickname) ? userId : nickname);
+            cmd.Parameters.AddWithValue("$now", now);
+            cmd.ExecuteNonQuery();
+        }
+
+        var user = GetUser(userId);
+        if (user == null)
+        {
+            // 极端情况下读不到则返回内存画像，避免丢弹幕
+            return new UserProfile
+            {
+                UserId = userId,
+                Nickname = nickname,
+                Role = UserRole.Normal,
+                Status = UserStatus.Active
+            };
+        }
+
+        if (!string.IsNullOrWhiteSpace(nickname) && user.Nickname != nickname)
+        {
+            UpdateNickname(userId, nickname);
+            user.Nickname = nickname;
+        }
+
+        return user;
     }
 
     public UserProfile? GetUser(string userId)

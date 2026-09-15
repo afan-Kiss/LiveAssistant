@@ -6,8 +6,12 @@ namespace LiveAssistant.Database;
 public sealed class KeywordReplyRepository
 {
     private readonly AppDatabase _db;
+    private int _generation;
 
     public KeywordReplyRepository(AppDatabase db) => _db = db;
+
+    /// <summary>每次 Add/Update/Remove 递增，供 KeywordReplyService 缓存失效。</summary>
+    public int Generation => Volatile.Read(ref _generation);
 
     public List<KeywordReplyRule> ListAll()
     {
@@ -28,6 +32,27 @@ public sealed class KeywordReplyRepository
 
     public List<KeywordReplyRule> ListEnabled() => ListAll().Where(x => x.Enabled).ToList();
 
+    public static string? ValidateRule(KeywordReplyRule rule, bool forEnableOrSave)
+    {
+        rule.Keyword = (rule.Keyword ?? "").Trim();
+        rule.ReplyContent = rule.ReplyContent ?? "";
+        rule.TemplateKey = rule.TemplateKey ?? "";
+
+        if (string.IsNullOrWhiteSpace(rule.Keyword))
+        {
+            return "关键词不能为空";
+        }
+
+        if (forEnableOrSave && rule.Enabled
+            && string.IsNullOrWhiteSpace(rule.ReplyContent)
+            && string.IsNullOrWhiteSpace(rule.TemplateKey))
+        {
+            return "启用规则时必须填写回复内容或模板";
+        }
+
+        return null;
+    }
+
     public long Add(KeywordReplyRule rule)
     {
         var now = DateTime.Now.ToString("O");
@@ -37,14 +62,15 @@ public sealed class KeywordReplyRepository
             INSERT INTO keyword_replies (keyword, template_key, reply_content, enabled, created_at)
             VALUES ($kw, $tpl, $reply, $en, $now)
             """;
-        cmd.Parameters.AddWithValue("$kw", rule.Keyword);
-        cmd.Parameters.AddWithValue("$tpl", rule.TemplateKey);
-        cmd.Parameters.AddWithValue("$reply", rule.ReplyContent);
+        cmd.Parameters.AddWithValue("$kw", rule.Keyword.Trim());
+        cmd.Parameters.AddWithValue("$tpl", rule.TemplateKey ?? "");
+        cmd.Parameters.AddWithValue("$reply", rule.ReplyContent ?? "");
         cmd.Parameters.AddWithValue("$en", rule.Enabled ? 1 : 0);
         cmd.Parameters.AddWithValue("$now", now);
         cmd.ExecuteNonQuery();
         using var idCmd = conn.CreateCommand();
         idCmd.CommandText = "SELECT last_insert_rowid()";
+        Interlocked.Increment(ref _generation);
         return (long)(idCmd.ExecuteScalar() ?? 0L);
     }
 
@@ -54,7 +80,13 @@ public sealed class KeywordReplyRepository
         using var cmd = conn.CreateCommand();
         cmd.CommandText = "DELETE FROM keyword_replies WHERE id = $id";
         cmd.Parameters.AddWithValue("$id", id);
-        return cmd.ExecuteNonQuery() > 0;
+        var ok = cmd.ExecuteNonQuery() > 0;
+        if (ok)
+        {
+            Interlocked.Increment(ref _generation);
+        }
+
+        return ok;
     }
 
     public void Update(KeywordReplyRule rule)
@@ -64,12 +96,13 @@ public sealed class KeywordReplyRepository
         cmd.CommandText = """
             UPDATE keyword_replies SET keyword=$kw, template_key=$tpl, reply_content=$reply, enabled=$en WHERE id=$id
             """;
-        cmd.Parameters.AddWithValue("$kw", rule.Keyword);
-        cmd.Parameters.AddWithValue("$tpl", rule.TemplateKey);
-        cmd.Parameters.AddWithValue("$reply", rule.ReplyContent);
+        cmd.Parameters.AddWithValue("$kw", rule.Keyword.Trim());
+        cmd.Parameters.AddWithValue("$tpl", rule.TemplateKey ?? "");
+        cmd.Parameters.AddWithValue("$reply", rule.ReplyContent ?? "");
         cmd.Parameters.AddWithValue("$en", rule.Enabled ? 1 : 0);
         cmd.Parameters.AddWithValue("$id", rule.Id);
         cmd.ExecuteNonQuery();
+        Interlocked.Increment(ref _generation);
     }
 
     private static KeywordReplyRule Read(SqliteDataReader reader) => new()

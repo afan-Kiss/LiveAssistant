@@ -34,9 +34,15 @@ public sealed class PlaybackCommandQueue : IDisposable
     private volatile bool _playbackStarting;
     private readonly Stack<QueueItem> _playbackHistory = new();
     private readonly Func<QueueItem, CancellationToken, Task<TrackInfo?>>? _resolveFresh;
+    private readonly Func<CancellationToken, Task<TrackInfo?>>? _resolveRandom;
     private readonly Func<TrackInfo, bool, CancellationToken, Task<bool>>? _playAsync;
     /// <summary>播放链路 resolve 上限；不阻塞命令队列过久（HTTP 层仍可有更长超时）。</summary>
     private static readonly TimeSpan ResolveFreshTimeout = TimeSpan.FromSeconds(12);
+
+    private readonly object _prefetchLock = new();
+    private CancellationTokenSource? _prefetchCts;
+    private Task<TrackInfo?>? _prefetchTask;
+    private TrackInfo? _prefetchedRandom;
 
     public PlaybackCommandQueue(
         ConfigManager config,
@@ -48,7 +54,8 @@ public sealed class PlaybackCommandQueue : IDisposable
         SystemMessageService system,
         LogService log,
         Func<QueueItem, CancellationToken, Task<TrackInfo?>>? resolveFresh = null,
-        Func<TrackInfo, bool, CancellationToken, Task<bool>>? playAsync = null)
+        Func<TrackInfo, bool, CancellationToken, Task<bool>>? playAsync = null,
+        Func<CancellationToken, Task<TrackInfo?>>? resolveRandom = null)
     {
         _config = config;
         _queue = queue;
@@ -60,6 +67,7 @@ public sealed class PlaybackCommandQueue : IDisposable
         _log = log;
         _resolveFresh = resolveFresh;
         _playAsync = playAsync;
+        _resolveRandom = resolveRandom;
 
         _playback.TrackFinished += OnTrackFinished;
         _worker = Task.Run(() => WorkerLoopAsync(_cts.Token));
@@ -67,7 +75,10 @@ public sealed class PlaybackCommandQueue : IDisposable
 
     public PlaybackService Playback => _playback;
 
-    public void Enqueue(PlaybackCommandKind kind)
+    public void Enqueue(PlaybackCommandKind kind) => TryEnqueue(kind);
+
+    /// <summary>入队播放命令；skip/advance 合并到进行中的切歌也返回 true。</summary>
+    public bool TryEnqueue(PlaybackCommandKind kind)
     {
         if (IsSkipOrAdvance(kind))
         {
@@ -86,7 +97,7 @@ public sealed class PlaybackCommandQueue : IDisposable
                 {
                     _log.PlaybackInfo(
                         $"合并重复命令: {kind} (skip={_pendingSkipCount} advance={_pendingAdvanceCount})");
-                    return;
+                    return true;
                 }
                 _skipAdvancePending = true;
             }
@@ -114,7 +125,10 @@ public sealed class PlaybackCommandQueue : IDisposable
                 }
             }
             _log.PlaybackWarn($"播放命令入队失败: {kind}");
+            return false;
         }
+
+        return true;
     }
 
     private static bool IsSkipOrAdvance(PlaybackCommandKind kind) =>
@@ -164,13 +178,26 @@ public sealed class PlaybackCommandQueue : IDisposable
             await AdvanceInternalAsync(ct);
         }
 
-        for (var i = 0; i < skips; i++)
+        if (skips <= 0)
         {
-            await _playback.StopAsync(ct);
-            _queue.FinishCurrent();
-            _advanceScheduled = false;
-            await AdvanceInternalAsync(ct);
+            return;
         }
+
+        // 连点「下一首」只停一次；旧逻辑每轮都 Stop 会把刚切到的歌立刻掐掉。
+        await _playback.StopAsync(ct);
+        _queue.FinishCurrent();
+        _advanceScheduled = false;
+
+        for (var i = 1; i < skips; i++)
+        {
+            _advanceScheduled = false;
+            if (_queue.DequeueNext() != null)
+            {
+                _queue.FinishCurrent();
+            }
+        }
+
+        await AdvanceInternalAsync(ct);
     }
 
     public Task EnqueueEnsurePlayingAsync()
@@ -179,10 +206,10 @@ public sealed class PlaybackCommandQueue : IDisposable
         return Task.CompletedTask;
     }
 
-    public Task EnqueueSkipAsync()
+    /// <summary>返回是否成功接受切歌（含合并到进行中的 skip）。入队失败返回 false。</summary>
+    public Task<bool> EnqueueSkipAsync()
     {
-        Enqueue(PlaybackCommandKind.Skip);
-        return Task.CompletedTask;
+        return Task.FromResult(TryEnqueue(PlaybackCommandKind.Skip));
     }
 
     public void EnqueuePause() => Enqueue(PlaybackCommandKind.Pause);
@@ -279,6 +306,7 @@ public sealed class PlaybackCommandQueue : IDisposable
             case PlaybackCommandKind.Stop:
                 await _playback.StopAsync(ct);
                 _queue.FinishCurrent();
+                InvalidateRandomPrefetch();
                 _log.PlaybackInfo("停止播放");
                 return;
             case PlaybackCommandKind.Skip:
@@ -445,6 +473,7 @@ public sealed class PlaybackCommandQueue : IDisposable
         }
 
         ApplyResolvedTrack(item, track);
+        _queue.SyncNowPlayingMetadata(item);
 
         PushHistory(item);
 
@@ -459,6 +488,9 @@ public sealed class PlaybackCommandQueue : IDisposable
             return;
         }
 
+        // 当前点歌曲在播时，若队列将空则预取下一首随机，缩短「下一首」空白。
+        ScheduleRandomPrefetchIfNeeded();
+
         var msg = _reply.Render("nowPlaying", new Dictionary<string, string>
         {
             ["song"] = track.SongName,
@@ -472,6 +504,13 @@ public sealed class PlaybackCommandQueue : IDisposable
 
     private async Task<TrackInfo?> ResolveFreshTrackWithTimeoutAsync(QueueItem item, CancellationToken ct)
     {
+        var cached = _resolveFresh == null ? TryTrackFromCachedUrl(item) : null;
+        if (cached != null)
+        {
+            _log.PlaybackInfo($"PLAYBACK_TIMING ResolveFreshTrack_cached song={item.SongName}");
+            return cached;
+        }
+
         var sw = Stopwatch.StartNew();
         try
         {
@@ -507,6 +546,28 @@ public sealed class PlaybackCommandQueue : IDisposable
 
     private async Task<TrackInfo?> ResolveRandomTrackAsync(CancellationToken ct)
     {
+        if (_resolveRandom != null)
+        {
+            var swInjected = Stopwatch.StartNew();
+            try
+            {
+                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                timeoutCts.CancelAfter(ResolveFreshTimeout);
+                var injected = await _resolveRandom(timeoutCts.Token);
+                _log.PlaybackInfo(
+                    $"PLAYBACK_TIMING ResolveRandomTrack_ms={swInjected.ElapsedMilliseconds} " +
+                    $"song={injected?.SongName ?? "-"} ok={(injected != null)} source=injected");
+                return injected;
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                _log.PlaybackWarn(
+                    $"PLAYBACK_TIMING ResolveRandomTrack TIMEOUT ms={swInjected.ElapsedMilliseconds} " +
+                    $"source=injected reason=resolve_timeout");
+                return null;
+            }
+        }
+
         var sw = Stopwatch.StartNew();
         var source = _config.Settings.RandomPlaylist.Source?.Trim() ?? "kugou";
         try
@@ -541,6 +602,18 @@ public sealed class PlaybackCommandQueue : IDisposable
             _log.PlaybackWarn(
                 $"PLAYBACK_TIMING ResolveRandomTrack TIMEOUT ms={sw.ElapsedMilliseconds} " +
                 $"source={source} reason=resolve_timeout limit_ms={ResolveFreshTimeout.TotalMilliseconds}");
+            if (source.Equals("kugou", StringComparison.OrdinalIgnoreCase))
+            {
+                var fallback = await _kugou.PickFallbackRandomTrackAsync(_random.WasRecentlyPlayed, ct);
+                if (fallback != null)
+                {
+                    _log.PlaybackInfo(
+                        $"PLAYBACK_TIMING ResolveRandomTrack fallback song={fallback.SongName} " +
+                        $"after_timeout_ms={sw.ElapsedMilliseconds}");
+                    return fallback;
+                }
+            }
+
             return null;
         }
         catch (Exception ex)
@@ -554,7 +627,7 @@ public sealed class PlaybackCommandQueue : IDisposable
 
     private async Task PlayRandomAsync(bool isRandomFill, CancellationToken ct)
     {
-        var track = await ResolveRandomTrackAsync(ct);
+        var track = await TakePrefetchedOrResolveRandomAsync(ct);
         if (!IsPlayableTrack(track, track?.SongName ?? "随机", "random", "随机") || track == null)
         {
             if (track != null && !_kugou.IsAcceptableForPlayback(track))
@@ -563,7 +636,7 @@ public sealed class PlaybackCommandQueue : IDisposable
             }
             else
             {
-                _system.Add("每日推荐取歌失败：请确认酷狗 API 在线、已扫码登录并领取试用会员（完整播放需要登录）");
+                _system.Add("随机补位取歌失败：请确认酷狗 API 在线、已扫码登录并领取试用会员");
             }
 
             await FailCurrentAndContinueAsync(track?.SongName ?? "随机", ct);
@@ -578,6 +651,8 @@ public sealed class PlaybackCommandQueue : IDisposable
             SongId = track.SongId,
             Hash = track.Hash,
             PlayUrl = track.PlayUrl,
+            AlbumId = track.AlbumId,
+            AlbumAudioId = track.AlbumAudioId,
             IsRandom = true
         };
 
@@ -595,9 +670,170 @@ public sealed class PlaybackCommandQueue : IDisposable
         _queue.SetNowPlaying(item);
         PushHistory(item);
         _random.RecordPlayed(track.SongId, track.Hash);
+        ScheduleRandomPrefetchIfNeeded();
         _system.Add(isRandomFill
             ? $"随机补位: {track.SongName} - {track.Artist}"
             : $"随机播放: {track.SongName} - {track.Artist}");
+    }
+
+    /// <summary>
+    /// 优先用播放中预取好的下一首；没有则等待进行中的预取；再没有才现取。
+    /// </summary>
+    private async Task<TrackInfo?> TakePrefetchedOrResolveRandomAsync(CancellationToken ct)
+    {
+        Task<TrackInfo?>? inflight;
+        lock (_prefetchLock)
+        {
+            if (_prefetchedRandom != null)
+            {
+                var ready = _prefetchedRandom;
+                _prefetchedRandom = null;
+                _prefetchTask = null;
+                _log.PlaybackInfo(
+                    $"PLAYBACK_TIMING ResolveRandomTrack_prefetched song={ready.SongName}");
+                return ready;
+            }
+
+            inflight = _prefetchTask;
+            _prefetchTask = null;
+            // 摘走进行中的预取任务，避免完成后再次写入缓存导致同一首连播两遍。
+        }
+
+        if (inflight != null)
+        {
+            var sw = Stopwatch.StartNew();
+            try
+            {
+                var track = await inflight.WaitAsync(ct);
+                _log.PlaybackInfo(
+                    $"PLAYBACK_TIMING ResolveRandomTrack_await_prefetch_ms={sw.ElapsedMilliseconds} " +
+                    $"song={track?.SongName ?? "-"} ok={(track != null)}");
+                if (track != null)
+                {
+                    return track;
+                }
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                _log.PlaybackWarn(
+                    $"PLAYBACK_TIMING ResolveRandomTrack_await_prefetch canceled ms={sw.ElapsedMilliseconds}");
+            }
+            catch (Exception ex)
+            {
+                _log.PlaybackWarn(
+                    $"PLAYBACK_TIMING ResolveRandomTrack_await_prefetch FAIL ms={sw.ElapsedMilliseconds} " +
+                    $"err={ex.Message}");
+            }
+        }
+
+        return await ResolveRandomTrackAsync(ct);
+    }
+
+    private bool ShouldPrefetchRandom()
+    {
+        var mode = _config.Settings.Playback.Mode;
+        if (mode == PlaybackMode.RequestOnly)
+        {
+            return false;
+        }
+
+        if (mode == PlaybackMode.RequestWithRandomFill && !_config.Settings.Playback.RandomFillEnabled)
+        {
+            return false;
+        }
+
+        // 还有点歌排队时，下一首不是随机，不必预取随机。
+        return _queue.WaitingCount <= 0;
+    }
+
+    private void ScheduleRandomPrefetchIfNeeded()
+    {
+        if (!ShouldPrefetchRandom())
+        {
+            return;
+        }
+
+        lock (_prefetchLock)
+        {
+            if (_prefetchedRandom != null)
+            {
+                return;
+            }
+
+            if (_prefetchTask is { IsCompleted: false })
+            {
+                return;
+            }
+
+            var linked = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
+            _prefetchCts?.Cancel();
+            _prefetchCts?.Dispose();
+            _prefetchCts = linked;
+            var token = linked.Token;
+            Task<TrackInfo?>? self = null;
+            self = Task.Run(async () =>
+            {
+                try
+                {
+                    var track = await ResolveRandomTrackAsync(token);
+                    if (track == null || string.IsNullOrWhiteSpace(track.PlayUrl))
+                    {
+                        _log.PlaybackWarn("随机预取失败：未拿到可播放曲目");
+                        return null;
+                    }
+
+                    if (!_kugou.IsAcceptableForPlayback(track))
+                    {
+                        _log.PlaybackWarn($"随机预取跳过试听版: {track.SongName}");
+                        return null;
+                    }
+
+                    lock (_prefetchLock)
+                    {
+                        // 已被 TakePrefetched 摘走或被新预取替换时，勿写入缓存，避免同一首播两遍。
+                        if (!token.IsCancellationRequested && ReferenceEquals(_prefetchTask, self))
+                        {
+                            _prefetchedRandom = track;
+                        }
+                    }
+
+                    _log.PlaybackInfo($"PLAYBACK_TIMING random_prefetch_ready song={track.SongName}");
+                    return track;
+                }
+                catch (OperationCanceledException)
+                {
+                    return null;
+                }
+                catch (Exception ex)
+                {
+                    _log.PlaybackWarn($"随机预取异常: {ex.Message}");
+                    return null;
+                }
+            }, token);
+            _prefetchTask = self;
+        }
+    }
+
+    private void InvalidateRandomPrefetch()
+    {
+        CancellationTokenSource? cts;
+        lock (_prefetchLock)
+        {
+            cts = _prefetchCts;
+            _prefetchCts = null;
+            _prefetchTask = null;
+            _prefetchedRandom = null;
+        }
+
+        try
+        {
+            cts?.Cancel();
+            cts?.Dispose();
+        }
+        catch
+        {
+            // ignore
+        }
     }
 
     private bool ShouldDeferEnsurePlaying()
@@ -612,8 +848,15 @@ public sealed class PlaybackCommandQueue : IDisposable
             return true;
         }
 
-        // DequeueNext 已占位或随机曲正在播：新点歌应排队等待
-        return _queue.NowPlaying != null;
+        // Idle 却残留 NowPlaying：属于脏状态，清掉才能让新点歌/补位真正开播
+        if (_queue.NowPlaying != null)
+        {
+            _log.PlaybackWarn(
+                $"EnsurePlaying 清理 Idle 残留 NowPlaying song={_queue.NowPlaying.SongName}");
+            _queue.FinishCurrent();
+        }
+
+        return false;
     }
 
     private async Task<bool> TryStartPlaybackWithUrlRecoveryAsync(
@@ -635,6 +878,7 @@ public sealed class PlaybackCommandQueue : IDisposable
         }
 
         ApplyResolvedTrack(item, fresh);
+        _queue.SyncNowPlayingMetadata(item);
         return await StartPlaybackAsync(fresh, isRandomFill, ct);
     }
 
@@ -670,8 +914,45 @@ public sealed class PlaybackCommandQueue : IDisposable
         return true;
     }
 
+    private TrackInfo? TryTrackFromCachedUrl(QueueItem item)
+    {
+        if (string.IsNullOrWhiteSpace(item.PlayUrl) || string.IsNullOrWhiteSpace(item.Hash))
+        {
+            return null;
+        }
+
+        var track = new TrackInfo
+        {
+            SongName = item.SongName,
+            Artist = item.Artist,
+            SongId = item.SongId,
+            Hash = item.Hash,
+            AlbumId = item.AlbumId,
+            AlbumAudioId = item.AlbumAudioId,
+            PlayUrl = item.PlayUrl,
+            IsRandom = item.IsRandom,
+            Requester = item.Nickname
+        };
+        return _kugou.IsAcceptableForPlayback(track) ? track : null;
+    }
+
     private static void ApplyResolvedTrack(QueueItem item, TrackInfo track)
     {
+        if (!string.IsNullOrWhiteSpace(track.SongName))
+        {
+            item.SongName = track.SongName;
+        }
+
+        if (!string.IsNullOrWhiteSpace(track.Artist))
+        {
+            item.Artist = track.Artist;
+        }
+
+        if (!string.IsNullOrWhiteSpace(track.SongId))
+        {
+            item.SongId = track.SongId;
+        }
+
         item.PlayUrl = track.PlayUrl;
         if (!string.IsNullOrWhiteSpace(track.Hash))
         {
@@ -749,6 +1030,7 @@ public sealed class PlaybackCommandQueue : IDisposable
     public void Dispose()
     {
         _playback.TrackFinished -= OnTrackFinished;
+        InvalidateRandomPrefetch();
         _cts.Cancel();
         _channel.Writer.TryComplete();
         try

@@ -453,6 +453,187 @@ public sealed class KugouServiceTests
     }
 
     [Fact]
+    public async Task GetPlayUrl_WhenSessionDroppedThenLoginRestored_RetriesSuccessfully()
+    {
+        var urlCalls = 0;
+        var loginCalls = 0;
+        var handler = new StubHandler(req =>
+        {
+            var path = req.RequestUri?.AbsolutePath ?? "";
+            if (path.Contains("login/status", StringComparison.Ordinal))
+            {
+                Interlocked.Increment(ref loginCalls);
+                return Json(new { code = 0, data = new { logged_in = true, nickname = "test", vip_label = "概念版VIP" } });
+            }
+
+            if (path.Contains("song/url", StringComparison.Ordinal))
+            {
+                var n = Interlocked.Increment(ref urlCalls);
+                if (n == 1)
+                {
+                    return Json(new { code = 40101, msg = "登录已掉线，请重新扫码登录" });
+                }
+
+                return Json(new
+                {
+                    code = 0,
+                    data = new { url = "http://fs/yp/f_ok.mp3", is_preview = false }
+                });
+            }
+
+            return Json(new { code = 1, msg = "unknown" });
+        });
+
+        var svc = CreateService(handler);
+        await svc.RefreshLoginStatusAsync();
+        var url = await svc.GetPlayUrlAsync("abc123", "测试", CancellationToken.None);
+
+        Assert.NotNull(url);
+        Assert.Contains("/yp/f_", url!.Url);
+        Assert.True(urlCalls >= 2);
+        Assert.True(loginCalls >= 2);
+        Assert.True(svc.LoginSnapshot.LoggedIn);
+    }
+
+    [Fact]
+    public async Task RefreshLoginStatus_WhenInvalidatedMidFlight_RefetchesInsteadOfEmptySnapshot()
+    {
+        var loginCalls = 0;
+        var gate = new ManualResetEventSlim(false);
+        var entered = new ManualResetEventSlim(false);
+        var handler = new StubHandler(req =>
+        {
+            var path = req.RequestUri?.AbsolutePath ?? "";
+            if (path.Contains("login/status", StringComparison.Ordinal))
+            {
+                var n = Interlocked.Increment(ref loginCalls);
+                if (n == 1)
+                {
+                    entered.Set();
+                    gate.Wait(TimeSpan.FromSeconds(5));
+                }
+
+                return Json(new { code = 0, data = new { logged_in = true, nickname = "recovered", userid = "u1" } });
+            }
+
+            return Json(new { code = 1, msg = "unknown" });
+        });
+
+        var svc = CreateService(handler);
+        var refreshTask = svc.RefreshLoginStatusAsync(forceRefresh: true);
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(5)));
+
+        // 模拟取链 session_expired：bump generation + 清空 snapshot
+        var invalidate = typeof(KugouService).GetMethod(
+            "InvalidateLoginCache",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        Assert.NotNull(invalidate);
+        invalidate!.Invoke(svc, null);
+        gate.Set();
+
+        var snap = await refreshTask;
+        Assert.True(snap.LoggedIn);
+        Assert.Equal("recovered", snap.Nickname);
+        Assert.True(loginCalls >= 2);
+    }
+
+    [Fact]
+    public async Task TryAutoClaimVip_OnFailure_BacksOffInsteadOfSpamming()
+    {
+        var claimCalls = 0;
+        var handler = new StubHandler(req =>
+        {
+            var path = req.RequestUri?.AbsolutePath ?? "";
+            if (path.Contains("login/status", StringComparison.Ordinal))
+            {
+                return Json(new { code = 0, data = new { logged_in = true, nickname = "test" } });
+            }
+
+            if (path.Contains("vip/claim", StringComparison.Ordinal))
+            {
+                Interlocked.Increment(ref claimCalls);
+                return Json(new { code = 1, msg = "领取试用会员失败: status=0 error_code=51002 http=502" });
+            }
+
+            return Json(new { code = 1, msg = "unknown" });
+        });
+
+        var svc = CreateService(handler);
+        await svc.RefreshLoginStatusAsync();
+        Assert.Null(await svc.TryAutoClaimVipAsync());
+        Assert.Null(await svc.TryAutoClaimVipAsync());
+        Assert.Null(await svc.TryAutoClaimVipAsync());
+        Assert.Equal(1, claimCalls);
+    }
+
+    [Fact]
+    public async Task GetPlayUrl_WhenVipMaskedAsStaleSession_KeepsLoginAndUsesAlternate()
+    {
+        var urlCalls = 0;
+        var handler = new StubHandler(req =>
+        {
+            var path = req.RequestUri?.AbsolutePath ?? "";
+            if (path.Contains("login/status", StringComparison.Ordinal))
+            {
+                return Json(new { code = 0, data = new { logged_in = true, nickname = "test", vip_label = "超级VIP" } });
+            }
+
+            if (path.Contains("search", StringComparison.Ordinal))
+            {
+                return Json(new
+                {
+                    code = 0,
+                    data = new
+                    {
+                        歌单 = new[]
+                        {
+                            new { hash = "vip-hash", 歌曲名称 = "死了都要爱", 歌手名称 = "信乐团", 歌曲ID = "1" },
+                            new { hash = "free-hash", 歌曲名称 = "死了都要爱", 歌手名称 = "信乐团", 歌曲ID = "2" }
+                        }
+                    }
+                });
+            }
+
+            if (path.Contains("song/url", StringComparison.Ordinal))
+            {
+                Interlocked.Increment(ref urlCalls);
+                var body = req.Content?.ReadAsStringAsync().Result ?? "";
+                if (body.Contains("vip-hash", StringComparison.Ordinal))
+                {
+                    return Json(new { code = 502, msg = "当前登录态无效，旧版扫码残留，请先退出后再扫码登录" });
+                }
+
+                if (body.Contains("free-hash", StringComparison.Ordinal))
+                {
+                    return Json(new
+                    {
+                        code = 0,
+                        data = new { url = "http://fs/yp/f_free.mp3", is_preview = false, song_name = "死了都要爱", author_name = "信乐团" }
+                    });
+                }
+
+                return Json(new { code = 1, msg = "unknown hash" });
+            }
+
+            return Json(new { code = 1, msg = "unknown" });
+        });
+
+        var svc = CreateService(handler);
+        await svc.RefreshLoginStatusAsync();
+        var url = await svc.GetPlayUrlAsync(
+            new KugouSongContext { Hash = "vip-hash", Keyword = "死了都要爱", Artist = "信乐团" },
+            tryAlternates: true,
+            CancellationToken.None);
+
+        Assert.NotNull(url);
+        Assert.Contains("/yp/f_free", url!.Url);
+        Assert.True(svc.LoginSnapshot.LoggedIn);
+        Assert.True(KugouService.IsPrivilegeMaskedAsStaleSession(
+            502, "当前登录态无效，旧版扫码残留，请先退出后再扫码登录"));
+        Assert.False(KugouService.IsPrivilegeMaskedAsStaleSession(40101, "登录已掉线，请重新扫码登录"));
+    }
+
+    [Fact]
     public async Task GetPlayUrl_WhenNotLoggedIn_AllowsPreview()
     {
         var handler = new StubHandler(req =>
@@ -565,7 +746,116 @@ public sealed class KugouServiceTests
     }
 
     [Fact]
-    public async Task PickRandomTrack_UsesDailyRecommendInOrderAndRefreshesWhenExhausted()
+    public async Task PickFallbackRandomTrack_RotatesProbeHashesWhenRecentlyPlayed()
+    {
+        var urlCalls = 0;
+        var handler = new StubHandler(req =>
+        {
+            var path = req.RequestUri?.AbsolutePath ?? "";
+            if (path.Contains("song/url", StringComparison.Ordinal))
+            {
+                urlCalls++;
+                var body = req.Content?.ReadAsStringAsync().Result ?? "";
+                var hash = body.Contains("f15843ca55658254f674508ec64b5b63", StringComparison.Ordinal)
+                    ? "f15843ca55658254f674508ec64b5b63"
+                    : "69f342d52afb4ea64301a22d119d3ac0";
+                return Json(new
+                {
+                    code = 0,
+                    data = new
+                    {
+                        url = $"http://fs/{hash}.mp3",
+                        hash,
+                        is_preview = false,
+                        song_name = hash == "69f342d52afb4ea64301a22d119d3ac0" ? "备用A" : "备用B"
+                    }
+                });
+            }
+
+            if (path.Contains("login/status", StringComparison.Ordinal))
+            {
+                return Json(new { code = 0, data = new { logged_in = true, nickname = "test" } });
+            }
+
+            return Json(new { code = 1, msg = "unknown" });
+        });
+
+        var svc = CreateService(handler);
+        var recent = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        bool WasRecent(string? _, string? hash) => !string.IsNullOrWhiteSpace(hash) && recent.Contains(hash);
+
+        var first = await svc.PickFallbackRandomTrackAsync(WasRecent, CancellationToken.None);
+        Assert.NotNull(first);
+        recent.Add(first!.Hash);
+
+        var second = await svc.PickFallbackRandomTrackAsync(WasRecent, CancellationToken.None);
+        Assert.NotNull(second);
+        Assert.NotEqual(first.Hash, second!.Hash);
+        Assert.True(urlCalls >= 2);
+    }
+
+    [Fact]
+    public async Task PickRandomTrack_UsesSearchFallbackWhenEverydayUnavailable()
+    {
+        var searchCalls = 0;
+        var handler = new StubHandler(req =>
+        {
+            var path = req.RequestUri?.AbsolutePath ?? "";
+            if (path.Contains("everyday/recommend", StringComparison.Ordinal))
+            {
+                return Json(new { code = 502, msg = "kgapijs unavailable" });
+            }
+
+            if (path.Contains("search", StringComparison.Ordinal))
+            {
+                searchCalls++;
+                return Json(new
+                {
+                    code = 0,
+                    data = new
+                    {
+                        歌单 = new[]
+                        {
+                            new { hash = "search1", 歌曲名称 = "搜索歌一", 歌手名称 = "歌手A", 歌曲ID = "201" },
+                            new { hash = "search2", 歌曲名称 = "搜索歌二", 歌手名称 = "歌手B", 歌曲ID = "202" }
+                        }
+                    }
+                });
+            }
+
+            if (path.Contains("song/url", StringComparison.Ordinal))
+            {
+                var body = req.Content?.ReadAsStringAsync().Result ?? "";
+                var hash = body.Contains("search2", StringComparison.Ordinal) ? "search2" : "search1";
+                return Json(new
+                {
+                    code = 0,
+                    data = new { url = $"http://fs/{hash}.mp3", hash, is_preview = false, time_length = 200 }
+                });
+            }
+
+            if (path.Contains("login/status", StringComparison.Ordinal))
+            {
+                return Json(new { code = 0, data = new { logged_in = true, nickname = "test" } });
+            }
+
+            return Json(new { code = 1, msg = "unknown" });
+        });
+
+        var svc = CreateService(handler);
+        var first = await svc.PickRandomTrackAsync((_, _) => false, CancellationToken.None);
+        var second = await svc.PickRandomTrackAsync((_, _) => false, CancellationToken.None);
+
+        Assert.NotNull(first);
+        Assert.NotNull(second);
+        Assert.True(searchCalls >= 1);
+        var picked = new[] { first!.SongName, second!.SongName };
+        Assert.Contains("搜索歌一", picked);
+        Assert.Contains("搜索歌二", picked);
+    }
+
+    [Fact]
+    public async Task PickRandomTrack_ShufflesDailyRecommendAndRefreshesWhenExhausted()
     {
         var everydayCalls = 0;
         var urlCalls = 0;
@@ -617,11 +907,165 @@ public sealed class KugouServiceTests
         Assert.NotNull(first);
         Assert.NotNull(second);
         Assert.NotNull(third);
-        Assert.Equal("歌一", first!.SongName);
-        Assert.Equal("歌二", second!.SongName);
-        Assert.Equal("歌一", third!.SongName);
+        var picked = new[] { first!.SongName, second!.SongName, third!.SongName };
+        Assert.Contains("歌一", picked);
+        Assert.Contains("歌二", picked);
         Assert.Equal(2, everydayCalls);
-        Assert.True(urlCalls >= 3);
+        Assert.True(urlCalls >= 2);
+    }
+
+    [Fact]
+    public async Task ResolveCandidate_FallsBackToSameArtistAlternateHash()
+    {
+        var urlHashes = new List<string>();
+        var handler = new StubHandler(req =>
+        {
+            var path = req.RequestUri?.AbsolutePath ?? "";
+            if (path.Contains("login/status", StringComparison.Ordinal))
+            {
+                return Json(new { code = 0, data = new { logged_in = true, nickname = "test" } });
+            }
+
+            if (path.Contains("search", StringComparison.Ordinal))
+            {
+                return Json(new
+                {
+                    code = 0,
+                    data = new
+                    {
+                        歌单 = new[]
+                        {
+                            new { hash = "gem_hash", 歌曲名称 = "泡沫", 歌手名称 = "G.E.M.邓紫棋", 歌曲ID = "1001" },
+                            new { hash = "gem_alt", 歌曲名称 = "泡沫", 歌手名称 = "G.E.M.邓紫棋", 歌曲ID = "1002" }
+                        }
+                    }
+                });
+            }
+
+            if (path.Contains("song/url", StringComparison.Ordinal))
+            {
+                var body = req.Content?.ReadAsStringAsync().Result ?? "";
+                if (body.Contains("gem_alt", StringComparison.Ordinal))
+                {
+                    urlHashes.Add("gem_alt");
+                    return Json(new
+                    {
+                        code = 0,
+                        data = new { url = "http://fs/gem_alt.mp3", is_preview = false, 歌曲名称 = "泡沫", 歌手名称 = "G.E.M.邓紫棋" }
+                    });
+                }
+
+                urlHashes.Add("gem_hash");
+                return Json(new { code = 1, msg = "session expired", data = (object?)null });
+            }
+
+            return Json(new { code = 1, msg = "unknown" });
+        });
+
+        var svc = CreateService(handler);
+        var track = await svc.ResolveCandidateAsync(new Models.SongSearchCandidate
+        {
+            Hash = "gem_hash",
+            SongName = "泡沫",
+            Artist = "G.E.M.邓紫棋",
+            SongId = "1001",
+            AlbumAudioId = 1001
+        });
+
+        Assert.NotNull(track);
+        Assert.Equal("http://fs/gem_alt.mp3", track!.PlayUrl);
+        Assert.Contains("gem_alt", urlHashes);
+    }
+
+    [Fact]
+    public async Task ResolveFreshTrack_Request_DoesNotSwitchToAlternateVersion()
+    {
+        var urlHashes = new List<string>();
+        var handler = new StubHandler(req =>
+        {
+            var path = req.RequestUri?.AbsolutePath ?? "";
+            if (path.Contains("login/status", StringComparison.Ordinal))
+            {
+                return Json(new { code = 0, data = new { logged_in = true, nickname = "test" } });
+            }
+
+            if (path.Contains("search", StringComparison.Ordinal))
+            {
+                return Json(new
+                {
+                    code = 0,
+                    data = new
+                    {
+                        歌单 = new[]
+                        {
+                            new { hash = "gem_hash", 歌曲名称 = "泡沫", 歌手名称 = "G.E.M.邓紫棋", 歌曲ID = "1001" },
+                            new { hash = "cover_hash", 歌曲名称 = "泡沫", 歌手名称 = "翻唱歌手", 歌曲ID = "2002" }
+                        }
+                    }
+                });
+            }
+
+            if (path.Contains("song/url", StringComparison.Ordinal))
+            {
+                var body = req.Content?.ReadAsStringAsync().Result ?? "";
+                if (body.Contains("cover_hash", StringComparison.Ordinal))
+                {
+                    urlHashes.Add("cover_hash");
+                    return Json(new
+                    {
+                        code = 0,
+                        data = new { url = "http://fs/cover.mp3", is_preview = false, 歌曲名称 = "泡沫", 歌手名称 = "翻唱歌手" }
+                    });
+                }
+
+                urlHashes.Add("gem_hash");
+                return Json(new { code = 1, msg = "preview_only", data = (object?)null });
+            }
+
+            return Json(new { code = 1, msg = "unknown" });
+        });
+
+        var svc = CreateService(handler);
+        var track = await svc.ResolveFreshTrackAsync(
+            "gem_hash",
+            "泡沫",
+            "G.E.M.邓紫棋",
+            "1001",
+            albumAudioId: 1001,
+            isRandom: false);
+
+        Assert.Null(track);
+        Assert.DoesNotContain("cover_hash", urlHashes);
+    }
+
+    [Fact]
+    public async Task Search_NormalizesSongIdToAlbumAudioId()
+    {
+        var handler = new StubHandler(req =>
+        {
+            if ((req.RequestUri?.AbsolutePath ?? "").Contains("search", StringComparison.Ordinal))
+            {
+                return Json(new
+                {
+                    code = 0,
+                    data = new
+                    {
+                        歌单 = new[]
+                        {
+                            new { hash = "abc", 歌曲名称 = "泡沫", 歌手名称 = "G.E.M.邓紫棋", 歌曲ID = "55667788" }
+                        }
+                    }
+                });
+            }
+
+            return Json(new { code = 1, msg = "unknown" });
+        });
+
+        var svc = CreateService(handler);
+        var songs = await svc.SearchAsync("泡沫", ct: CancellationToken.None);
+        Assert.Single(songs);
+        Assert.Equal(55667788, songs[0].AlbumAudioId);
+        Assert.Equal("55667788", songs[0].SongId);
     }
 
     private static KugouService CreateService(

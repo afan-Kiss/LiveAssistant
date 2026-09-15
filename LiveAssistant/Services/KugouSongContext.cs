@@ -6,6 +6,7 @@ internal sealed class KugouSongContext
 {
     public string? Hash { get; init; }
     public string? Keyword { get; init; }
+    public string? Artist { get; init; }
     public string? AlbumId { get; init; }
     public long AlbumAudioId { get; init; }
 
@@ -14,14 +15,16 @@ internal sealed class KugouSongContext
         {
             Hash = song.Hash?.Trim(),
             Keyword = string.IsNullOrWhiteSpace(keyword) ? song.SongName?.Trim() : keyword.Trim(),
+            Artist = song.Artist?.Trim(),
             AlbumId = song.AlbumId?.Trim(),
             AlbumAudioId = song.AlbumAudioId
         };
 
-    public static KugouSongContext FromHash(string? hash, string? keyword = null)
+    public static KugouSongContext FromHash(string? hash, string? keyword = null, string? artist = null)
         => new()
         {
             Hash = hash?.Trim(),
-            Keyword = keyword?.Trim()
+            Keyword = keyword?.Trim(),
+            Artist = artist?.Trim()
         };
 }

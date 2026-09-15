@@ -62,11 +62,17 @@ public sealed class DouyinHealthData
     [JsonPropertyName("login_ok")]
     public bool LoginOk { get; set; }
 
+    [JsonPropertyName("login_hint")]
+    public string? LoginHint { get; set; }
+
     [JsonPropertyName("nickname")]
     public string? Nickname { get; set; }
 
     [JsonPropertyName("collect_sessions")]
     public int CollectSessions { get; set; }
+
+    [JsonPropertyName("write_gate")]
+    public JsonElement? WriteGate { get; set; }
 }
 
 public sealed class DouyinGiftFeedData
@@ -154,6 +160,18 @@ public sealed class DouyinCookieStatusData
 
     [JsonPropertyName("login_hint")]
     public string? LoginHint { get; set; }
+}
+
+public sealed class DouyinCollectSession
+{
+    [JsonPropertyName("session_id")]
+    public string? SessionId { get; set; }
+
+    [JsonPropertyName("web_rid")]
+    public string? WebRid { get; set; }
+
+    [JsonPropertyName("running")]
+    public bool Running { get; set; }
 }
 
 public sealed class KugouResponse<T>

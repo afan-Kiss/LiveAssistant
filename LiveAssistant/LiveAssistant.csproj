@@ -35,6 +35,9 @@
     <None Update="Config\ReplyTemplates.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Update="Config\ai_personality.txt">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <Content Include="Admin\wwwroot\**">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
@@ -47,6 +50,9 @@
     </EmbeddedResource>
     <EmbeddedResource Include="Config\ReplyTemplates.json">
       <LogicalName>LiveAssistant.Packaged.Config.ReplyTemplates.json</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Config\ai_personality.txt">
+      <LogicalName>LiveAssistant.Packaged.Config.ai_personality.txt</LogicalName>
     </EmbeddedResource>
     <EmbeddedResource Include="Admin\wwwroot\index.html">
       <LogicalName>LiveAssistant.Packaged.Admin.wwwroot.index.html</LogicalName>

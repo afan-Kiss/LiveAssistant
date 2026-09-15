@@ -2,7 +2,7 @@ namespace LiveAssistant.Models;
 
 public enum SongRequestSessionStep
 {
-    /// <summary>已废弃：旧版多歌手询问流程，内存会话迁移时自动转为 Confirm。</summary>
+    /// <summary>已废弃：仅用于兼容内存中的旧会话，新点歌不再询问歌手。</summary>
     ChooseArtist,
     Confirm
 }

@@ -61,9 +61,18 @@ public static class SidecarCookieStore
     }
 
     public static bool TryReadActiveCookie(string storePath, out string cookie, out string? activeName, out string? error)
+        => TryReadActiveProfile(storePath, out cookie, out activeName, out _, out error);
+
+    public static bool TryReadActiveProfile(
+        string storePath,
+        out string cookie,
+        out string? activeName,
+        out string? profileId,
+        out string? error)
     {
         cookie = "";
         activeName = null;
+        profileId = null;
         error = null;
 
         if (string.IsNullOrWhiteSpace(storePath) || !File.Exists(storePath))
@@ -89,7 +98,8 @@ public static class SidecarCookieStore
                 activeName = data.Profiles.FirstOrDefault(kv => kv.Value == profile).Key;
             }
 
-            cookie = profile?.Cookie?.Trim() ?? "";
+            profileId = profile?.Id?.Trim();
+            cookie = NormalizeStoredCookie(profile?.Cookie);
             if (string.IsNullOrWhiteSpace(cookie))
             {
                 error = "当前账号 Cookie 为空";
@@ -111,6 +121,55 @@ public static class SidecarCookieStore
         }
     }
 
+    /// <summary>解包 cookies.json 中多层 {"cookie":"..."} 嵌套，返回扁平 Cookie 串。</summary>
+    public static string NormalizeStoredCookie(string? raw)
+    {
+        var current = raw?.Trim() ?? "";
+        for (var depth = 0; depth < 8 && !string.IsNullOrWhiteSpace(current); depth++)
+        {
+            if (HasSessionId(current))
+            {
+                return current;
+            }
+
+            if (!TryUnwrapCookieJson(current, out var inner))
+            {
+                break;
+            }
+
+            current = inner;
+        }
+
+        return current;
+    }
+
+    private static bool TryUnwrapCookieJson(string raw, out string inner)
+    {
+        inner = "";
+        if (!raw.StartsWith('{') || !raw.EndsWith('}'))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(raw);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object
+                || !doc.RootElement.TryGetProperty("cookie", out var cookieProp)
+                || cookieProp.ValueKind != JsonValueKind.String)
+            {
+                return false;
+            }
+
+            inner = cookieProp.GetString()?.Trim() ?? "";
+            return !string.IsNullOrWhiteSpace(inner) && !string.Equals(inner, raw, StringComparison.Ordinal);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     public static bool HasSessionId(string cookie)
         => cookie.Contains("sessionid=", StringComparison.OrdinalIgnoreCase)
            || cookie.Contains("sessionid_ss=", StringComparison.OrdinalIgnoreCase);
@@ -126,6 +185,9 @@ public static class SidecarCookieStore
 
     private sealed class CookieProfileEntry
     {
+        [JsonPropertyName("id")]
+        public string? Id { get; set; }
+
         [JsonPropertyName("cookie")]
         public string? Cookie { get; set; }
 

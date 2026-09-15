@@ -17,6 +17,8 @@ public sealed class SongRequestService
     private readonly SongRequestUserGateRegistry _userGates = new();
     private readonly SongRequestDeduper _deduper = new();
     private readonly SongRequestSessionStore _sessions = new();
+    private readonly object _orphanHintGate = new();
+    private readonly Dictionary<string, DateTime> _orphanHintAt = new(StringComparer.Ordinal);
 
     public SongRequestService(
         ConfigManager config,
@@ -40,11 +42,15 @@ public sealed class SongRequestService
 
     public event Action? RequestHandled;
 
-    public async Task HandleDanmakuAsync(DanmakuItem item, string webRid, CancellationToken ct = default)
+    /// <summary>
+    /// 处理点歌相关弹幕。返回 true 表示本条已被点歌业务消费，路由应结束。
+    /// 待确认期间的普通闲聊返回 false（会话保留，可走关键词/AI）。
+    /// </summary>
+    public async Task<bool> HandleDanmakuAsync(DanmakuItem item, string webRid, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(item.UserId))
         {
-            return;
+            return false;
         }
 
         var userGate = await _userGates.AcquireAsync(item.UserId, ct);
@@ -55,23 +61,38 @@ public sealed class SongRequestService
             {
                 if (await HandleSessionAsync(item, webRid, session, ct))
                 {
-                    return;
+                    return true;
+                }
+
+                // 会话仍在且不是新点歌：普通闲聊，不消费
+                if (_sessions.Get(item.UserId) != null && !SongNameParser.TryParse(item.Content, out _))
+                {
+                    return false;
                 }
             }
 
             if (!SongNameParser.TryParse(item.Content, out var songName))
             {
-                return;
+                // 无会话时的「确定/取消」：短窗内只提示一次，避免回放/重复投递刷屏
+                if (SongRequestConfirmParser.IsConfirm(item.Content)
+                    || SongRequestConfirmParser.IsCancel(item.Content))
+                {
+                    TrySendOrphanConfirmHint(webRid, item.UserId);
+                    return true;
+                }
+
+                return false;
             }
 
             if (!_deduper.TryAdmit(item.UserId, item.Content))
             {
                 _log.DouyinInfo($"点歌去重: {item.Nickname} {item.Content}");
-                return;
+                return true;
             }
 
             _sessions.Clear(item.UserId);
             await StartNewRequestAsync(item, webRid, songName, ct);
+            return true;
         }
     }
 
@@ -94,9 +115,11 @@ public sealed class SongRequestService
             return false;
         }
 
+        // 旧版「选歌手」会话：自动沿用已选/第一首，直接进入确认。
         if (session.Step == SongRequestSessionStep.ChooseArtist)
         {
-            MigrateLegacyChooseArtistSession(session, item.Content);
+            session.Selected ??= session.Candidates.Count > 0 ? session.Candidates[0] : null;
+            session.Step = SongRequestSessionStep.Confirm;
             _sessions.Set(session);
         }
 
@@ -107,24 +130,6 @@ public sealed class SongRequestService
         };
     }
 
-    private static void MigrateLegacyChooseArtistSession(SongRequestSession session, string? userInput = null)
-    {
-        if (session.Step != SongRequestSessionStep.ChooseArtist)
-        {
-            return;
-        }
-
-        SongSearchCandidate? picked = null;
-        if (!string.IsNullOrWhiteSpace(userInput) && session.Candidates.Count > 0)
-        {
-            picked = ArtistNameMatcher.Match(userInput, session.Candidates);
-        }
-
-        session.Selected = picked
-            ?? (session.Candidates.Count > 0 ? session.Candidates[0] : session.Selected);
-        session.Step = SongRequestSessionStep.Confirm;
-    }
-
     private async Task<bool> HandleConfirmAsync(
         DanmakuItem item,
         string webRid,
@@ -133,8 +138,8 @@ public sealed class SongRequestService
     {
         if (!SongRequestConfirmParser.IsConfirm(item.Content))
         {
-            await SendConfirmPromptAsync(item, webRid, session, ct, remind: true);
-            return true;
+            // 待确认期间闲聊：保留会话，但不标记为点歌业务已消费
+            return false;
         }
 
         if (session.ConfirmConsumed)
@@ -169,27 +174,19 @@ public sealed class SongRequestService
         session.ConfirmConsumed = true;
         _sessions.Set(session);
 
-        _system.Add($"{item.Nickname} 确认点歌《{selected.SongName}》- {selected.Artist}，正在解析...");
-        TrackInfo? track;
-        try
+        var enqueued = await ResolveAndEnqueueAsync(item, webRid, selected, permission.User!, ct);
+        if (enqueued)
         {
-            track = await _kugou.ResolveCandidateAsync(selected, item.Nickname, ct);
-        }
-        catch (Exception ex)
-        {
-            _log.Error("kugou", $"取链异常: {selected.SongName}", ex);
-            track = null;
-        }
-
-        if (!IsTrackPlayable(track))
-        {
-            FailResolve(item, webRid, selected.SongName, selected.Artist, track);
             _sessions.Clear(item.UserId);
-            return true;
+            NoteRecentConfirmHandled(item.UserId);
+        }
+        else
+        {
+            // 取链失败：保留会话，允许再发「确定」重试，避免紧接着弹出「没有待确认」
+            session.ConfirmConsumed = false;
+            _sessions.Set(session);
         }
 
-        await EnqueueTrackAsync(item, webRid, track!, permission.User!, ct);
-        _sessions.Clear(item.UserId);
         return true;
     }
 
@@ -230,16 +227,45 @@ public sealed class SongRequestService
             _log.DouyinInfo($"点歌自动选用: keyword={songName} artist={selected.Artist} candidates={artistList}");
         }
 
-        var session = new SongRequestSession
+        var confirmSession = new SongRequestSession
         {
             UserId = item.UserId,
             Nickname = item.Nickname,
             Keyword = songName,
             Step = SongRequestSessionStep.Confirm,
+            Candidates = candidates,
             Selected = selected
         };
-        _sessions.Set(session);
-        await SendConfirmPromptAsync(item, webRid, session, ct);
+        _sessions.Set(confirmSession);
+        await SendConfirmPromptAsync(item, webRid, confirmSession, ct);
+    }
+
+    private async Task<bool> ResolveAndEnqueueAsync(
+        DanmakuItem item,
+        string webRid,
+        SongSearchCandidate selected,
+        UserProfile user,
+        CancellationToken ct)
+    {
+        _system.Add($"{item.Nickname} 点歌《{selected.SongName}》- {selected.Artist}，正在解析...");
+        TrackInfo? track;
+        try
+        {
+            track = await _kugou.ResolveCandidateAsync(selected, item.Nickname, ct);
+        }
+        catch (Exception ex)
+        {
+            _log.Error("kugou", $"取链异常: {selected.SongName}", ex);
+            track = null;
+        }
+
+        if (!IsTrackPlayable(track))
+        {
+            FailResolve(item, webRid, selected.SongName, selected.Artist, track);
+            return false;
+        }
+
+        return await EnqueueTrackAsync(item, webRid, track!, user, ct);
     }
 
     private Task SendConfirmPromptAsync(
@@ -250,6 +276,7 @@ public sealed class SongRequestService
         bool remind = false)
     {
         _ = ct;
+        _ = remind;
         var selected = session.Selected;
         if (selected == null)
         {
@@ -272,16 +299,13 @@ public sealed class SongRequestService
                 ("song", selected.SongName), ("artist", selected.Artist));
         }
 
-        if (remind)
-        {
-            msg = "请回复 确定 开始点歌，或发送 取消 放弃。" + msg;
-        }
-
+        // 出站 @ 会被弹幕列表过滤，系统栏必须可见，否则主播会以为「没发」
+        _system.Add($"已@ {item.Nickname}：{msg}");
         SendReply(webRid, item.UserId, msg);
         return Task.CompletedTask;
     }
 
-    private async Task EnqueueTrackAsync(
+    private Task<bool> EnqueueTrackAsync(
         DanmakuItem item,
         string webRid,
         TrackInfo track,
@@ -292,29 +316,50 @@ public sealed class SongRequestService
         if (!IsTrackPlayable(track))
         {
             FailResolve(item, webRid, track.SongName, track.Artist, track);
-            return;
+            return Task.FromResult(false);
         }
 
         var displayUser = string.IsNullOrWhiteSpace(item.Nickname) ? item.UserId : item.Nickname;
+        var pointsBefore = user.Points;
+        var queueBefore = _queue.WaitingCount;
         var priority = _permission.GetQueuePriority(user);
+        var bypassCapacity = user.Role is UserRole.Admin or UserRole.Manager;
+        var maxSize = _config.Settings.Queue.MaxSize;
         if (track.IsPreview && _kugou.LoginSnapshot.LoggedIn)
         {
             _system.Add($"《{track.SongName}》只能试听：请点「酷狗登录」扫码，系统会自动领取试用会员");
         }
 
-        var added = _queue.AddWithPriority(new QueueItem
+        if (!_queue.TryAddWithPriority(
+                new QueueItem
+                {
+                    UserId = item.UserId,
+                    Nickname = item.Nickname,
+                    SongName = track.SongName,
+                    Artist = track.Artist,
+                    SongId = track.SongId,
+                    Hash = track.Hash,
+                    AlbumId = track.AlbumId,
+                    AlbumAudioId = track.AlbumAudioId,
+                    PlayUrl = track.PlayUrl,
+                    IsRandom = false
+                },
+                priority,
+                maxSize,
+                bypassCapacity,
+                out var added)
+            || added == null)
         {
-            UserId = item.UserId,
-            Nickname = item.Nickname,
-            SongName = track.SongName,
-            Artist = track.Artist,
-            SongId = track.SongId,
-            Hash = track.Hash,
-            AlbumId = track.AlbumId,
-            AlbumAudioId = track.AlbumAudioId,
-            PlayUrl = track.PlayUrl,
-            IsRandom = false
-        }, priority);
+            var fullMsg = RenderOrFallback("queueFull", item.Nickname, "队列已满，请稍后再点", ("name", item.Nickname));
+            _replyQueue.EnqueueMention(webRid, item.UserId, fullMsg);
+            _system.Add($"{displayUser} 点歌入队失败：队列已满");
+            _log.DouyinInfo(
+                $"SONG_REQUEST userId={item.UserId} sessionStep=confirm song={track.SongName} " +
+                $"permission=queueFull confirmConsumed=true queueBefore={queueBefore} queueAfter={_queue.WaitingCount} " +
+                $"pointsBefore={pointsBefore} pointsAfter={pointsBefore} result=queueFull");
+            _log.LogSongRequest(displayUser, track.SongName, false, "队列已满");
+            return Task.FromResult(true);
+        }
 
         if (!_permission.RecordSuccessfulRequest(item, added.Id))
         {
@@ -333,17 +378,27 @@ public sealed class SongRequestService
 
             _replyQueue.EnqueueMention(webRid, item.UserId, msg);
             _system.Add($"{displayUser} 点歌入队失败：积分不足（需要 {cost}）");
+            _log.DouyinInfo(
+                $"SONG_REQUEST userId={item.UserId} sessionStep=confirm song={track.SongName} " +
+                $"permission=insufficientPoints confirmConsumed=true queueBefore={queueBefore} queueAfter={_queue.WaitingCount} " +
+                $"queueItemId={added.Id} pointsBefore={pointsBefore} pointsAfter={user.Points} result=pointsFail");
             _log.LogSongRequest(displayUser, track.SongName, false);
-            return;
+            // 积分不足视为本轮结束，清会话；勿保留让用户空点「确定」
+            return Task.FromResult(true);
         }
 
+        var pointsAfter = _permission.Evaluate(item).User?.Points ?? user.Points;
         var ahead = _queue.GetAheadCount(added.Id);
         _replyQueue.EnqueueSongRequestReply(webRid, item.UserId, item.Nickname, track.SongName, ahead);
 
         _system.Add($"已加入队列: {item.Nickname} - {track.SongName}（前面 {ahead} 首）");
+        _log.DouyinInfo(
+            $"SONG_REQUEST userId={item.UserId} sessionStep=confirm song={track.SongName} " +
+            $"permission=ok confirmConsumed=true queueBefore={queueBefore} queueAfter={_queue.WaitingCount} " +
+            $"queueItemId={added.Id} pointsBefore={pointsBefore} pointsAfter={pointsAfter} result=enqueued");
         _log.LogSongRequest(displayUser, track.SongName, true);
         RequestHandled?.Invoke();
-        await Task.CompletedTask;
+        return Task.FromResult(true);
     }
 
     private bool IsTrackPlayable(TrackInfo? track) => _kugou.IsAcceptableForPlayback(track);
@@ -433,5 +488,34 @@ public sealed class SongRequestService
         }
 
         _replyQueue.EnqueueMention(webRid, userId, content);
+    }
+
+    private void TrySendOrphanConfirmHint(string webRid, string userId)
+    {
+        var now = DateTime.UtcNow;
+        lock (_orphanHintGate)
+        {
+            if (_orphanHintAt.TryGetValue(userId, out var last) && now - last < TimeSpan.FromSeconds(30))
+            {
+                return;
+            }
+
+            _orphanHintAt[userId] = now;
+            foreach (var key in _orphanHintAt.Where(kv => now - kv.Value > TimeSpan.FromMinutes(10)).Select(kv => kv.Key).ToList())
+            {
+                _orphanHintAt.Remove(key);
+            }
+        }
+
+        SendReply(webRid, userId, "当前没有待确认的点歌，请重新发送：点歌 歌名");
+    }
+
+    private void NoteRecentConfirmHandled(string userId)
+    {
+        // 成功入队后短窗内静默吞掉回放的「确定」，不回「没有待确认」
+        lock (_orphanHintGate)
+        {
+            _orphanHintAt[userId] = DateTime.UtcNow;
+        }
     }
 }

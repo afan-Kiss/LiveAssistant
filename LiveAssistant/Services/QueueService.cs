@@ -107,9 +107,28 @@ public sealed class QueueService
     public QueueItem Add(QueueItem item) => AddWithPriority(item, 0);
 
     public QueueItem AddWithPriority(QueueItem item, int queuePriority)
+        => TryAddWithPriority(item, queuePriority, maxSize: 0, bypassCapacity: true, out var added)
+            ? added!
+            : throw new InvalidOperationException("队列入队失败");
+
+    /// <summary>
+    /// 在锁内原子检查容量并插入。maxSize&lt;=0 或 bypassCapacity 时不限容量（管理员特权/内部路径）。
+    /// </summary>
+    public bool TryAddWithPriority(
+        QueueItem item,
+        int queuePriority,
+        int maxSize,
+        bool bypassCapacity,
+        out QueueItem? added)
     {
         lock (_lock)
         {
+            if (!bypassCapacity && maxSize > 0 && _waiting.Count >= maxSize)
+            {
+                added = null;
+                return false;
+            }
+
             item.Status = QueueItemStatus.Waiting;
             item.Id = InsertItem(item);
             if (queuePriority <= 0 || _waiting.Count == 0)
@@ -124,8 +143,10 @@ public sealed class QueueService
                 _waiting.Insert(insertIndex, item);
                 ReindexWaiting();
             }
+
             NotifyChanged();
-            return item;
+            added = item;
+            return true;
         }
     }
 
@@ -243,6 +264,21 @@ public sealed class QueueService
         }
     }
 
+    /// <summary>播放前解析到最新曲目信息后，同步正在播放项的展示字段并持久化。</summary>
+    public void SyncNowPlayingMetadata(QueueItem item)
+    {
+        lock (_lock)
+        {
+            if (_nowPlaying == null || _nowPlaying.Id != item.Id)
+            {
+                return;
+            }
+
+            UpdateItemFields(item);
+            NotifyChanged();
+        }
+    }
+
     public void FinishCurrent()
     {
         lock (_lock)
@@ -318,6 +354,31 @@ public sealed class QueueService
         cmd.Parameters.AddWithValue("$status", QueueItem.StatusToDb(status));
         cmd.Parameters.AddWithValue("$updated", DateTime.Now.ToString("O"));
         cmd.Parameters.AddWithValue("$id", id);
+        cmd.ExecuteNonQuery();
+    }
+
+    private void UpdateItemFields(QueueItem item)
+    {
+        if (item.Id <= 0)
+        {
+            return;
+        }
+
+        item.UpdatedAt = DateTime.Now;
+        using var conn = _db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            UPDATE queue_items
+            SET song_name = $song, artist = $artist, song_id = $sid, hash = $hash,
+                updated_at = $updated
+            WHERE id = $id
+            """;
+        cmd.Parameters.AddWithValue("$song", item.SongName);
+        cmd.Parameters.AddWithValue("$artist", item.Artist);
+        cmd.Parameters.AddWithValue("$sid", item.SongId);
+        cmd.Parameters.AddWithValue("$hash", item.Hash);
+        cmd.Parameters.AddWithValue("$updated", item.UpdatedAt.Value.ToString("O"));
+        cmd.Parameters.AddWithValue("$id", item.Id);
         cmd.ExecuteNonQuery();
     }
 

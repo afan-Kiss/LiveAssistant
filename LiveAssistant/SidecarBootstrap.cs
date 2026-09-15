@@ -28,9 +28,37 @@ internal static class SidecarBootstrap
             CopyIfMissing(donorKugou, Path.Combine(target, SidecarLocator.PreferredKugouFileName));
         }
 
-        CopyTreeIfMissing(
+        EnsureKgapiJsTree(
             Path.Combine(donor, SidecarLocator.KugouJsFolderName),
             Path.Combine(target, SidecarLocator.KugouJsFolderName));
+    }
+
+    internal static void EnsureKgapiJsTree(string source, string destination)
+    {
+        if (!SidecarLocator.IsKgapiJsReady(source))
+        {
+            return;
+        }
+
+        if (SidecarLocator.IsKgapiJsReady(destination))
+        {
+            return;
+        }
+
+        if (Directory.Exists(destination))
+        {
+            try
+            {
+                Directory.Delete(destination, recursive: true);
+            }
+            catch
+            {
+                MergeCopyDirectory(source, destination);
+                return;
+            }
+        }
+
+        CopyDirectory(source, destination);
     }
 
     private static bool IsReady(string root)
@@ -77,7 +105,7 @@ internal static class SidecarBootstrap
         }
 
         return !string.IsNullOrWhiteSpace(FindKugouExe(dir))
-               && Directory.Exists(Path.Combine(dir, SidecarLocator.KugouJsFolderName));
+               && SidecarLocator.IsKgapiJsReady(Path.Combine(dir, SidecarLocator.KugouJsFolderName));
     }
 
     private static string? FindKugouExe(string dir)
@@ -115,16 +143,6 @@ internal static class SidecarBootstrap
         File.Copy(source, destination, overwrite: false);
     }
 
-    private static void CopyTreeIfMissing(string source, string destination)
-    {
-        if (!Directory.Exists(source) || Directory.Exists(destination))
-        {
-            return;
-        }
-
-        CopyDirectory(source, destination);
-    }
-
     private static void CopyDirectory(string source, string destination)
     {
         Directory.CreateDirectory(destination);
@@ -142,10 +160,28 @@ internal static class SidecarBootstrap
                 Directory.CreateDirectory(targetDir);
             }
 
-            if (!File.Exists(target))
+            File.Copy(file, target, overwrite: true);
+        }
+    }
+
+    private static void MergeCopyDirectory(string source, string destination)
+    {
+        Directory.CreateDirectory(destination);
+        foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
+        {
+            var target = file.Replace(source, destination, StringComparison.OrdinalIgnoreCase);
+            if (File.Exists(target))
             {
-                File.Copy(file, target, overwrite: false);
+                continue;
             }
+
+            var targetDir = Path.GetDirectoryName(target);
+            if (!string.IsNullOrWhiteSpace(targetDir))
+            {
+                Directory.CreateDirectory(targetDir);
+            }
+
+            File.Copy(file, target, overwrite: false);
         }
     }
 }

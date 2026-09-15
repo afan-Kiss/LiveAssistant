@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using LiveAssistant.Config;
+using LiveAssistant.Database;
 using LiveAssistant.Models;
 using LiveAssistant.Services;
 using Microsoft.AspNetCore.Builder;
@@ -435,6 +436,12 @@ public sealed class AdminWebHost : IDisposable
 
         app.MapPost("/api/keywords", (KeywordReplyRule rule, HttpContext http) => Auth(http, () =>
         {
+            var err = KeywordReplyRepository.ValidateRule(rule, forEnableOrSave: true);
+            if (err != null)
+            {
+                return Results.BadRequest(new { ok = false, error = err });
+            }
+
             var id = _ctx.KeywordReplies.Add(rule);
             _ctx.Commands.Enqueue(AdminCommandType.ReloadConfig);
             _ctx.Log.AdminInfo($"添加关键词回复 keyword={rule.Keyword}");
@@ -444,6 +451,12 @@ public sealed class AdminWebHost : IDisposable
         app.MapPut("/api/keywords/{id:long}", (long id, KeywordReplyRule rule, HttpContext http) => Auth(http, () =>
         {
             rule.Id = id;
+            var err = KeywordReplyRepository.ValidateRule(rule, forEnableOrSave: true);
+            if (err != null)
+            {
+                return Results.BadRequest(new { ok = false, error = err });
+            }
+
             _ctx.KeywordReplies.Update(rule);
             _ctx.Commands.Enqueue(AdminCommandType.ReloadConfig);
             return Results.Json(new { ok = true });

@@ -54,6 +54,9 @@ public sealed class DanmakuService : IDisposable
 
         Stop();
 
+        _after = 0;
+        _afterAt = 0;
+
         var health = await _douyin.GetHealthAsync(ct);
         DouyinLoginNickname = health?.Nickname ?? "-";
 
@@ -61,9 +64,25 @@ public sealed class DanmakuService : IDisposable
         RoomOwnerNickname = room?.Owner?.Nickname ?? "-";
         RoomTitle = room?.Title ?? _webRid;
 
+        await _douyin.StopOtherCollectSessionsAsync(_webRid, ct);
+        await _douyin.SyncCookieProfileAsync(ct);
+        await _douyin.EnsureWriteGateReadyAsync(ct);
+        await _douyin.ReconnectAsync(_webRid, ct);
         await _douyin.StartCollectAsync(_webRid, ct);
         // 连接/重连时只追赶游标，不派发缓冲区历史弹幕，避免旧点歌被重复入队
         await CatchUpCursorAsync(ct);
+
+        var postHealth = await _douyin.GetHealthAsync(ct);
+        if (postHealth?.LoginOk != true)
+        {
+            _system.Add($"警告：抖音未登录（{postHealth?.LoginHint ?? "缺少 sessionid"}），弹幕 @ 回复不可用，请在抖音助手里扫码登录");
+            _log.DouyinWarn($"连接后 Cookie 未登录: {postHealth?.LoginHint}");
+        }
+        else if (DouyinService.IsWriteCredentialBlocked(postHealth))
+        {
+            _system.Add("警告：发弹幕凭据待验证，@ 回复可能失败；发送任意弹幕可触发验证");
+        }
+
         _cts = new CancellationTokenSource();
         IsRunning = true;
         ConnectionStatus = "已连接";
@@ -186,13 +205,29 @@ public sealed class DanmakuService : IDisposable
         }
     }
 
-    /// <summary>将游标推进到缓冲区末尾，跳过历史弹幕，仅处理此后新消息。</summary>
+    /// <summary>
+    /// 将游标推进到缓冲区末尾，跳过历史弹幕，仅处理此后新消息。
+    /// 侧车 StartCollect 后缓冲可能延迟灌入，需等到连续两轮空读且计数稳定。
+    /// </summary>
     private async Task CatchUpCursorAsync(CancellationToken ct)
     {
+        try
+        {
+            await Task.Delay(500, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+
         var rounds = 0;
-        while (!ct.IsCancellationRequested && rounds < 50)
+        var stableRounds = 0;
+        while (!ct.IsCancellationRequested && rounds < 60)
         {
             rounds++;
+            var prevAfter = _after;
+            var prevAt = _afterAt;
+
             var feed = await _douyin.PollDanmakuAsync(_webRid, _after, 200, ct);
             var atFeed = await _douyin.PollAtDanmakuAsync(_webRid, _afterAt, 200, ct);
 
@@ -206,11 +241,40 @@ public sealed class DanmakuService : IDisposable
                 _afterAt = atFeed.MentionCount > 0 ? atFeed.MentionCount : atFeed.MessageCount;
             }
 
-            var feedDone = feed?.Items == null || feed.Items.Count == 0;
-            var atDone = atFeed?.Items == null || atFeed.Items.Count == 0;
-            if (feedDone && atDone)
+            var feedEmpty = feed?.Items == null || feed.Items.Count == 0;
+            var atEmpty = atFeed?.Items == null || atFeed.Items.Count == 0;
+            var countsStable = _after == prevAfter && _afterAt == prevAt;
+            if (feedEmpty && atEmpty && countsStable)
             {
-                break;
+                stableRounds++;
+                if (stableRounds >= 2)
+                {
+                    break;
+                }
+
+                try
+                {
+                    await Task.Delay(300, ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+
+                continue;
+            }
+
+            stableRounds = 0;
+            if (feedEmpty && atEmpty)
+            {
+                try
+                {
+                    await Task.Delay(200, ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
             }
         }
 
@@ -255,6 +319,7 @@ public sealed class DanmakuService : IDisposable
                     continue;
                 }
 
+                // 点歌/确定等同文案可连发（新 msg_id），不做内容短窗去重；其它闲聊仍去重
                 if (!ShouldSkipUserContentDedupe(content)
                     && !_deduper.TryAdmitUserContent(userId, content))
                 {
@@ -283,26 +348,24 @@ public sealed class DanmakuService : IDisposable
     private static bool ShouldSkipUserContentDedupe(string content)
     {
         content = content.Trim();
+        // 同一用户可连续「确定」「点歌 xxx」（新 msg_id）；内容短窗去重会误伤第二条确认
         return SongRequestConfirmParser.IsConfirm(content)
-            || SongRequestConfirmParser.IsCancel(content)
-            || SkipSongParser.TryParse(content)
-            || PointsQueryParser.TryParse(content)
-            || SongNameParser.TryParse(content, out _)
-            || content.StartsWith("禁言", StringComparison.OrdinalIgnoreCase);
+               || SongRequestConfirmParser.IsCancel(content)
+               || SongNameParser.TryParse(content, out _)
+               || SkipSongParser.TryParse(content)
+               || PointsQueryParser.TryParse(content)
+               || content.StartsWith("禁言", StringComparison.OrdinalIgnoreCase);
     }
 
     private bool ShouldIgnoreBotMessage(string msgId, string nickname, string content)
     {
-        if (SongNameParser.IsBotReply(content))
-        {
-            return true;
-        }
-
+        // 优先：真实出站记录
         if (_outboundTracker?.IsRecentOutbound(msgId, content) == true)
         {
             return true;
         }
 
+        // 其次：登录账号自身消息（机器人回显）
         if (!string.IsNullOrWhiteSpace(DouyinLoginNickname)
             && !DouyinLoginNickname.Equals("-", StringComparison.Ordinal)
             && nickname.Equals(DouyinLoginNickname, StringComparison.OrdinalIgnoreCase))
@@ -310,6 +373,7 @@ public sealed class DanmakuService : IDisposable
             return true;
         }
 
+        // 文字模板启发式不得单独误杀真实观众弹幕
         return false;
     }
 

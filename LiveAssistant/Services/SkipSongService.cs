@@ -92,22 +92,42 @@ public sealed class SkipSongService
                 _system.Add($"{item.Nickname} 切歌失败：积分不足（需要 {cost}）");
                 return true;
             }
+
+            // 先原子扣积分，再接受切歌命令，避免「已切歌但扣分失败」
+            if (!_users.TryDeductPoints(
+                    item.UserId,
+                    item.Nickname,
+                    cost,
+                    PointsTransactionType.SkipSong,
+                    "切歌扣积分",
+                    null,
+                    out _))
+            {
+                _replyQueue.EnqueueMention(webRid, item.UserId,
+                    $"切歌需要 {cost} 积分，请送礼物获取积分后再试");
+                _system.Add($"{item.Nickname} 切歌失败：扣积分失败");
+                return true;
+            }
         }
 
-        await _engine.SkipAsync();
-
-        if (cost > 0 && !_users.TryDeductPoints(
-                item.UserId,
-                item.Nickname,
-                cost,
-                PointsTransactionType.SkipSong,
-                "切歌扣积分",
-                null,
-                out _))
+        var accepted = await _engine.SkipAsync();
+        if (!accepted)
         {
-            _replyQueue.EnqueueMention(webRid, item.UserId,
-                $"切歌需要 {cost} 积分，请送礼物获取积分后再试");
-            _system.Add($"{item.Nickname} 切歌成功但扣积分失败（余额不足）");
+            if (cost > 0)
+            {
+                _users.TryChangePoints(
+                    item.UserId,
+                    item.Nickname,
+                    cost,
+                    PointsTransactionType.Refund,
+                    "切歌命令入队失败退回积分",
+                    null,
+                    out _);
+                _log.Info($"切歌命令入队失败，已退回积分 user={item.Nickname} cost={cost}");
+            }
+
+            Reply(webRid, item.UserId, "skipSongRejected", item.Nickname, "切歌失败，请稍后再试");
+            _system.Add($"{item.Nickname} 切歌失败：命令入队失败");
             return true;
         }
 

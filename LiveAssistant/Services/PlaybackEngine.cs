@@ -30,7 +30,8 @@ public sealed class PlaybackEngine
 
     public Task EnsurePlayingAsync() => _commands.EnqueueEnsurePlayingAsync();
 
-    public Task SkipAsync() => _commands.EnqueueSkipAsync();
+    /// <summary>切歌命令是否被播放队列接受（合并重复切歌也视为成功）。</summary>
+    public Task<bool> SkipAsync() => _commands.EnqueueSkipAsync();
 
     public void Pause() => _commands.EnqueuePause();
 

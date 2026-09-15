@@ -4,7 +4,7 @@ using LiveAssistant.Models;
 
 namespace LiveAssistant.Services;
 
-public sealed class BanVoteService
+public sealed class BanVoteService : IDisposable
 {
     private readonly ConfigManager _config;
     private readonly BanVoteRepository _votes;
@@ -14,6 +14,8 @@ public sealed class BanVoteService
     private readonly ReplyService _reply;
     private readonly SystemMessageService _system;
     private readonly LogService _log;
+    private readonly CancellationTokenSource _lifetimeCts = new();
+    private int _disposed;
 
     public BanVoteService(
         ConfigManager config,
@@ -35,23 +37,24 @@ public sealed class BanVoteService
         _log = log;
     }
 
-    public async Task HandleDanmakuAsync(DanmakuItem item, string webRid, CancellationToken ct = default)
+    /// <summary>命中「禁言」业务命令时返回 true（无论投票是否成功）。</summary>
+    public async Task<bool> TryHandleAsync(DanmakuItem item, string webRid, CancellationToken ct = default)
     {
         if (!_config.Settings.BanVote.Enabled)
         {
-            return;
+            return false;
         }
 
         var content = item.Content.Trim();
         if (!content.StartsWith("禁言", StringComparison.OrdinalIgnoreCase))
         {
-            return;
+            return false;
         }
 
         var targetName = content.Length > 2 ? content[2..].Trim() : "";
         if (string.IsNullOrWhiteSpace(targetName))
         {
-            return;
+            return true;
         }
 
         var target = _users.FindByNickname(targetName);
@@ -61,7 +64,7 @@ public sealed class BanVoteService
             if (lookup == null || string.IsNullOrWhiteSpace(lookup.UserId))
             {
                 _system.Add($"禁言投票: 未找到用户 {targetName}");
-                return;
+                return true;
             }
 
             target = _users.EnsureUser(lookup.UserId, lookup.Nickname ?? targetName);
@@ -69,13 +72,13 @@ public sealed class BanVoteService
 
         if (string.IsNullOrWhiteSpace(item.UserId))
         {
-            return;
+            return true;
         }
 
         if (item.UserId == target.UserId)
         {
             _system.Add($"禁言投票: {item.Nickname} 不能投票禁言自己");
-            return;
+            return true;
         }
 
         var session = _votes.GetActiveSession(target.UserId);
@@ -103,7 +106,7 @@ public sealed class BanVoteService
         if (!isNew && _votes.HasVoted(session.Id, item.UserId))
         {
             SendVoteProgressReply(webRid, item, target, session, session.VoteCount);
-            return;
+            return true;
         }
 
         var count = _votes.AddVote(session.Id, target.UserId, target.Nickname, item.UserId, item.Nickname);
@@ -113,38 +116,57 @@ public sealed class BanVoteService
 
         if (count >= session.RequiredVotes)
         {
-            await ExecuteBanAsync(target, webRid, session, ct);
+            await ExecuteBanAsync(target, webRid, session);
         }
+
+        return true;
     }
 
-    private async Task ExecuteBanAsync(UserProfile target, string webRid, BanVoteSession session, CancellationToken ct)
+    /// <summary>兼容旧调用名。</summary>
+    public Task HandleDanmakuAsync(DanmakuItem item, string webRid, CancellationToken ct = default)
+        => TryHandleAsync(item, webRid, ct);
+
+    private async Task ExecuteBanAsync(UserProfile target, string webRid, BanVoteSession session)
     {
-        var ok = await _douyin.ModSilenceAsync(webRid, target.UserId, "silence", ct);
-        _users.SetStatus(target.UserId, UserStatus.Muted);
+        var ok = await _douyin.ModSilenceAsync(webRid, target.UserId, "silence", _lifetimeCts.Token);
         var duration = _config.Settings.BanVote.BanDurationSeconds;
-        var msg = ok
-            ? $"禁言投票通过，已禁言 {target.Nickname} {duration}秒 (发起人 {session.InitiatorNickname})"
-            : $"禁言投票通过，但平台禁言 API 失败: {target.Nickname}";
+
+        if (!ok)
+        {
+            _votes.CompleteSession(session.Id, "api_failed");
+            var failMsg = $"禁言投票通过，但平台禁言 API 失败: {target.Nickname}（本地未设为禁言）";
+            _system.Add(failMsg);
+            _log.BanInfo(failMsg);
+            return;
+        }
+
+        _users.SetStatus(target.UserId, UserStatus.Muted);
+        var msg = $"禁言投票通过，已禁言 {target.Nickname} {duration}秒 (发起人 {session.InitiatorNickname})";
         _system.Add(msg);
         _log.BanInfo(msg);
-        _votes.CompleteSession(session.Id, ok ? "banned" : "api_failed");
+        _votes.CompleteSession(session.Id, "banned");
 
-        if (ok && duration > 0)
+        if (duration > 0)
         {
+            var lifetime = _lifetimeCts.Token;
             _ = Task.Run(async () =>
             {
                 try
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(duration), ct);
-                    await _douyin.ModSilenceAsync(webRid, target.UserId, "unsilence", ct);
+                    await Task.Delay(TimeSpan.FromSeconds(duration), lifetime);
+                    await _douyin.ModSilenceAsync(webRid, target.UserId, "unsilence", lifetime);
                     _users.SetStatus(target.UserId, UserStatus.Active);
                     _log.BanInfo($"自动解除禁言 target={target.Nickname} duration={duration}s");
+                }
+                catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+                {
+                    // service disposing
                 }
                 catch (Exception ex)
                 {
                     _log.BanWarn($"自动解除禁言失败: {ex.Message}");
                 }
-            });
+            }, lifetime);
         }
 
         var reply = _reply.Render("banVotePassed", new Dictionary<string, string>
@@ -184,5 +206,16 @@ public sealed class BanVoteService
         }
 
         _replyQueue.EnqueueMention(webRid, voter.UserId, msg);
+    }
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
+        try { _lifetimeCts.Cancel(); } catch { /* ignore */ }
+        try { _lifetimeCts.Dispose(); } catch { /* ignore */ }
     }
 }

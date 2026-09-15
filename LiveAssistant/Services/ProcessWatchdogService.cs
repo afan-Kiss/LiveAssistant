@@ -7,7 +7,8 @@ namespace LiveAssistant.Services;
 public sealed class ProcessWatchdogService
 {
     private static readonly HttpClient KgapiHealthClient = new() { Timeout = TimeSpan.FromSeconds(2) };
-    private static bool _kgapijsStartAttempted;
+    private static DateTime _kgapijsLastStartAttemptUtc = DateTime.MinValue;
+    private static readonly TimeSpan KgapiJsRetryInterval = TimeSpan.FromSeconds(60);
 
     private readonly ConfigManager _config;
     private readonly LogService _log;
@@ -72,36 +73,52 @@ public sealed class ProcessWatchdogService
             return;
         }
 
-        if (_kgapijsStartAttempted)
+        if (DateTime.UtcNow - _kgapijsLastStartAttemptUtc < KgapiJsRetryInterval)
         {
             return;
         }
 
-        var kgDir = Path.Combine(AppPaths.ExeDirectory, SidecarLocator.KugouJsFolderName);
-        var appJs = Path.Combine(kgDir, "app.js");
-        if (!File.Exists(appJs))
+        var targetKgapiJs = Path.Combine(AppPaths.ExeDirectory, SidecarLocator.KugouJsFolderName);
+        if (!SidecarLocator.IsKgapiJsReady(targetKgapiJs))
         {
+            var donor = SidecarLocator.FindKgapiJsDirectory(AppPaths.ExeDirectory);
+            if (!string.IsNullOrWhiteSpace(donor))
+            {
+                SidecarBootstrap.EnsureKgapiJsTree(donor, targetKgapiJs);
+            }
+        }
+
+        if (!SidecarLocator.IsKgapiJsReady(targetKgapiJs))
+        {
+            _log.Warn("kgapijs 目录缺少 app.js，每日推荐不可用（请运行 scripts/sync-sidecars.py 或从酷狗 build/bin 拷贝 kgapijs）");
+            _system.Add("缺少酷狗 kgapijs，每日推荐不可用；请重新发布或运行 sync-sidecars 同步");
             return;
         }
 
-        _kgapijsStartAttempted = true;
+        _kgapijsLastStartAttemptUtc = DateTime.UtcNow;
         try
         {
             Process.Start(new ProcessStartInfo
             {
-                FileName = "cmd.exe",
-                Arguments = "/c set PORT=16521&& set HOST=127.0.0.1&& node app.js",
-                WorkingDirectory = kgDir,
+                FileName = "node",
+                Arguments = "app.js",
+                WorkingDirectory = targetKgapiJs,
                 UseShellExecute = false,
-                CreateNoWindow = true
+                CreateNoWindow = true,
+                Environment =
+                {
+                    ["PORT"] = "16521",
+                    ["HOST"] = "127.0.0.1"
+                }
             });
             _log.Info("已启动 kgapijs 协议服务 (127.0.0.1:16521)");
+            _system.Add("已启动酷狗协议服务，每日推荐即将可用");
             await Task.Delay(2500, ct);
         }
         catch (Exception ex)
         {
-            _kgapijsStartAttempted = false;
             _log.Warn($"启动 kgapijs 失败: {ex.Message}");
+            _system.Add($"启动酷狗协议服务失败: {ex.Message}，随机补位将使用搜索歌单");
         }
     }
 

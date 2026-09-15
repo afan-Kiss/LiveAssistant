@@ -89,6 +89,31 @@ public static class ArtistNameMatcher
     public static string FormatArtistList(IReadOnlyList<SongSearchCandidate> candidates)
         => string.Join("、", candidates.Select(c => c.Artist));
 
+    public static bool IsSameArtist(string? left, string? right)
+    {
+        left = left?.Trim() ?? "";
+        right = right?.Trim() ?? "";
+        if (left.Length == 0 || right.Length == 0)
+        {
+            return false;
+        }
+
+        if (left.Equals(right, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var normalizedLeft = NormalizeArtist(left);
+        var normalizedRight = NormalizeArtist(right);
+        if (normalizedLeft.Length >= MinPartialInputLength
+            && normalizedLeft.Equals(normalizedRight, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return IsPartialArtistMatch(left, right) || IsPartialArtistMatch(right, left);
+    }
+
     private static bool IsPartialArtistMatch(string input, string artist)
     {
         if (artist.Contains(input, StringComparison.OrdinalIgnoreCase))

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using LiveAssistant.Models;
 using LiveAssistant.Services;
+using LiveAssistant.Services.AiSpeech;
 
 namespace LiveAssistant.UI;
 
@@ -51,6 +52,32 @@ public sealed class MainForm : Form
     private readonly Button _btnSkipQueue = new();
     private readonly Button _btnRemoveQueue = new();
     private readonly Button _btnClearQueue = new();
+
+    // AI 语音互动
+    private readonly CheckBox _chkAiEnabled = new();
+    private readonly CheckBox _chkAiTestMode = new();
+    private readonly ComboBox _cmbAiModel = new();
+    private readonly ComboBox _cmbAiDevice = new();
+    private readonly NumericUpDown _numAiInterval = new();
+    private readonly NumericUpDown _numAiQueue = new();
+    private readonly NumericUpDown _numAiMaxChars = new();
+    private readonly Label _lblAiVoice = new();
+    private readonly Label _lblAiTtsUrl = new();
+    private readonly Label _lblAiOllamaStatus = new();
+    private readonly Label _lblAiTtsStatus = new();
+    private readonly Label _lblAiVoiceStatus = new();
+    private readonly Label _lblAiPhase = new();
+    private readonly Label _lblAiQueue = new();
+    private readonly Label _lblAiLatestUser = new();
+    private readonly Label _lblAiLatestContent = new();
+    private readonly Label _lblAiReply = new();
+    private readonly Label _lblAiHint = new();
+    private readonly Label _lblAiTestStats = new();
+    private readonly Button _btnAiRefreshModels = new();
+    private readonly Button _btnAiTestVoice = new();
+    private readonly Button _btnAiTestAi = new();
+    private readonly Button _btnAiStop = new();
+    private bool _aiUiLoading;
 
     private readonly System.Windows.Forms.Timer _uiTimer = new();
     private readonly HashSet<string> _seenDanmaku = new();
@@ -285,6 +312,24 @@ public sealed class MainForm : Form
 
     private Control BuildSidePanel()
     {
+        var tabs = new TabControl
+        {
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0),
+            Padding = new Point(4, 4)
+        };
+
+        var tabPlay = new TabPage("播放") { BackColor = Color.White, Padding = new Padding(4) };
+        var tabAi = new TabPage("AI语音") { BackColor = Color.White, Padding = new Padding(4) };
+        tabPlay.Controls.Add(BuildPlaybackSidePanel());
+        tabAi.Controls.Add(BuildAiSpeechPanel());
+        tabs.TabPages.Add(tabPlay);
+        tabs.TabPages.Add(tabAi);
+        return tabs;
+    }
+
+    private Control BuildPlaybackSidePanel()
+    {
         var layout = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
@@ -448,6 +493,155 @@ public sealed class MainForm : Form
         return layout;
     }
 
+    private Control BuildAiSpeechPanel()
+    {
+        var outer = new Panel
+        {
+            Dock = DockStyle.Fill,
+            AutoScroll = true,
+            BackColor = Color.White
+        };
+
+        var group = MakeGroup("AI语音互动");
+        group.Dock = DockStyle.Top;
+        group.AutoSize = true;
+        group.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+
+        var grid = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            ColumnCount = 2,
+            Padding = new Padding(4),
+            Margin = new Padding(0)
+        };
+        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
+        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+
+        void AddRow(string title, Control control, int height = 30)
+        {
+            var r = grid.RowCount++;
+            grid.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
+            grid.Controls.Add(new Label
+            {
+                Text = title,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Margin = new Padding(0)
+            }, 0, r);
+            control.Dock = DockStyle.Fill;
+            control.Margin = new Padding(0, 2, 0, 2);
+            grid.Controls.Add(control, 1, r);
+        }
+
+        var s = _host.Config.Settings.AiSpeech;
+        _chkAiEnabled.Text = "启用AI语音";
+        _chkAiEnabled.Checked = s.Enabled;
+        _chkAiTestMode.Text = "AI语音测试模式（真实弹幕，按间隔挑一条）";
+        _chkAiTestMode.Checked = s.TestMode;
+
+        _cmbAiModel.DropDownStyle = ComboBoxStyle.DropDownList;
+        _cmbAiDevice.DropDownStyle = ComboBoxStyle.DropDownList;
+
+        _lblAiVoice.Text = string.IsNullOrWhiteSpace(s.Voice) ? "my_voice" : s.Voice;
+        _lblAiVoice.TextAlign = ContentAlignment.MiddleLeft;
+        _lblAiTtsUrl.Text = string.IsNullOrWhiteSpace(s.TtsUrl) ? "127.0.0.1:9880" : s.TtsUrl.Replace("http://", "");
+        _lblAiTtsUrl.TextAlign = ContentAlignment.MiddleLeft;
+
+        _numAiInterval.Minimum = 3;
+        _numAiInterval.Maximum = 60;
+        _numAiInterval.Value = Math.Clamp(s.MinIntervalSeconds, 3, 60);
+        _numAiQueue.Minimum = 1;
+        _numAiQueue.Maximum = 20;
+        _numAiQueue.Value = Math.Clamp(s.MaxQueueSize, 1, 20);
+        _numAiMaxChars.Minimum = 10;
+        _numAiMaxChars.Maximum = 120;
+        _numAiMaxChars.Value = Math.Clamp(s.MaxReplyLength, 10, 120);
+
+        foreach (var lbl in new[]
+                 {
+                     _lblAiOllamaStatus, _lblAiTtsStatus, _lblAiVoiceStatus, _lblAiPhase, _lblAiQueue,
+                     _lblAiLatestUser, _lblAiLatestContent, _lblAiReply, _lblAiHint, _lblAiTestStats
+                 })
+        {
+            lbl.TextAlign = ContentAlignment.MiddleLeft;
+            lbl.AutoEllipsis = true;
+        }
+
+        _lblAiOllamaStatus.Text = "● Ollama检测中";
+        _lblAiTtsStatus.Text = "● GPT-SoVITS检测中";
+        _lblAiVoiceStatus.Text = "● 声音检测中";
+        _lblAiPhase.Text = "空闲";
+        _lblAiQueue.Text = "0 / 5";
+        _lblAiLatestUser.Text = "-";
+        _lblAiLatestContent.Text = "-";
+        _lblAiReply.Text = "-";
+        _lblAiHint.Text = "";
+        _lblAiTestStats.Text = "";
+        _lblAiHint.ForeColor = Color.FromArgb(160, 80, 0);
+        _lblAiTestStats.ForeColor = Color.DimGray;
+
+        var modelRow = new TableLayoutPanel { ColumnCount = 2, RowCount = 1, Dock = DockStyle.Fill, Margin = new Padding(0) };
+        modelRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        modelRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 64));
+        _cmbAiModel.Dock = DockStyle.Fill;
+        StyleButton(_btnAiRefreshModels, "刷新", 0);
+        _btnAiRefreshModels.Dock = DockStyle.Fill;
+        _btnAiRefreshModels.Margin = new Padding(4, 0, 0, 0);
+        modelRow.Controls.Add(_cmbAiModel, 0, 0);
+        modelRow.Controls.Add(_btnAiRefreshModels, 1, 0);
+
+        var btnRow = new TableLayoutPanel { ColumnCount = 3, RowCount = 1, Dock = DockStyle.Fill, Margin = new Padding(0) };
+        btnRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.33f));
+        btnRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.33f));
+        btnRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.34f));
+        StyleButton(_btnAiTestAi, "测试AI", 0);
+        StyleButton(_btnAiTestVoice, "测试声音", 0);
+        StyleButton(_btnAiStop, "停止播放", 0);
+        foreach (var b in new[] { _btnAiTestAi, _btnAiTestVoice, _btnAiStop })
+        {
+            b.Dock = DockStyle.Fill;
+            b.Margin = new Padding(2, 0, 2, 0);
+        }
+        btnRow.Controls.Add(_btnAiTestAi, 0, 0);
+        btnRow.Controls.Add(_btnAiTestVoice, 1, 0);
+        btnRow.Controls.Add(_btnAiStop, 2, 0);
+
+        AddRow("", _chkAiEnabled, 28);
+        AddRow("", _chkAiTestMode, 28);
+        AddRow("AI模型", modelRow, 32);
+        var modelHint = new Label
+        {
+            Text = "推荐 qwen3:8b；可选 qwen2.5:7b / qwen3.5:27b。人格：Config/ai_personality.txt",
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft,
+            ForeColor = Color.DimGray,
+            AutoEllipsis = true
+        };
+        AddRow("", modelHint, 22);
+        AddRow("声音", _lblAiVoice, 24);
+        AddRow("GPT-SoVITS", _lblAiTtsUrl, 24);
+        AddRow("状态", _lblAiOllamaStatus, 22);
+        AddRow("", _lblAiTtsStatus, 22);
+        AddRow("", _lblAiVoiceStatus, 22);
+        AddRow("输出设备", _cmbAiDevice, 32);
+        AddRow("回复间隔", _numAiInterval, 30);
+        AddRow("最大排队", _numAiQueue, 30);
+        AddRow("最大字数", _numAiMaxChars, 30);
+        AddRow("操作", btnRow, 36);
+        AddRow("当前状态", _lblAiPhase, 24);
+        AddRow("队列", _lblAiQueue, 24);
+        AddRow("最新弹幕", _lblAiLatestUser, 24);
+        AddRow("", _lblAiLatestContent, 24);
+        AddRow("AI回复", _lblAiReply, 40);
+        AddRow("提示", _lblAiHint, 24);
+        AddRow("测试", _lblAiTestStats, 48);
+
+        group.Controls.Add(grid);
+        outer.Controls.Add(group);
+        return outer;
+    }
+
     private Control BuildConnectPanel()
     {
         var box = MakeGroup("连接");
@@ -602,11 +796,14 @@ public sealed class MainForm : Form
             RefreshStatus();
         };
 
+        WireAiSpeechEvents();
+
         _uiTimer.Interval = 2000;
         _uiTimer.Tick += (_, _) =>
         {
             RefreshPlayback();
             RefreshRuntimeStatus();
+            RefreshAiSpeechStatus();
         };
         _uiTimer.Start();
 
@@ -614,6 +811,7 @@ public sealed class MainForm : Form
         {
             try
             {
+                await InitAiSpeechUiAsync();
                 if (!string.IsNullOrWhiteSpace(_host.Config.Settings.Douyin.WebRid))
                 {
                     await ConnectAsync();
@@ -661,16 +859,24 @@ public sealed class MainForm : Form
         }
     }
 
-    private void OpenKugouLoginPage()
+    private async void OpenKugouLoginPage()
     {
         var url = _host.Kugou.LoginPageUrl;
         try
         {
+            var wasLoggedIn = _host.Kugou.LoginSnapshot.LoggedIn;
+            if (wasLoggedIn)
+            {
+                await _host.Kugou.LogoutAsync();
+            }
+
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url)
             {
                 UseShellExecute = true
             });
-            AppendSystem("已打开酷狗扫码登录页，登录后将自动领取每日试用会员");
+            AppendSystem(wasLoggedIn
+                ? "已清除旧登录并打开酷狗扫码页；请用手机酷狗 App 扫码，登录后会自动领取试用会员"
+                : "已打开酷狗扫码页；请用手机酷狗 App 扫码，登录后会自动领取试用会员");
         }
         catch (Exception ex)
         {
@@ -738,6 +944,352 @@ public sealed class MainForm : Form
     private void RefreshAll()
     {
         RefreshStatusPanels();
+        RefreshAiSpeechStatus();
+    }
+
+    private void WireAiSpeechEvents()
+    {
+        _host.AiSpeech.StatusChanged += () =>
+        {
+            if (IsDisposed)
+            {
+                return;
+            }
+
+            BeginInvoke(RefreshAiSpeechStatus);
+        };
+
+        _chkAiEnabled.CheckedChanged += (_, _) =>
+        {
+            if (_aiUiLoading)
+            {
+                return;
+            }
+
+            _host.AiSpeech.SaveSettingsFromUi(s => s.Enabled = _chkAiEnabled.Checked);
+            AppendSystem(_chkAiEnabled.Checked ? "AI语音已启用" : "AI语音已关闭");
+        };
+
+        _chkAiTestMode.CheckedChanged += (_, _) =>
+        {
+            if (_aiUiLoading)
+            {
+                return;
+            }
+
+            _host.AiSpeech.SaveSettingsFromUi(s => s.TestMode = _chkAiTestMode.Checked);
+        };
+
+        _cmbAiModel.SelectedIndexChanged += (_, _) =>
+        {
+            if (_aiUiLoading)
+            {
+                return;
+            }
+
+            var model = ResolveSelectedAiModel();
+            if (string.IsNullOrWhiteSpace(model))
+            {
+                return;
+            }
+
+            _host.AiSpeech.SaveSettingsFromUi(s => s.Model = model);
+        };
+
+        _cmbAiDevice.SelectedIndexChanged += (_, _) =>
+        {
+            if (_aiUiLoading || _cmbAiDevice.SelectedItem is not AudioOutputDeviceInfo device)
+            {
+                return;
+            }
+
+            _host.AiSpeech.SaveSettingsFromUi(s =>
+            {
+                s.OutputDeviceNumber = device.DeviceNumber;
+                s.OutputDeviceName = device.DeviceNumber < 0 ? "" : device.Name;
+            });
+        };
+
+        void SaveNumeric()
+        {
+            if (_aiUiLoading)
+            {
+                return;
+            }
+
+            _host.AiSpeech.SaveSettingsFromUi(s =>
+            {
+                s.MinIntervalSeconds = (int)_numAiInterval.Value;
+                s.MaxQueueSize = (int)_numAiQueue.Value;
+                s.MaxReplyLength = (int)_numAiMaxChars.Value;
+            });
+        }
+
+        _numAiInterval.ValueChanged += (_, _) => SaveNumeric();
+        _numAiQueue.ValueChanged += (_, _) => SaveNumeric();
+        _numAiMaxChars.ValueChanged += (_, _) => SaveNumeric();
+
+        _btnAiRefreshModels.Click += async (_, _) =>
+        {
+            _btnAiRefreshModels.Enabled = false;
+            try
+            {
+                await RefreshAiModelsAsync();
+                await _host.AiSpeech.RefreshHealthAsync();
+                RefreshAiSpeechStatus();
+            }
+            finally
+            {
+                _btnAiRefreshModels.Enabled = true;
+            }
+        };
+
+        _btnAiStop.Click += (_, _) =>
+        {
+            _host.AiSpeech.StopCurrentPlayback();
+            AppendSystem("已停止当前 AI 语音播放");
+        };
+
+        _btnAiTestVoice.Click += async (_, _) =>
+        {
+            _btnAiTestVoice.Enabled = false;
+            try
+            {
+                PersistAiSettingsFromControls();
+                var result = await _host.AiSpeech.TestVoiceAsync();
+                if (result.Success)
+                {
+                    _lblAiTestStats.Text = $"测试声音成功 | TTS {result.TtsMs} ms | 总 {result.TotalMs} ms";
+                    AppendSystem("AI 测试声音播放完成");
+                }
+                else
+                {
+                    _lblAiTestStats.Text = $"测试声音失败：{result.Error}";
+                    AppendSystem($"语音服务不可用：{result.Error}");
+                }
+            }
+            catch (Exception ex)
+            {
+                _lblAiTestStats.Text = $"测试声音异常：{ex.Message}";
+                AppendSystem($"语音服务不可用：{ex.Message}");
+            }
+            finally
+            {
+                _btnAiTestVoice.Enabled = true;
+                RefreshAiSpeechStatus();
+            }
+        };
+
+        _btnAiTestAi.Click += async (_, _) =>
+        {
+            _btnAiTestAi.Enabled = false;
+            try
+            {
+                PersistAiSettingsFromControls();
+                if (string.IsNullOrWhiteSpace(_host.Config.Settings.AiSpeech.Model))
+                {
+                    _lblAiTestStats.Text = "请先选择 Ollama 模型";
+                    AppendSystem("AI模型不可用：未选择模型");
+                    return;
+                }
+
+                var result = await _host.AiSpeech.TestAiAsync();
+                _lblAiLatestUser.Text = result.Nickname;
+                _lblAiLatestContent.Text = result.Danmaku;
+                _lblAiReply.Text = string.IsNullOrWhiteSpace(result.Reply) ? "-" : result.Reply;
+                if (result.Success)
+                {
+                    _lblAiTestStats.Text =
+                        $"收到弹幕：{result.Nickname}：{result.Danmaku}\n" +
+                        $"AI回复：{result.Reply}\n" +
+                        $"生成耗时：{result.OllamaMs} ms | TTS：{result.TtsMs} ms | 总：{result.TotalMs} ms";
+                    AppendSystem("AI 完整链路测试成功");
+                }
+                else
+                {
+                    _lblAiTestStats.Text =
+                        $"收到弹幕：{result.Nickname}：{result.Danmaku}\n" +
+                        $"失败：{result.Error}\n" +
+                        $"生成：{result.OllamaMs} ms | TTS：{result.TtsMs} ms | 总：{result.TotalMs} ms";
+                    AppendSystem(result.Error?.Contains("语音", StringComparison.Ordinal) == true
+                        ? $"语音服务不可用：{result.Error}"
+                        : $"AI模型不可用：{result.Error}");
+                }
+            }
+            catch (Exception ex)
+            {
+                _lblAiTestStats.Text = $"测试AI异常：{ex.Message}";
+                AppendSystem($"AI测试失败：{ex.Message}");
+            }
+            finally
+            {
+                _btnAiTestAi.Enabled = true;
+                RefreshAiSpeechStatus();
+            }
+        };
+    }
+
+    private async Task InitAiSpeechUiAsync()
+    {
+        _aiUiLoading = true;
+        try
+        {
+            LoadAiDevices();
+            await RefreshAiModelsAsync();
+            await _host.AiSpeech.RefreshHealthAsync();
+            RefreshAiSpeechStatus();
+        }
+        finally
+        {
+            _aiUiLoading = false;
+        }
+    }
+
+    private void LoadAiDevices()
+    {
+        var devices = AudioOutputDevices.ListDevices();
+        _cmbAiDevice.Items.Clear();
+        foreach (var d in devices)
+        {
+            _cmbAiDevice.Items.Add(d);
+        }
+
+        var s = _host.Config.Settings.AiSpeech;
+        var selectedNumber = AudioOutputDevices.ResolveDeviceNumber(s.OutputDeviceName, s.OutputDeviceNumber);
+        for (var i = 0; i < _cmbAiDevice.Items.Count; i++)
+        {
+            if (_cmbAiDevice.Items[i] is AudioOutputDeviceInfo info && info.DeviceNumber == selectedNumber)
+            {
+                _cmbAiDevice.SelectedIndex = i;
+                return;
+            }
+        }
+
+        if (_cmbAiDevice.Items.Count > 0)
+        {
+            _cmbAiDevice.SelectedIndex = 0;
+        }
+    }
+
+    private async Task RefreshAiModelsAsync()
+    {
+        var installed = await _host.AiSpeech.ListOllamaModelsAsync();
+        var merged = AiSpeechModelsCatalog.MergeWithInstalled(installed);
+        var previous = AiSpeechModelsCatalog.ResolveDefault(
+            _host.Config.Settings.AiSpeech.Model,
+            merged);
+        _aiUiLoading = true;
+        try
+        {
+            _cmbAiModel.Items.Clear();
+            foreach (var m in merged)
+            {
+                _cmbAiModel.Items.Add(new AiModelComboItem(m));
+            }
+
+            if (_cmbAiModel.Items.Count == 0)
+            {
+                return;
+            }
+
+            var selectedIdx = -1;
+            for (var i = 0; i < _cmbAiModel.Items.Count; i++)
+            {
+                if (_cmbAiModel.Items[i] is AiModelComboItem item
+                    && item.ModelId.Equals(previous, StringComparison.OrdinalIgnoreCase))
+                {
+                    selectedIdx = i;
+                    break;
+                }
+            }
+
+            if (selectedIdx < 0)
+            {
+                selectedIdx = 0;
+            }
+
+            _cmbAiModel.SelectedIndex = selectedIdx;
+            var selected = ResolveSelectedAiModel();
+            if (!string.IsNullOrWhiteSpace(selected)
+                && !selected.Equals(_host.Config.Settings.AiSpeech.Model, StringComparison.OrdinalIgnoreCase))
+            {
+                _host.AiSpeech.SaveSettingsFromUi(s => s.Model = selected);
+            }
+        }
+        finally
+        {
+            _aiUiLoading = false;
+        }
+    }
+
+    private string ResolveSelectedAiModel()
+    {
+        return _cmbAiModel.SelectedItem switch
+        {
+            AiModelComboItem item => item.ModelId,
+            string s => s.Trim(),
+            _ => ""
+        };
+    }
+
+    private void PersistAiSettingsFromControls()
+    {
+        _host.AiSpeech.SaveSettingsFromUi(s =>
+        {
+            s.Enabled = _chkAiEnabled.Checked;
+            s.TestMode = _chkAiTestMode.Checked;
+            s.MinIntervalSeconds = (int)_numAiInterval.Value;
+            s.MaxQueueSize = (int)_numAiQueue.Value;
+            s.MaxReplyLength = (int)_numAiMaxChars.Value;
+            var model = ResolveSelectedAiModel();
+            if (!string.IsNullOrWhiteSpace(model))
+            {
+                s.Model = model;
+            }
+
+            if (_cmbAiDevice.SelectedItem is AudioOutputDeviceInfo device)
+            {
+                s.OutputDeviceNumber = device.DeviceNumber;
+                s.OutputDeviceName = device.DeviceNumber < 0 ? "" : device.Name;
+            }
+        });
+    }
+
+    private void RefreshAiSpeechStatus()
+    {
+        if (IsDisposed || !_lblAiPhase.IsHandleCreated)
+        {
+            return;
+        }
+
+        var status = _host.AiSpeech.GetStatus();
+        _lblAiPhase.Text = status.PhaseText;
+        _lblAiQueue.Text = $"{status.QueueCount} / {status.MaxQueueSize}";
+        _lblAiOllamaStatus.Text = status.OllamaOk ? "● Ollama正常" : "● Ollama不可用";
+        _lblAiOllamaStatus.ForeColor = status.OllamaOk ? Color.ForestGreen : Color.Firebrick;
+        _lblAiTtsStatus.Text = status.TtsOk ? "● GPT-SoVITS正常" : "● GPT-SoVITS不可用";
+        _lblAiTtsStatus.ForeColor = status.TtsOk ? Color.ForestGreen : Color.Firebrick;
+        _lblAiVoiceStatus.Text = status.VoiceReady
+            ? $"● 我的声音已加载（{status.VoiceName}）"
+            : "● 声音未就绪";
+        _lblAiVoiceStatus.ForeColor = status.VoiceReady ? Color.ForestGreen : Color.Firebrick;
+        _lblAiVoice.Text = status.VoiceName;
+        if (!string.IsNullOrWhiteSpace(status.LatestNickname))
+        {
+            _lblAiLatestUser.Text = status.LatestNickname;
+        }
+
+        if (!string.IsNullOrWhiteSpace(status.LatestContent))
+        {
+            _lblAiLatestContent.Text = status.LatestContent;
+        }
+
+        if (!string.IsNullOrWhiteSpace(status.LatestReply))
+        {
+            _lblAiReply.Text = status.LatestReply;
+        }
+
+        _lblAiHint.Text = status.ServiceHint;
     }
 
     private void RefreshStatusPanels()
@@ -859,14 +1411,17 @@ public sealed class MainForm : Form
         _lvQueue.Items.Clear();
 
         var now = _host.Queue.NowPlaying;
+        var track = _host.PlaybackCommands.Playback.CurrentTrack;
         if (now != null)
         {
+            var songName = !string.IsNullOrWhiteSpace(track?.SongName) ? track.SongName : now.SongName;
+            var artist = !string.IsNullOrWhiteSpace(track?.Artist) ? track.Artist : now.Artist;
             var playing = new ListViewItem("▶")
             {
                 Tag = now.Id
             };
             playing.SubItems.Add(now.IsRandom ? "随机" : now.Nickname);
-            playing.SubItems.Add($"{now.SongName} - {now.Artist}");
+            playing.SubItems.Add($"{songName} - {artist}");
             playing.Font = new Font(_lvQueue.Font, FontStyle.Bold);
             _lvQueue.Items.Add(playing);
         }

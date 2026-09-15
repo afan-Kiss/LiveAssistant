@@ -42,6 +42,7 @@ public sealed class SongRequestControlService
         return new SongRequestControlSettings
         {
             RequestEnabled = policy.RequestEnabled,
+            RequireConfirm = policy.RequireConfirm,
             PausedReplyMessage = policy.PausedReplyMessage,
             MaxDailyRequestsPerUser = policy.MaxDailyRequestsPerUser,
             CooldownSeconds = queue.SongRequestCooldownSeconds,
@@ -59,6 +60,7 @@ public sealed class SongRequestControlService
     {
         var policy = _config.Settings.SongRequestPolicy;
         policy.RequestEnabled = settings.RequestEnabled;
+        policy.RequireConfirm = true;
         policy.PausedReplyMessage = settings.PausedReplyMessage ?? "当前暂停点歌，请稍后再试";
         policy.MaxDailyRequestsPerUser = Math.Max(0, settings.MaxDailyRequestsPerUser);
         policy.Mode = settings.Mode;
@@ -94,6 +96,8 @@ public sealed class SongRequestControlService
 public sealed class SongRequestControlSettings
 {
     public bool RequestEnabled { get; set; } = true;
+    /// <summary>搜到歌后固定 @ 询问，用户回复「确定」才入队（始终开启）。</summary>
+    public bool RequireConfirm { get; set; } = true;
     public string PausedReplyMessage { get; set; } = "当前暂停点歌，请稍后再试";
     public int MaxDailyRequestsPerUser { get; set; }
     public int CooldownSeconds { get; set; } = 30;

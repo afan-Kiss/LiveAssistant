@@ -24,6 +24,31 @@ public sealed class AppSettings
     public KeywordReplySettings KeywordReply { get; set; } = new();
     public SongRequestPolicySettings SongRequestPolicy { get; set; } = new();
     public CleanupSettings Cleanup { get; set; } = new();
+    public AiSpeechSettings AiSpeech { get; set; } = new();
+}
+
+public sealed class AiSpeechSettings
+{
+    public bool Enabled { get; set; }
+    /// <summary>测试模式：仍读真实弹幕，但按间隔单队列处理，便于首次直播观察。</summary>
+    public bool TestMode { get; set; }
+    public string OllamaUrl { get; set; } = "http://127.0.0.1:11434";
+    /// <summary>互动模型名（Ollama）；默认推荐 qwen3:8b，可自由选择。</summary>
+    public string Model { get; set; } = "qwen3:8b";
+    public string TtsUrl { get; set; } = "http://127.0.0.1:9880";
+    public string Voice { get; set; } = "my_voice";
+    public int OutputDeviceNumber { get; set; } = -1;
+    public string OutputDeviceName { get; set; } = "";
+    public int MinIntervalSeconds { get; set; } = 8;
+    public int MaxQueueSize { get; set; } = 5;
+    public int MaxReplyLength { get; set; } = 50;
+    public int OllamaTimeoutSeconds { get; set; } = 45;
+    public int TtsTimeoutSeconds { get; set; } = 30;
+    public int MaxAgeSeconds { get; set; } = 30;
+    /// <summary>弹幕评分阈值；低于此分不进入 AI。</summary>
+    public int ScoreThreshold { get; set; } = 2;
+    /// <summary>兼容旧配置的回退人格；优先使用 Config/ai_personality.txt。</summary>
+    public string SystemPrompt { get; set; } = "";
 }
 
 public sealed class DouyinSettings
@@ -72,7 +97,7 @@ public sealed class RandomPlaylistItem
 
 public sealed class RandomPlaylistSettings
 {
-    /// <summary>kugou=酷狗每日推荐顺序播放；fixed=使用 items / 后台随机池。</summary>
+    /// <summary>kugou=酷狗每日推荐随机播放；fixed=使用 items / 后台随机池。</summary>
     public string Source { get; set; } = "kugou";
 
     public int NoRepeatMinutes { get; set; } = 30;
@@ -304,9 +329,77 @@ public sealed class ConfigManager
 
         ApplyTunnelCredentialsFile();
         ResolveSidecarPaths();
+        MigrateRequireConfirmDefault();
+        MigrateAiSpeechDefaults();
 
         ReplyTemplates = TryLoadTemplatesFile(Path.Combine(_configDir, "ReplyTemplates.json")) ?? ReplyTemplates;
         ReplyTemplates = TryLoadTemplatesFile(Path.Combine(_dataDir, "ReplyTemplates.json")) ?? ReplyTemplates;
+    }
+
+    /// <summary>
+    /// 空模型补默认推荐；评分阈值校正。人格以 ai_personality.txt 为准。
+    /// </summary>
+    private void MigrateAiSpeechDefaults()
+    {
+        var ai = Settings.AiSpeech;
+        var changed = false;
+        if (string.IsNullOrWhiteSpace(ai.Model))
+        {
+            ai.Model = "qwen3:8b";
+            changed = true;
+        }
+
+        if (ai.ScoreThreshold < 0 || ai.ScoreThreshold > 20)
+        {
+            ai.ScoreThreshold = 2;
+            changed = true;
+        }
+
+        try
+        {
+            Services.AiSpeech.AiPersonalityLoader.EnsureDefaultFileExists();
+        }
+        catch
+        {
+            // ignore
+        }
+
+        if (!changed)
+        {
+            return;
+        }
+
+        try
+        {
+            Save();
+            StartupDiagnostics.Write($"已补齐 AI 语音默认配置 model={ai.Model} scoreThreshold={ai.ScoreThreshold}");
+        }
+        catch (Exception ex)
+        {
+            StartupDiagnostics.Write($"纠正 AI 语音默认配置失败: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 点歌必须确认后才入队。旧 data 配置或后台误存 false 时，每次启动纠正并落盘。
+    /// </summary>
+    private void MigrateRequireConfirmDefault()
+    {
+        if (Settings.SongRequestPolicy.RequireConfirm)
+        {
+            return;
+        }
+
+        Settings.SongRequestPolicy.RequireConfirm = true;
+        try
+        {
+            Save();
+            StartupDiagnostics.Write("已强制开启 requireConfirm（点歌需回复「确定」才入队）");
+        }
+        catch (Exception ex)
+        {
+            StartupDiagnostics.Write($"纠正 requireConfirm 保存失败: {ex.Message}");
+        }
     }
 
     private AppSettings? TryLoadAppSettingsFile(string path, string label)

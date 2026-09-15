@@ -57,6 +57,10 @@ public sealed class SongRequestFlowTests
         Assert.True(SongRequestConfirmParser.IsConfirm("好的"));
         Assert.True(SongRequestConfirmParser.IsCancel("取消"));
         Assert.False(SongRequestConfirmParser.IsConfirm("点歌 泡沫"));
+        Assert.False(SongRequestConfirmParser.IsConfirm("点"));
+        Assert.False(SongRequestConfirmParser.IsConfirm("好"));
+        Assert.False(SongRequestConfirmParser.IsConfirm("要"));
+        Assert.False(SongRequestConfirmParser.IsConfirm("是"));
     }
 
     [Fact]

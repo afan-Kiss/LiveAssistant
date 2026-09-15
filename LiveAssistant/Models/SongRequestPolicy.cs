@@ -14,6 +14,10 @@ public sealed class SongRequestPolicySettings
     /// <summary>点歌总开关；关闭时回复 PausedReplyMessage。</summary>
     public bool RequestEnabled { get; set; } = true;
 
+    /// <summary>是否需要用户回复「确定」才入队；关闭则搜到歌后直接播放。</summary>
+    /// <summary>保留配置字段；点歌流程始终需要回复「确定」后才入队。</summary>
+    public bool RequireConfirm { get; set; } = true;
+
     public string PausedReplyMessage { get; set; } = "当前暂停点歌，请稍后再试";
 
     /// <summary>每用户每日最大点歌次数；0 表示不限制。</summary>

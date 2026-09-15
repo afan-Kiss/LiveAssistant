@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.Json;
 using Douyin.Live;
 using Google.Protobuf;
 using LiveAssistant.Config;
@@ -129,6 +130,26 @@ public sealed class GiftCollectorTests : IDisposable
         """);
         Assert.False(SidecarCookieStore.TryReadActiveCookie(bad, out _, out _, out var err));
         Assert.Contains("sessionid", err ?? "", StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void SidecarCookieStore_UnwrapsNestedCookieJson()
+    {
+        var nested = Path.Combine(_tempDir, "nested.json");
+        var flat = "sessionid=abc123; ttwid=xyz";
+        var wrapped = JsonSerializer.Serialize(new { cookie = flat });
+        var doubleWrapped = JsonSerializer.Serialize(new { cookie = wrapped });
+        var payload = JsonSerializer.Serialize(new
+        {
+            active = "a",
+            profiles = new Dictionary<string, object>
+            {
+                ["a"] = new { cookie = doubleWrapped }
+            }
+        });
+        File.WriteAllText(nested, payload);
+        Assert.True(SidecarCookieStore.TryReadActiveCookie(nested, out var cookie, out _, out var err), err);
+        Assert.Contains("sessionid=abc123", cookie);
     }
 
     [Fact]

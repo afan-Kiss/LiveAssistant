@@ -4,7 +4,7 @@ namespace LiveAssistant.Utils;
 
 public static partial class SongRequestConfirmParser
 {
-    [GeneratedRegex(@"^(确认|确定|是|好的|好|要|点|是的|可以|ok|yes)\s*$", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"^(确认|确定|是的|好的|可以|ok|yes)\s*$", RegexOptions.IgnoreCase)]
     private static partial Regex ConfirmPattern();
 
     [GeneratedRegex(@"^(取消|不要了|算了|不用了)\s*$", RegexOptions.IgnoreCase)]

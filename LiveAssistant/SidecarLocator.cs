@@ -32,6 +32,52 @@ internal static class SidecarLocator
     public const string PreferredDouyinFileName = "抖音直播弹幕助手.exe";
     public const string PreferredKugouFileName = "酷狗api_v1.5.exe";
     public const string KugouJsFolderName = "kgapijs";
+    public const string KgapiJsEntryFileName = "app.js";
+
+    public static bool IsKgapiJsReady(string? directory)
+        => !string.IsNullOrWhiteSpace(directory)
+           && File.Exists(Path.Combine(directory.Trim(), KgapiJsEntryFileName));
+
+    /// <summary>在 EXE 旁、酷狗 exe 旁、sidecars/ 等位置查找可用的 kgapijs 目录。</summary>
+    public static string? FindKgapiJsDirectory(string? searchRoot = null)
+    {
+        searchRoot = string.IsNullOrWhiteSpace(searchRoot) ? AppPaths.ExeDirectory : searchRoot.Trim();
+        var candidates = new List<string>
+        {
+            Path.Combine(searchRoot, KugouJsFolderName),
+            Path.Combine(searchRoot, "sidecars", KugouJsFolderName)
+        };
+
+        var kugouExe = ResolveKugou("", searchRoot);
+        var kugouDir = string.IsNullOrWhiteSpace(kugouExe) ? null : Path.GetDirectoryName(kugouExe);
+        if (!string.IsNullOrWhiteSpace(kugouDir))
+        {
+            candidates.Add(Path.Combine(kugouDir, KugouJsFolderName));
+        }
+
+        var dir = searchRoot;
+        for (var i = 0; i < 6; i++)
+        {
+            candidates.Add(Path.Combine(dir, "sidecars", KugouJsFolderName));
+            var parent = Directory.GetParent(dir);
+            if (parent == null)
+            {
+                break;
+            }
+
+            dir = parent.FullName;
+        }
+
+        foreach (var candidate in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (IsKgapiJsReady(candidate))
+            {
+                return Path.GetFullPath(candidate);
+            }
+        }
+
+        return null;
+    }
 
     /// <summary>返回缺失的必要 sidecar 文件名（用于启动提示）。</summary>
     public static IReadOnlyList<string> GetMissingRequiredFiles(string douyinExePath, string kugouExePath)
@@ -51,7 +97,7 @@ internal static class SidecarLocator
         {
             var kugouDir = Path.GetDirectoryName(kugouExePath);
             if (!string.IsNullOrWhiteSpace(kugouDir)
-                && !Directory.Exists(Path.Combine(kugouDir, KugouJsFolderName)))
+                && !IsKgapiJsReady(Path.Combine(kugouDir, KugouJsFolderName)))
             {
                 missing.Add($"{KugouJsFolderName}\\");
             }
