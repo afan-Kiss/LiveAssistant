@@ -485,25 +485,40 @@ public sealed class SongRequestService
         }
         catch (Exception ex)
         {
+            // 已建立 song_request_charges 生命周期：禁止再走 RestoreCharge（会与 Remove 回调双退款）。
+            // 统一经 queueItemId 幂等 RefundSongRequestCharge；Remove 回调若已退则返回 already_refunded。
             var removed = SafeRemove(added.Id);
-            var restore = _permission.RestoreCharge(
-                item.UserId, item.Nickname, charge.PointsDeducted, charge.CreditConsumed);
             var pointsCurrent = _permission.Evaluate(item).User?.Points ?? pointsBefore;
-            if (!restore.Success)
+            if (!removed)
             {
                 _log.Error("song_request",
                     $"SONG_REQUEST_COMPENSATION_FAILED userId={item.UserId} queueItemId={added.Id} " +
-                    $"pointsDeducted={charge.PointsDeducted} pointsBefore={charge.PointsBefore} " +
-                    $"pointsCurrent={pointsCurrent} queueRemoved={removed} " +
-                    $"pointsRestored={restore.PointsRestored} creditRestored={restore.CreditRestored} " +
+                    $"reason=queue_remove_failed pointsDeducted={charge.PointsDeducted} " +
+                    $"pointsBefore={charge.PointsBefore} pointsCurrent={pointsCurrent} " +
                     $"exception={ex.GetType().Name}:{ex.Message}");
-                _system.Add($"{displayUser} 点歌事务异常，需要人工检查积分（userId={item.UserId}）");
+                _system.Add($"{displayUser} 点歌事务异常，队列删除失败需人工检查（userId={item.UserId}）");
             }
             else
             {
-                LogSongTransaction("rollback", item.UserId, track.SongName, added.Id,
-                    charge.PointsBefore, pointsCurrent, "post_charge_abort", ex, removed, true);
-                _system.Add($"{displayUser} 点歌入队失败：已取消入队并退回积分");
+                var refund = _permission.RefundSongRequestCharge(added.Id, "post_charge_abort");
+                pointsCurrent = _permission.Evaluate(item).User?.Points ?? pointsBefore;
+                if (!refund.Success)
+                {
+                    _log.Error("song_request",
+                        $"SONG_REQUEST_COMPENSATION_FAILED userId={item.UserId} queueItemId={added.Id} " +
+                        $"pointsDeducted={charge.PointsDeducted} pointsBefore={charge.PointsBefore} " +
+                        $"pointsCurrent={pointsCurrent} queueRemoved=true " +
+                        $"pointsRestored={refund.PointsRestored} creditRestored={refund.CreditRestored} " +
+                        $"refundResult={refund.Result} failureReason={refund.FailureReason} " +
+                        $"exception={ex.GetType().Name}:{ex.Message}");
+                    _system.Add($"{displayUser} 点歌事务异常，需要人工检查积分（userId={item.UserId}）");
+                }
+                else
+                {
+                    LogSongTransaction("rollback", item.UserId, track.SongName, added.Id,
+                        charge.PointsBefore, pointsCurrent, "post_charge_abort", ex, true, true);
+                    _system.Add($"{displayUser} 点歌入队失败：已取消入队并退回积分");
+                }
             }
 
             _replyQueue.EnqueueMention(webRid, item.UserId, "点歌失败，请稍后再试", nickname: item.Nickname);

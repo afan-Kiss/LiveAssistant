@@ -110,6 +110,57 @@ public sealed class FinalConsistencyHardeningTests : IDisposable
         Assert.Equal(100, ctx.Users.GetUser("u1")!.Points);
     }
 
+    /// <summary>
+    /// post_charge_abort：OnWaitingItemRemoved 已接好时只能退一次，积分不得变成 60。
+    /// </summary>
+    [Fact]
+    public async Task PostChargeAbort_WithRemoveCallback_PointsRefundExactlyOnce()
+    {
+        using var ctx = CreateCtx(SongRequestPolicyMode.Points, pointsCost: 10, maxQueue: 50, wireRemoveRefund: true);
+        var ledger = new PointsLedgerRepository(ctx.Db);
+        ctx.Users.EnsureUser("u1", "观众");
+        ctx.Users.TryChangePoints("u1", "观众", 50, PointsTransactionType.AdminAdjust, "seed", null, out _);
+
+        Assert.True(await ctx.Song.HandleDanmakuAsync(
+            new DanmakuItem { UserId = "u1", Nickname = "观众", Content = "点歌 泡沫" }, "room1"));
+
+        ctx.Song.TestAfterChargeBeforeFinalize = () => throw new Exception("abort");
+
+        Assert.True(await ctx.Song.HandleDanmakuAsync(
+            new DanmakuItem { UserId = "u1", Nickname = "观众", Content = "确定" }, "room1"));
+
+        Assert.Equal(0, ctx.Queue.WaitingCount);
+        Assert.Equal(50, ctx.Users.GetUser("u1")!.Points);
+
+        var refunds = ledger.ListByUser("u1", 50)
+            .Where(e => e.Type == PointsTransactionType.Refund && e.Delta == 10)
+            .ToList();
+        Assert.Single(refunds);
+    }
+
+    /// <summary>
+    /// post_charge_abort：次卡经 Remove 回调退一次即可，不得恢复到 2。
+    /// </summary>
+    [Fact]
+    public async Task PostChargeAbort_WithRemoveCallback_CreditRestoreExactlyOnce()
+    {
+        using var ctx = CreateCtx(SongRequestPolicyMode.Free, pointsCost: 0, maxQueue: 50, wireRemoveRefund: true);
+        ctx.Users.EnsureUser("u1", "次卡用户");
+        Assert.True(ctx.Users.AddSongPermissionCredits("u1", 1));
+        Assert.Equal(1, ctx.Users.GetUser("u1")!.SongPermissionCredits);
+
+        Assert.True(await ctx.Song.HandleDanmakuAsync(
+            new DanmakuItem { UserId = "u1", Nickname = "次卡用户", Content = "点歌 泡沫" }, "room1"));
+
+        ctx.Song.TestAfterChargeBeforeFinalize = () => throw new Exception("abort");
+
+        Assert.True(await ctx.Song.HandleDanmakuAsync(
+            new DanmakuItem { UserId = "u1", Nickname = "次卡用户", Content = "确定" }, "room1"));
+
+        Assert.Equal(0, ctx.Queue.WaitingCount);
+        Assert.Equal(1, ctx.Users.GetUser("u1")!.SongPermissionCredits);
+    }
+
     [Fact]
     public async Task ChargeCommit_ThenForcedAbort_RefundFails_ReportsCompensationFailed()
     {
@@ -143,7 +194,8 @@ public sealed class FinalConsistencyHardeningTests : IDisposable
         Assert.True(await ctx.Song.HandleDanmakuAsync(
             new DanmakuItem { UserId = "u1", Nickname = "次卡用户", Content = "点歌 泡沫" }, "room1"));
 
-        ctx.Permission.TestForceCreditRestoreFailure = () => true;
+        // 已改走 RefundSongRequestCharge；用统一退款失败钩子
+        ctx.Permission.TestForceRefundFailure = () => true;
         ctx.Song.TestAfterChargeBeforeFinalize = () => throw new Exception("abort");
 
         Assert.True(await ctx.Song.HandleDanmakuAsync(
@@ -369,7 +421,11 @@ public sealed class FinalConsistencyHardeningTests : IDisposable
         }
     }
 
-    private SongCtx CreateCtx(SongRequestPolicyMode mode, int pointsCost, int maxQueue)
+    private SongCtx CreateCtx(
+        SongRequestPolicyMode mode,
+        int pointsCost,
+        int maxQueue,
+        bool wireRemoveRefund = false)
     {
         var db = new AppDatabase(Path.Combine(_dir, Guid.NewGuid().ToString("N")));
         var config = new ConfigManager();
@@ -397,6 +453,12 @@ public sealed class FinalConsistencyHardeningTests : IDisposable
             new LevelPermissionRepository(db),
             new UserLevelService(config, users),
             log: log);
+        if (wireRemoveRefund)
+        {
+            queue.OnWaitingItemRemoved = (id, reason) =>
+                permission.RefundQueueItemIfNeeded(id, reason);
+        }
+
         var song = new SongRequestService(
             config, kugou, queue, permission, new ReplyService(config),
             replyQueue, system, log);
