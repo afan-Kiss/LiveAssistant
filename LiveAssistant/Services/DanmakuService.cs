@@ -26,6 +26,9 @@ public sealed class DanmakuService : IDisposable
     /// <summary>抖音侧车 Cookie 登录昵称（用于 @ 回复/房管操作）。</summary>
     public string DouyinLoginNickname { get; private set; } = "-";
 
+    /// <summary>抖音侧车登录用户号；可能为空。</summary>
+    public string DouyinLoginUserId { get; private set; } = "";
+
     public string RoomTitle { get; private set; } = "-";
 
     public DanmakuService(
@@ -67,7 +70,9 @@ public sealed class DanmakuService : IDisposable
         }
 
         DouyinLoginNickname = string.IsNullOrWhiteSpace(health.Nickname) ? "-" : health.Nickname.Trim();
-        _log.DouyinInfo($"DOUYIN_CDP_LOGIN result=ok nickname={DouyinLoginNickname}");
+        DouyinLoginUserId = string.IsNullOrWhiteSpace(health.UserId) ? "" : health.UserId.Trim();
+        _log.DouyinInfo(
+            $"DOUYIN_CDP_LOGIN result=ok nickname={DouyinLoginNickname} userId={DouyinLoginUserId}");
 
         var canSend = health.CanSend ?? health.LoginOk;
         var canModerate = health.CanModerate ?? false;
@@ -81,8 +86,9 @@ public sealed class DanmakuService : IDisposable
 
         if (!canModerate)
         {
-            _system.Add("提示：当前登录号可能不是主播，禁言功能可能不可用");
-            _log.DouyinWarn("DOUYIN_PERMISSION_DENIED can_moderate=false");
+            var reason = string.IsNullOrWhiteSpace(health.ModerateReason) ? "unknown" : health.ModerateReason;
+            _system.Add($"提示：当前账号暂不可禁言（{reason}），连接直播间后会重新检测");
+            _log.DouyinWarn($"DOUYIN_PERMISSION_DENIED can_moderate=false reason={reason}");
         }
 
         var room = await _douyin.ResolveRoomAsync(_webRid, ct);
@@ -113,6 +119,32 @@ public sealed class DanmakuService : IDisposable
             ConnectionStatus = "抖音 CDP 未登录，请先完成扫码登录";
             _system.Add("抖音 CDP 未登录，请先完成扫码登录");
             throw new InvalidOperationException("抖音 CDP 未登录，请先完成扫码登录");
+        }
+
+        // 连接直播间后再刷新身份/禁言能力：未监听时 can_moderate 常为 false，nickname 也可能稍后才可读到。
+        if (!string.IsNullOrWhiteSpace(postHealth.Nickname))
+        {
+            DouyinLoginNickname = postHealth.Nickname.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(postHealth.UserId))
+        {
+            DouyinLoginUserId = postHealth.UserId.Trim();
+        }
+
+        var postCanModerate = postHealth.CanModerate ?? false;
+        var moderateReason = string.IsNullOrWhiteSpace(postHealth.ModerateReason)
+            ? (postCanModerate ? "owner" : "unknown")
+            : postHealth.ModerateReason!;
+        _log.DouyinInfo(
+            $"DOUYIN_CDP_HEALTH_AFTER_LISTEN loginOk={postHealth.LoginOk} nickname={DouyinLoginNickname} " +
+            $"userId={DouyinLoginUserId} canSend={postHealth.CanSend ?? postHealth.LoginOk} " +
+            $"canModerate={postCanModerate} reason={moderateReason} " +
+            $"listenRoom={postHealth.ListenRoomId ?? ""} activeRoom={postHealth.ActiveRoomId ?? ""}");
+        if (!postCanModerate)
+        {
+            _system.Add($"提示：当前账号不可禁言（{moderateReason}）");
+            _log.DouyinWarn($"DOUYIN_PERMISSION_DENIED can_moderate=false reason={moderateReason}");
         }
 
         _cts = new CancellationTokenSource();
@@ -396,8 +428,8 @@ public sealed class DanmakuService : IDisposable
     }
 
     /// <summary>
-    /// 机器人回显过滤：msg_id 精确命中，或登录账号昵称命中。
-    /// 禁止仅因正文相同过滤真人。
+    /// 机器人回显过滤：msg_id 精确命中优先；登录昵称命中次之。
+    /// nickname 为空时用近期出站正文兜底，避免回复回环；禁止仅靠正文误杀真人。
     /// </summary>
     internal bool ShouldIgnoreBotMessage(string msgId, string nickname, string content)
     {
@@ -406,22 +438,23 @@ public sealed class DanmakuService : IDisposable
             return true;
         }
 
-        var isLoginAccount = !string.IsNullOrWhiteSpace(DouyinLoginNickname)
-            && !DouyinLoginNickname.Equals("-", StringComparison.Ordinal)
+        var hasLoginNick = !string.IsNullOrWhiteSpace(DouyinLoginNickname)
+            && !DouyinLoginNickname.Equals("-", StringComparison.Ordinal);
+        var isLoginAccount = hasLoginNick
             && nickname.Equals(DouyinLoginNickname, StringComparison.OrdinalIgnoreCase);
 
         if (isLoginAccount)
         {
-            // 登录号自身消息一律视为机器人；内容匹配仅作旁证日志
-            if (_outboundTracker?.HasRecentOutboundContent(content, _webRid) == true)
-            {
-                return true;
-            }
-
             return true;
         }
 
-        // 内容相同但身份不是登录号：必须放行真人
+        // nickname 拿不到时：仅当正文刚好匹配近期出站内容才丢弃，防止机器人自己刷自己。
+        if (!hasLoginNick
+            && _outboundTracker?.HasRecentOutboundContent(content, _webRid) == true)
+        {
+            return true;
+        }
+
         return false;
     }
 
@@ -429,6 +462,9 @@ public sealed class DanmakuService : IDisposable
 
     internal void SetDouyinLoginNicknameForTests(string nickname)
         => DouyinLoginNickname = string.IsNullOrWhiteSpace(nickname) ? "-" : nickname.Trim();
+
+    internal void SetDouyinLoginUserIdForTests(string userId)
+        => DouyinLoginUserId = userId?.Trim() ?? "";
 
     private static string ResolveMsgId(DouyinDanmakuMessage msg)
     {

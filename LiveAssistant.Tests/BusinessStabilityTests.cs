@@ -76,6 +76,8 @@ public sealed class BusinessStabilityTests : IDisposable
         var config = new ConfigManager();
         config.Load();
         config.Settings.Gift.PointsPerValue = 1;
+        // 本测验证旧版礼物感谢限流；电影评分引导开启时会跳过纯感谢文案
+        config.Settings.MovieInteraction.Notification.Enabled = false;
         var log = new LogService(_dir);
         var sent = new List<string>();
         var replyQueue = new ReplyQueue(

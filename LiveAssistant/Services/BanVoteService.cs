@@ -211,6 +211,12 @@ public sealed class BanVoteService : IDisposable
         _users.SetStatus(target.UserId, UserStatus.Muted);
         _system.Add($"已禁言 {target.Nickname} {seconds}秒");
         _log.BanInfo($"直禁成功 target={target.Nickname} duration={seconds}s by={item.Nickname}");
+        _replyQueue.EnqueueMention(
+            webRid,
+            target.UserId,
+            $"已被禁言{seconds}秒",
+            critical: true,
+            nickname: target.Nickname);
 
         if (seconds > 0)
         {
@@ -263,6 +269,12 @@ public sealed class BanVoteService : IDisposable
         _users.SetStatus(target.UserId, UserStatus.Active);
         _system.Add($"已解除禁言 {target.Nickname}");
         _log.BanInfo($"解禁成功 target={target.Nickname} by={item.Nickname}");
+        _replyQueue.EnqueueMention(
+            webRid,
+            target.UserId,
+            "已解除禁言",
+            critical: true,
+            nickname: target.Nickname);
         return true;
     }
 

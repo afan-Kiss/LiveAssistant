@@ -16,6 +16,7 @@ public sealed class ReplyJob
     public bool IsSongRequestBatch { get; init; }
     /// <summary>点歌相关结果不可因积压静默丢弃。</summary>
     public bool IsCritical { get; init; }
+    public string? FailureLogTag { get; init; }
     public DateTime EnqueuedAtUtc { get; init; } = DateTime.UtcNow;
 }
 
@@ -81,7 +82,13 @@ public sealed class ReplyQueue : IDisposable
     internal long DroppedCount => Interlocked.Read(ref _droppedCount);
     internal long ExpiredCount => Interlocked.Read(ref _expiredCount);
 
-    public void EnqueueMention(string webRid, string userId, string content, bool critical = false, string? nickname = null)
+    public void EnqueueMention(
+        string webRid,
+        string userId,
+        string content,
+        bool critical = false,
+        string? nickname = null,
+        string? failureLogTag = null)
     {
         if (string.IsNullOrWhiteSpace(webRid) || string.IsNullOrWhiteSpace(userId) || string.IsNullOrWhiteSpace(content))
         {
@@ -96,6 +103,7 @@ public sealed class ReplyQueue : IDisposable
             Content = content,
             Nickname = nickname,
             IsCritical = critical,
+            FailureLogTag = failureLogTag,
             EnqueuedAtUtc = DateTime.UtcNow
         });
     }
@@ -390,6 +398,7 @@ public sealed class ReplyQueue : IDisposable
             _log.DouyinWarn(
                 $"REPLY_QUEUE replyId={job.ReplyId} result=fail error=not_logged_in " +
                 $"ui=抖音未登录（停止重试）");
+            LogTaggedFailure(job, "not_logged_in");
             var nowLogin = DateTime.UtcNow;
             if (nowLogin - _lastFailureNoticeUtc > TimeSpan.FromSeconds(30))
             {
@@ -403,6 +412,7 @@ public sealed class ReplyQueue : IDisposable
         if (DouyinService.IsPermissionDenied(reason))
         {
             _log.DouyinWarn($"DOUYIN_PERMISSION_DENIED replyId={job.ReplyId} error={reason}");
+            LogTaggedFailure(job, reason);
             var nowPerm = DateTime.UtcNow;
             if (nowPerm - _lastFailureNoticeUtc > TimeSpan.FromSeconds(30))
             {
@@ -413,6 +423,7 @@ public sealed class ReplyQueue : IDisposable
             return;
         }
 
+        LogTaggedFailure(job, reason);
         _log.Error(
             "douyin",
             $"REPLY_QUEUE replyId={job.ReplyId} type={(job.IsSongRequestBatch ? "song_request_batch" : "mention")} " +
@@ -434,10 +445,13 @@ public sealed class ReplyQueue : IDisposable
         }
     }
 
+    private DateTime _lastSentAtUtc = DateTime.MinValue;
+
     private async Task WaitForRateLimitAsync(CancellationToken ct)
     {
         while (true)
         {
+            TimeSpan wait = TimeSpan.Zero;
             lock (_rateLock)
             {
                 var now = DateTime.UtcNow;
@@ -446,13 +460,30 @@ public sealed class ReplyQueue : IDisposable
                     _sentTimestamps.Dequeue();
                 }
 
-                if (_sentTimestamps.Count < _settings.MaxPerSecond)
+                if (_sentTimestamps.Count >= _settings.MaxPerSecond)
                 {
-                    return;
+                    wait = TimeSpan.FromMilliseconds(200);
+                }
+                else
+                {
+                    var minInterval = Math.Max(0, _settings.MinIntervalMs);
+                    if (minInterval > 0 && _lastSentAtUtc != DateTime.MinValue)
+                    {
+                        var elapsed = now - _lastSentAtUtc;
+                        if (elapsed.TotalMilliseconds < minInterval)
+                        {
+                            wait = TimeSpan.FromMilliseconds(minInterval - elapsed.TotalMilliseconds);
+                        }
+                    }
                 }
             }
 
-            await Task.Delay(200, ct);
+            if (wait <= TimeSpan.Zero)
+            {
+                return;
+            }
+
+            await Task.Delay(wait, ct);
         }
     }
 
@@ -460,8 +491,20 @@ public sealed class ReplyQueue : IDisposable
     {
         lock (_rateLock)
         {
-            _sentTimestamps.Enqueue(DateTime.UtcNow);
+            var now = DateTime.UtcNow;
+            _sentTimestamps.Enqueue(now);
+            _lastSentAtUtc = now;
         }
+    }
+
+    private void LogTaggedFailure(ReplyJob job, string reason)
+    {
+        if (string.IsNullOrWhiteSpace(job.FailureLogTag))
+        {
+            return;
+        }
+
+        _log.DouyinWarn($"{job.FailureLogTag} replyId={job.ReplyId} userId={job.UserId} error={reason}");
     }
 
     private static bool IsLikelyAlreadySent(string reason)

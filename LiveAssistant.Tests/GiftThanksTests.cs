@@ -22,6 +22,7 @@ public sealed class GiftThanksTests : IDisposable
         var db = new AppDatabase(_dir);
         var config = new ConfigManager();
         config.Load();
+        config.Settings.MovieInteraction.Enabled = false;
         config.ReplyTemplates["giftThanks"] = "感谢送出 {gift}×{count}";
         var log = new LogService(_dir);
         var sent = new List<(string userId, string content)>();

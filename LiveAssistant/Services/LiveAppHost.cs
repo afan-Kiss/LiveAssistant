@@ -207,7 +207,8 @@ public sealed class LiveAppHost : IDisposable
         _aiSpeech = new AiSpeechCoordinator(_config, _log, _outboundTracker);
         _aiSpeech.StatusChanged += () => NotifyStateChanged();
         _machineSetup = new MachineSetupService(_config, _log, _playback, _aiSpeech);
-        _movieInteraction = new MovieInteractionService(_config, _db, _log);
+        _movieInteraction = new MovieInteractionService(_config, _db, _log, _replyQueue);
+        _movieInteraction.ApplyGlobalSendInterval();
         _movieScoreSync = new MovieScoreSyncService(_config, _movieInteraction, _log);
 
         _adminWeb = new AdminWebHost(new AdminAppContext

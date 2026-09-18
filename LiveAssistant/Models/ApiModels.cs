@@ -74,6 +74,18 @@ public sealed class DouyinHealthData
     [JsonPropertyName("can_moderate")]
     public bool? CanModerate { get; set; }
 
+    [JsonPropertyName("user_id")]
+    public string? UserId { get; set; }
+
+    [JsonPropertyName("moderate_reason")]
+    public string? ModerateReason { get; set; }
+
+    [JsonPropertyName("listen_room_id")]
+    public string? ListenRoomId { get; set; }
+
+    [JsonPropertyName("active_room_id")]
+    public string? ActiveRoomId { get; set; }
+
     [JsonPropertyName("collect_sessions")]
     public int CollectSessions { get; set; }
 

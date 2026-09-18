@@ -183,6 +183,17 @@ public sealed class GiftService : IDisposable
             return;
         }
 
+        // 电影评分引导已覆盖「感谢礼物」文案时，不再发第二条纯感谢，避免同一礼物刷屏。
+        var movieNotify = _config.Settings.MovieInteraction.Notification;
+        if (_config.Settings.MovieInteraction.Enabled
+            && movieNotify is { Enabled: true }
+            && gift.Value > 0)
+        {
+            _log.GiftInfo(
+                $"[thanks-skip] movie score guide owns gift thank user={gift.UserId} gift={gift.GiftName}");
+            return;
+        }
+
         if (ShouldThrottleGiftThanks(gift))
         {
             _log.GiftInfo(

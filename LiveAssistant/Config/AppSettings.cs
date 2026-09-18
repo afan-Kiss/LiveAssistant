@@ -46,6 +46,21 @@ public sealed class MovieInteractionSettings
     public int CleanupIntervalSeconds { get; set; } = 45;
     /// <summary>1 钻对应多少电影评分积分。</summary>
     public int PointsPerDiamond { get; set; } = 10;
+    public MovieInteractionNotificationSettings Notification { get; set; } = new();
+}
+
+/// <summary>
+/// 电影评分主动弹幕。发送仍走 ReplyQueue，这里只控制文案和冷却。
+/// </summary>
+public sealed class MovieInteractionNotificationSettings
+{
+    public bool Enabled { get; set; } = true;
+    /// <summary>同一用户送礼评分提醒的最短间隔（秒）。积分照常累计。</summary>
+    public int GiftGuideUserCooldownSeconds { get; set; } = 60;
+    /// <summary>所有出站弹幕的最小间隔（毫秒），由 ReplyQueue 统一执行。</summary>
+    public int GlobalSendIntervalMs { get; set; } = 2500;
+    public bool ScoreSuccessReplyEnabled { get; set; } = true;
+    public bool InvalidScoreHintEnabled { get; set; } = true;
 }
 
 public sealed class AiSpeechSettings
@@ -255,6 +270,8 @@ public sealed class ReplySettings
     public int MaxRetries { get; set; } = 3;
     public int RetryDelayMs { get; set; } = 1500;
     public int SongRequestBatchWindowMs { get; set; } = 5000;
+    /// <summary>两次成功发送之间的最小间隔。0 表示只受 MaxPerSecond 限制。</summary>
+    public int MinIntervalMs { get; set; }
 }
 
 public sealed class EmergencySettings

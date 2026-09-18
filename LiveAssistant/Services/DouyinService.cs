@@ -43,10 +43,18 @@ public sealed class DouyinService
                 var canMod = result.Data.CanModerate ?? false;
                 _log.DouyinInfo(
                     $"DOUYIN_CDP_HEALTH loginOk={result.Data.LoginOk} nickname={result.Data.Nickname ?? ""} " +
-                    $"canSend={canSend} canModerate={canMod}");
+                    $"userId={result.Data.UserId ?? ""} canSend={canSend} canModerate={canMod} " +
+                    $"moderateReason={result.Data.ModerateReason ?? ""} " +
+                    $"listenRoom={result.Data.ListenRoomId ?? ""} activeRoom={result.Data.ActiveRoomId ?? ""}");
                 if (result.Data.LoginOk && !canSend)
                 {
                     _log.DouyinWarn("DOUYIN_PERMISSION_DENIED can_send=false");
+                }
+
+                if (result.Data.LoginOk && !canMod)
+                {
+                    _log.DouyinWarn(
+                        $"DOUYIN_PERMISSION_DENIED can_moderate=false reason={result.Data.ModerateReason ?? "unknown"}");
                 }
 
                 return result.Data;
@@ -99,8 +107,70 @@ public sealed class DouyinService
     public static bool IsPermissionDenied(string? reason)
         => !string.IsNullOrWhiteSpace(reason)
            && (reason.Contains("无权限", StringComparison.Ordinal)
+               || reason.Contains("permission_denied", StringComparison.OrdinalIgnoreCase)
                || reason.Contains("permission", StringComparison.OrdinalIgnoreCase)
                || reason.Contains("DOUYIN_PERMISSION_DENIED", StringComparison.Ordinal));
+
+    public static bool IsUserNotFound(string? reason)
+        => !string.IsNullOrWhiteSpace(reason)
+           && (reason.Contains("user_not_found", StringComparison.OrdinalIgnoreCase)
+               || reason.Contains("找不到昵称", StringComparison.Ordinal)
+               || reason.Contains("未找到用户", StringComparison.Ordinal)
+               || reason.Contains("根据用户号找不到", StringComparison.Ordinal));
+
+    public static bool IsRateLimited(string? reason)
+        => !string.IsNullOrWhiteSpace(reason)
+           && (reason.Contains("rate_limited", StringComparison.OrdinalIgnoreCase)
+               || reason.Contains("频率", StringComparison.Ordinal)
+               || reason.Contains("太快", StringComparison.Ordinal)
+               || reason.Contains("429", StringComparison.Ordinal));
+
+    internal static string NormalizeSendError(string? reason, int httpStatus)
+    {
+        reason ??= "";
+        if (IsNotLoggedIn(reason))
+        {
+            return "not_logged_in";
+        }
+
+        if (IsRoomMismatch(reason))
+        {
+            return reason.StartsWith("room_mismatch", StringComparison.OrdinalIgnoreCase)
+                ? reason
+                : "room_mismatch";
+        }
+
+        if (IsUserNotFound(reason))
+        {
+            return "user_not_found";
+        }
+
+        if (IsRateLimited(reason) || httpStatus == 429)
+        {
+            return "rate_limited";
+        }
+
+        if (IsPermissionDenied(reason)
+            || reason.Contains("被拒绝", StringComparison.Ordinal)
+            || httpStatus is 401 or 403)
+        {
+            return string.IsNullOrWhiteSpace(reason) ? "permission_denied" : reason;
+        }
+
+        if (string.IsNullOrWhiteSpace(reason))
+        {
+            return httpStatus >= 400 ? "send_failed" : "";
+        }
+
+        if (reason.Contains("网络", StringComparison.Ordinal)
+            || reason.Contains("timeout", StringComparison.OrdinalIgnoreCase)
+            || reason.Contains("连接", StringComparison.Ordinal))
+        {
+            return reason;
+        }
+
+        return reason;
+    }
 
     public Task<bool> EnsureWriteGateReadyAsync(CancellationToken ct = default)
     {
@@ -443,10 +513,7 @@ public sealed class DouyinService
             var reason = ok
                 ? ""
                 : envelope?.Message ?? (text.Length > 160 ? text[..160] : text);
-            if (IsNotLoggedIn(reason))
-            {
-                reason = "not_logged_in";
-            }
+            reason = NormalizeSendError(reason, (int)response.StatusCode);
 
             return new MentionSendResult
             {

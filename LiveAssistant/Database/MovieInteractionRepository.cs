@@ -139,6 +139,32 @@ public sealed class MovieInteractionRepository
     }
 
     /// <summary>
+    /// 判断用户近期是否有刚过期的 credit，用于区分「从未有机会」与「刚过期」。
+    /// </summary>
+    public bool HasRecentlyExpiredCredit(string userId, DateTime now, TimeSpan window)
+    {
+        if (string.IsNullOrWhiteSpace(userId))
+        {
+            return false;
+        }
+
+        var since = now - window;
+        using var conn = _db.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT COUNT(1) FROM movie_score_credits
+            WHERE user_id = $uid
+              AND status = 'expired'
+              AND expires_at >= $since
+              AND expires_at <= $now
+            """;
+        cmd.Parameters.AddWithValue("$uid", userId);
+        cmd.Parameters.AddWithValue("$since", since.ToString("O"));
+        cmd.Parameters.AddWithValue("$now", now.ToString("O"));
+        return Convert.ToInt32(cmd.ExecuteScalar()) > 0;
+    }
+
+    /// <summary>
     /// 事务：消费用户全部未过期 pending 积分 + 写入评分事件 + 更新总分 + 写入事件流。
     /// 条件更新保证同一积分不会被并发二次消费。
     /// </summary>
