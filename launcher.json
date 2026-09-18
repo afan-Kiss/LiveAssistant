@@ -1,0 +1,95 @@
+{
+  "mode": "auto",
+  "sourceRoot": "E:\\我的源码目录",
+  "bootLogPrefix": "LIVE_BOOT",
+  "DouyinCDP": {
+    "enabled": true,
+    "exe": "",
+    "devCommand": "go",
+    "devArgs": "run ./cmd/server",
+    "devWorkingDirectory": "",
+    "healthUrl": "http://127.0.0.1:17891/api/health",
+    "port": 17891,
+    "processNames": [ "cdp-danmaku", "cdp-server", "抖音直播弹幕v1.3" ],
+    "waitReadySeconds": 60,
+    "waitLogin": true,
+    "loginOkField": "login_ok",
+    "candidateExes": [
+      "./sidecars/douyin-cdp/cdp-danmaku.exe",
+      "./sidecars/cdp-danmaku.exe",
+      "./publish/LiveAssistant-one/cdp-danmaku.exe",
+      "../抖音cdp弹幕/bin/cdp-danmaku.exe",
+      "../抖音cdp弹幕/抖音直播弹幕v1.3.exe"
+    ],
+    "scanNames": [ "cdp-danmaku.exe", "抖音直播弹幕v1.3.exe" ]
+  },
+  "KugouApi": {
+    "enabled": true,
+    "exe": "",
+    "devCommand": "",
+    "devArgs": "",
+    "devWorkingDirectory": "",
+    "healthUrl": "http://127.0.0.1:17888/health",
+    "port": 17888,
+    "processNames": [ "酷狗api_v1.5", "酷狗api", "kgapiserver", "KugouAPI" ],
+    "waitReadySeconds": 45,
+    "candidateExes": [
+      "./sidecars/酷狗api_v1.5.exe",
+      "./publish/LiveAssistant-one/酷狗api_v1.5.exe",
+      "../酷狗协议/KgDesktop/build/bin/酷狗api_v1.5.exe",
+      "../酷狗协议/KgApiServer/release/kgapiserver.exe",
+      "../酷狗协议/KgApiServer/kgapiserver.exe"
+    ],
+    "scanNames": [ "酷狗api_v1.5.exe", "酷狗api.exe", "kgapiserver.exe", "KugouAPI.exe" ],
+    "requireSibling": "kgapijs"
+  },
+  "Maoyan": {
+    "enabled": true,
+    "exe": "",
+    "devCommand": "npm",
+    "devArgs": "start",
+    "devWorkingDirectory": "",
+    "healthUrl": "http://127.0.0.1:8765/health",
+    "port": 8765,
+    "processNames": [],
+    "waitReadySeconds": 45,
+    "startBat": "",
+    "candidateBats": [
+      "../猫眼票房助手/dist/maoyan-box/start.bat",
+      "../猫眼票房助手/dist/猫眼票房助手/启动.bat",
+      "../猫眼票房助手/start.bat"
+    ],
+    "candidateEntryJs": [
+      "../猫眼票房助手/dist/maoyan-box/index.js",
+      "../猫眼票房助手/dist/猫眼票房助手/index.js",
+      "../猫眼票房助手/index.js"
+    ],
+    "scanNames": [ "start.bat", "启动.bat" ]
+  },
+  "LiveAssistant": {
+    "enabled": true,
+    "exe": "",
+    "devCommand": "dotnet",
+    "devArgs": "run --project LiveAssistant",
+    "devWorkingDirectory": "",
+    "healthUrl": "",
+    "port": 0,
+    "processNames": [ "LiveAssistant" ],
+    "waitReadySeconds": 15,
+    "candidateExes": [
+      "./publish/LiveAssistant-one/LiveAssistant.exe",
+      "./publish/LiveAssistant-build/LiveAssistant.exe",
+      "./LiveAssistant/bin/Release/net8.0-windows/LiveAssistant.exe",
+      "./LiveAssistant/bin/Debug/net8.0-windows/LiveAssistant.exe"
+    ],
+    "scanNames": [ "LiveAssistant.exe" ]
+  },
+  "environment": {
+    "requireDotnet": true,
+    "requireNode": true,
+    "requireChrome": true,
+    "requireGo": false,
+    "requirePython": false,
+    "chromeMinMajor": 120
+  }
+}
