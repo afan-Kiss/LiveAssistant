@@ -79,7 +79,68 @@ public static partial class SpeechTextCleaner
             s = TruncateBySentence(s, maxChars);
         }
 
+        s = EnsureCompleteUtterance(s);
         return s.Trim();
+    }
+
+    /// <summary>
+    /// 为 GPT-SoVITS 按句切分：在句号/问叹号后插入换行，减轻长句黏嘴与尾音糊。
+    /// </summary>
+    public static string FormatForTts(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return "";
+        }
+
+        var s = MultiSpacePattern().Replace(text.Replace('\r', ' ').Replace('\n', ' ').Replace('\t', ' '), " ").Trim();
+        var sb = new StringBuilder(s.Length + 8);
+        for (var i = 0; i < s.Length; i++)
+        {
+            var ch = s[i];
+            sb.Append(ch);
+            if (ch is '。' or '！' or '？' or '!' or '?' or '…')
+            {
+                // 句末后若还有内容，换行让引擎分句合成
+                var j = i + 1;
+                while (j < s.Length && char.IsWhiteSpace(s[j]))
+                {
+                    j++;
+                }
+
+                if (j < s.Length)
+                {
+                    sb.Append('\n');
+                    i = j - 1;
+                }
+            }
+        }
+
+        return sb.ToString().Trim();
+    }
+
+    /// <summary>硬切后尽量补全句末标点，避免听感「话说一半」。</summary>
+    internal static string EnsureCompleteUtterance(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return "";
+        }
+
+        var s = text.Trim();
+        var last = s[^1];
+        if (last is '。' or '！' or '？' or '!' or '?' or '…' or '；' or ';' or '，' or ',')
+        {
+            return s;
+        }
+
+        // 已像完整口语短句时补句号，避免 TTS 拖尾黏糊
+        if (CountSpeechChars(s) >= 4)
+        {
+            return s + "。";
+        }
+
+        return s;
     }
 
     public static int CountSpeechChars(string text)
@@ -137,7 +198,7 @@ public static partial class SpeechTextCleaner
             return sb.ToString(0, lastSentenceEnd).Trim();
         }
 
-        // 没有完整句子时，退到逗号或字数上限，避免半个词硬切得太突兀
+        // 没有完整句子时，退到逗号；仍不够则硬切并交给 EnsureCompleteUtterance 补句号
         var hard = sb.ToString().Trim();
         var comma = Math.Max(hard.LastIndexOf('，'), hard.LastIndexOf(','));
         if (comma >= 8)
@@ -145,7 +206,7 @@ public static partial class SpeechTextCleaner
             return hard[..(comma + 1)].Trim();
         }
 
-        return hard;
+        return hard.TrimEnd('，', ',', '、', '；', ';', '：', ':').Trim();
     }
 
     private static string StripEmoji(string text)

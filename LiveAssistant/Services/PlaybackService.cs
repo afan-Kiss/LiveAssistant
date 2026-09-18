@@ -26,6 +26,7 @@ public sealed class PlaybackService : IDisposable
     private bool _isRandomFillActive;
     private int _progressSec;
     private int _volume = 80;
+    private int _deviceNumber = -1;
     private volatile bool _trackFinishedSignaled;
     private Task? _pendingDisposeTask;
     private long _lastReaderPositionMs;
@@ -97,6 +98,15 @@ public sealed class PlaybackService : IDisposable
         }
     }
 
+    /// <summary>设置 WaveOut 设备；-1 为系统默认。下一首生效（当前曲不中断重切）。</summary>
+    public void SetDeviceNumber(int deviceNumber)
+    {
+        _deviceNumber = deviceNumber < 0 ? -1 : deviceNumber;
+        _log.PlaybackInfo($"播放输出设备已设为 DeviceNumber={_deviceNumber}");
+    }
+
+    public int DeviceNumber => _deviceNumber;
+
     public async Task<bool> PlayAsync(TrackInfo track, bool isRandomFill = false, CancellationToken ct = default)
     {
         await WaitPendingDisposeAsync(PendingDisposeSafetyWait, "play_start", ct);
@@ -121,7 +131,11 @@ public sealed class PlaybackService : IDisposable
             var (output, initMs) = await Task.Run(() =>
             {
                 var localSw = Stopwatch.StartNew();
-                var waveOut = new WaveOutEvent { Volume = _volume / 100f };
+                var waveOut = new WaveOutEvent
+                {
+                    DeviceNumber = _deviceNumber,
+                    Volume = _volume / 100f
+                };
                 waveOut.Init(reader);
                 return (waveOut, localSw.ElapsedMilliseconds);
             }, ct);
@@ -151,8 +165,9 @@ public sealed class PlaybackService : IDisposable
             StateChanged?.Invoke();
             _log.PlaybackInfo(
                 $"PLAYBACK_TIMING song={track.SongName} stop_ms={stopMs} reader_ms={readerMs} init_ms={initMs} " +
-                $"play_ms={playMs} total_ms={totalSw.ElapsedMilliseconds} thread={Environment.CurrentManagedThreadId}");
-            _log.PlaybackInfo($"开始播放: {track.SongName} - {track.Artist}");
+                $"play_ms={playMs} total_ms={totalSw.ElapsedMilliseconds} device={_deviceNumber} " +
+                $"thread={Environment.CurrentManagedThreadId}");
+            _log.PlaybackInfo($"开始播放: {track.SongName} - {track.Artist} (device={_deviceNumber})");
             return true;
         }
         catch (Exception ex)

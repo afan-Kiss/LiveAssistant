@@ -334,7 +334,9 @@ public sealed class DanmakuService : IDisposable
                     Nickname = nickname,
                     UserId = userId,
                     MsgType = msgType,
-                    Timestamp = timestamp
+                    Timestamp = timestamp,
+                    Platform = "douyin",
+                    RoomKey = _webRid
                 };
                 DanmakuReceived?.Invoke(item);
             }
@@ -375,7 +377,7 @@ public sealed class DanmakuService : IDisposable
         if (isLoginAccount)
         {
             // 登录号自身消息一律视为机器人；内容匹配仅作旁证日志
-            if (_outboundTracker?.HasRecentOutboundContent(content) == true)
+            if (_outboundTracker?.HasRecentOutboundContent(content, _webRid) == true)
             {
                 return true;
             }

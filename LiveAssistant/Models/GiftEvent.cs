@@ -17,8 +17,11 @@ public sealed class GiftEvent
     public DateTime Time { get; set; } = DateTime.Now;
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 
+    /// <summary>房间键（抖音 web_rid 或快手 ks:{roomId}），用于致谢回复路由。</summary>
+    public string RoomKey { get; set; } = "";
+
     /// <summary>连击累计次数（来自 WebcastGiftMessage.repeat_count）。</summary>
-    public int RepeatCount { get; set; }
+    public int RepeatCount { get; set; } = 0;
 
     /// <summary>单件钻石价值（来自 GiftStruct.diamond_count）。</summary>
     public int DiamondCount { get; set; }

@@ -116,7 +116,8 @@ public sealed class OllamaClient : IDisposable
             model,
             stream = false,
             think = false,
-            options = new { temperature = 0.7, num_predict = 120 },
+            // 略降温减少空话；提高 num_predict 避免句子说到一半被截断
+            options = new { temperature = 0.45, num_predict = 180, repeat_penalty = 1.15 },
             messages = payloadMessages
         };
 

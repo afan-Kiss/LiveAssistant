@@ -90,6 +90,11 @@ public sealed class AdminWebHost : IDisposable
             return Results.Json(new
             {
                 douyinOnline = status.DouyinOnline,
+                kuaishouOnline = status.KuaishouOnline,
+                kuaishouStatus = status.KuaishouStatus,
+                kuaishouConnection = status.KuaishouConnection,
+                kuaishouRoomId = status.KuaishouRoomId,
+                kuaishouRoomTitle = status.KuaishouRoomTitle,
                 kugouOnline = status.KugouOnline,
                 kugouLoginStatus = status.KugouLoginStatus,
                 kugouVipLabel = status.KugouVipLabel,
@@ -152,6 +157,27 @@ public sealed class AdminWebHost : IDisposable
             return Results.Json(new { ok = true });
         }));
         app.MapPost("/api/playback/clear-queue", (HttpContext http) => Auth(http, () => Cmd(AdminCommandType.ClearQueue)));
+
+        app.MapGet("/api/audio/devices", (HttpContext http) => Auth(http, () =>
+            Results.Json(_ctx.Host.GetAudioOutputSnapshot())));
+
+        app.MapGet("/api/audio/output", (HttpContext http) => Auth(http, () =>
+            Results.Json(_ctx.Host.GetAudioOutputSnapshot())));
+
+        app.MapPut("/api/audio/output", (AudioOutputRequest req, HttpContext http) => Auth(http, () =>
+            Results.Json(new
+            {
+                ok = true,
+                data = _ctx.Host.SaveAudioOutput(
+                    req.SongDeviceNumber,
+                    req.SongDeviceName,
+                    req.AiDeviceNumber,
+                    req.AiDeviceName,
+                    req.SyncAiToSong,
+                    req.AiKuaishouDeviceNumber,
+                    req.AiKuaishouDeviceName,
+                    req.SyncKuaishouAiToSong)
+            })));
 
         app.MapGet("/api/queue", (HttpContext http) => Auth(http, () =>
         {
@@ -512,6 +538,74 @@ public sealed class AdminWebHost : IDisposable
             return Results.Json(new { ok = true });
         }));
 
+        app.MapGet("/api/kuaishou", (HttpContext http) => Auth(http, () =>
+            Results.Json(_ctx.Host.GetKuaishouAdminSnapshot())));
+
+        app.MapGet("/api/kuaishou/diagnose", (HttpContext http) => Auth(http, () =>
+        {
+            var data = _ctx.Host.GetKuaishouDiagnoseAsync(http.RequestAborted).GetAwaiter().GetResult();
+            return Results.Json(data);
+        }));
+
+        app.MapPut("/api/kuaishou/settings", (KuaishouSettingsRequest req, HttpContext http) => Auth(http, () =>
+        {
+            _ctx.Host.SaveKuaishouSettings(
+                req.Enabled,
+                req.BaseUrl ?? "",
+                req.RoomId ?? "",
+                req.Cookie,
+                req.PollIntervalMs);
+            return Results.Json(new { ok = true, data = _ctx.Host.GetKuaishouAdminSnapshot() });
+        }));
+
+        app.MapPost("/api/kuaishou/connect", (HttpContext http) => Auth(http, () =>
+        {
+            try
+            {
+                _ctx.Host.ConnectKuaishouAsync().GetAwaiter().GetResult();
+                return Results.Json(new { ok = true, data = _ctx.Host.GetKuaishouAdminSnapshot() });
+            }
+            catch (Exception ex)
+            {
+                return Results.Json(new { ok = false, message = ex.Message });
+            }
+        }));
+
+        app.MapPost("/api/kuaishou/disconnect", (HttpContext http) => Auth(http, () =>
+        {
+            _ctx.Host.DisconnectKuaishou();
+            return Results.Json(new { ok = true, data = _ctx.Host.GetKuaishouAdminSnapshot() });
+        }));
+
+        app.MapGet("/api/machine-setup/status", (HttpContext http) => Auth(http, () =>
+            Results.Json(_ctx.Host.MachineSetup.GetStatus())));
+
+        app.MapPost("/api/machine-setup/install", (MachineSetupInstallRequest? req, HttpContext http) => Auth(http, () =>
+        {
+            var result = _ctx.Host.MachineSetup.Install(req?.ComponentId);
+            return Results.Json(result);
+        }));
+
+        app.MapPost("/api/machine-setup/open-kit-folder", (HttpContext http) => Auth(http, () =>
+        {
+            try
+            {
+                var root = _ctx.Host.MachineSetup.KitRoot;
+                Directory.CreateDirectory(root);
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "explorer.exe",
+                    Arguments = root,
+                    UseShellExecute = true
+                });
+                return Results.Json(new { ok = true, path = root });
+            }
+            catch (Exception ex)
+            {
+                return Results.Json(new { ok = false, message = ex.Message });
+            }
+        }));
+
         app.MapGet("/api/sync/bundle", (HttpContext http) => Auth(http, () =>
             Results.Json(_ctx.Settings.BuildBundle())));
 
@@ -607,4 +701,15 @@ public sealed class AdminWebHost : IDisposable
         int? Points, int? PointsDelta, int? Level, string? Role, string? Status, string? Reason, string? Operator);
     private sealed record EnabledRequest(bool Enabled);
     private sealed record TemplatePreviewRequest(string? TemplateKey, string? TestUser, string? TemplateContent);
+    private sealed record KuaishouSettingsRequest(
+        bool Enabled, string? BaseUrl, string? RoomId, string? Cookie, int? PollIntervalMs);
+    private sealed record AudioOutputRequest(
+        int? SongDeviceNumber,
+        string? SongDeviceName,
+        int? AiDeviceNumber,
+        string? AiDeviceName,
+        bool SyncAiToSong,
+        int? AiKuaishouDeviceNumber = null,
+        string? AiKuaishouDeviceName = null,
+        bool? SyncKuaishouAiToSong = null);
 }

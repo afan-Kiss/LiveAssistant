@@ -14,6 +14,16 @@
     button { background: #1d9bf0; border: none; cursor: pointer; font-weight: 600; }
     button.sec { background: #38444d; }
     button.sm { width: auto; padding: 6px 10px; font-size: 12px; margin: 2px; }
+    .row button, .toolbar button, .chip-row button { width: auto; flex: 0 0 auto; }
+    .table-wrap { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .table-wrap table { min-width: 520px; }
+    .panel .row { max-width: 100%; }
+    .stat div, .hint, td { overflow-wrap: anywhere; word-break: break-word; }
+    #machineSetupResult { margin-top: 16px; }
+    @media (max-width: 640px) {
+      .edit-panel { left: 12px; right: 12px; bottom: 12px; width: auto; max-width: none; }
+      .row button { flex: 1 1 auto; min-width: 120px; }
+    }
     .hidden { display: none; }
     header { padding: 16px 24px; border-bottom: 1px solid #38444d; display: flex; justify-content: space-between; align-items: center; }
     nav { display: flex; gap: 8px; padding: 12px 24px; border-bottom: 1px solid #38444d; flex-wrap: wrap; }
@@ -165,6 +175,12 @@
     let appOnline = false;
     const modules = [
       { id: 'dashboard', label: '首页驾驶舱' },
+      { id: 'kuaishou', label: '快手', subs: [
+        { id: 'ks-conn', label: '连接状态' },
+        { id: 'ks-room', label: '直播间设置' },
+        { id: 'ks-diagnose', label: '一键诊断' },
+        { id: 'ks-features', label: '点歌能力' }
+      ]},
       { id: 'song-mgmt', label: '点歌管理', subs: [
         { id: 'queue', label: '点歌队列' },
         { id: 'policy', label: '点歌设置' },
@@ -181,6 +197,7 @@
         { id: 'welcome', label: '欢迎消息' }
       ]},
       { id: 'settings', label: '系统设置', subs: [
+        { id: 'machine-setup', label: '换机部署' },
         { id: 'banvote', label: '禁言投票' },
         { id: 'cleanup', label: '数据清理' },
         { id: 'opslog', label: '运营日志' }
@@ -384,7 +401,9 @@
         templates: renderTemplates, random: renderRandom, gifts: renderGiftRules,
         policy: renderPolicy, levels: renderLevels, keywords: renderKeywords,
         welcome: renderWelcome, banvote: renderBanVote, blacklist: renderBlacklist,
-        cleanup: renderCleanup, playback: renderPlayback, opslog: renderOpsLog
+        cleanup: renderCleanup, playback: renderPlayback, opslog: renderOpsLog,
+        'ks-conn': renderKsConn, 'ks-room': renderKsRoom, 'ks-diagnose': renderKsDiagnose, 'ks-features': renderKsFeatures,
+        'machine-setup': renderMachineSetup
       };
       try {
         await (m[pageId] || renderDashboard)();
@@ -427,6 +446,7 @@
       try {
         const [s, q] = await Promise.all([api('GET', '/api/status'), api('GET', '/api/queue')]);
         const dy = s.douyinOnline ? '<span class="dot-green">🟢 在线</span>' : '<span class="dot-red">🔴 断开</span>';
+        const ks = s.kuaishouOnline ? '<span class="dot-green">🟢 在线</span>' : '<span class="dot-red">🔴 断开</span>';
         const queuePreview = (q.waiting || []).slice(0, 5).map(i =>
           `<tr><td>${i.index}</td><td>${esc(i.nickname)}</td><td>${esc(i.songName)}</td></tr>`).join('')
           || '<tr><td colspan="3" class="hint">队列为空</td></tr>';
@@ -437,6 +457,7 @@
             <h3>服务状态</h3>
             <div class="grid">
               <div class="stat"><label>抖音连接</label><div>${dy} ${esc(s.danmakuConnection || '')}</div></div>
+              <div class="stat"><label>快手连接</label><div>${ks} ${esc(s.kuaishouConnection || '')}</div></div>
               <div class="stat"><label>酷狗状态</label><div>${kugouStatusLabel(s)} ${esc(s.kugouLoginStatus || '')}${s.kugouFullPlaybackAvailable ? '' : (s.kugouFullPlaybackReason ? ' · ' + esc(s.kugouFullPlaybackReason) : '')}</div></div>
               <div class="stat"><label>点歌开关</label><div>${s.songRequestEnabled ? '<span class="badge ok">开启</span>' : '<span class="badge warn">关闭</span>'}</div></div>
               <div class="stat"><label>运行时长</label><div>${esc(s.uptime || '-')}</div></div>
@@ -482,8 +503,173 @@
       }
     }
 
+    async function renderKsConn() {
+      const d = await api('GET', '/api/kuaishou');
+      const online = d.online ? '<span class="badge ok">已连接</span>' : '<span class="badge warn">未连接</span>';
+      const sidecar = d.sidecarOk ? '<span class="dot-green">🟢 可达</span>' : '<span class="dot-red">🔴 不可达</span>';
+      const cookieBadge = d.cookieStale
+        ? '<span class="badge warn">需更新</span>'
+        : (d.cookieConfigured ? '<span class="badge ok">已配置</span>' : '<span class="badge warn">未配置</span>');
+      document.getElementById('main').innerHTML = `
+        <p class="module-title">快手 · 连接状态</p>
+        <h2>快手连接</h2>
+        <div class="panel">
+          <div class="grid">
+            <div class="stat"><label>侧车 (ks-demo)</label><div>${sidecar}</div></div>
+            <div class="stat"><label>通道</label><div>${online} ${esc(d.connection || '')}</div></div>
+            <div class="stat"><label>房间号</label><div>${esc(d.roomId || '-')}</div></div>
+            <div class="stat"><label>房间名</label><div>${esc(d.roomTitle || '-')}</div></div>
+            <div class="stat"><label>启用</label><div>${d.enabled ? '<span class="badge ok">开</span>' : '<span class="badge warn">关</span>'}</div></div>
+            <div class="stat"><label>Cookie</label><div>${cookieBadge} ${esc(d.cookieHint || '')}</div></div>
+            <div class="stat"><label>侧车地址</label><div>${esc(d.baseUrl || '')}</div></div>
+          </div>
+          <div class="row" style="margin-top:14px">
+            <button type="button" onclick="ksConnect()">连接快手</button>
+            <button type="button" class="sec" onclick="ksDisconnect()">断开</button>
+            <button type="button" class="sec" onclick="showModule('ks-diagnose')">一键诊断</button>
+            <button type="button" class="sec" onclick="renderKsConn()">刷新</button>
+          </div>
+          <p class="hint" style="margin-top:12px">请先启动快手侧车：ks-demo 的 KsUiServer（默认 http://127.0.0.1:18900），再在「直播间设置」填房间号与 Cookie。音频路由见「播放控制」。</p>
+        </div>`;
+    }
+
+    async function renderKsRoom() {
+      const d = await api('GET', '/api/kuaishou');
+      const cookieWarn = d.cookieStale
+        ? `<p class="hint" style="color:#f4212e">Cookie 提示：${esc(d.cookieHint || '')}</p>`
+        : `<p class="hint">Cookie 状态：${esc(d.cookieHint || '已配置')}${d.cookieSavedAt ? `（保存于 ${esc(d.cookieSavedAt)}）` : ''}</p>`;
+      document.getElementById('main').innerHTML = `
+        <p class="module-title">快手 · 直播间设置</p>
+        <h2>直播间设置</h2>
+        <div class="panel">
+          <div class="form-grid">
+            <div class="form-field"><label>启用快手点歌</label>
+              <select id="ksEnabled"><option value="true" ${d.enabled?'selected':''}>开启</option><option value="false" ${!d.enabled?'selected':''}>关闭</option></select>
+            </div>
+            <div class="form-field"><label>侧车 BaseUrl</label>
+              <input id="ksBaseUrl" value="${escAttr(d.baseUrl || 'http://127.0.0.1:18900')}">
+            </div>
+            <div class="form-field"><label>房间号 roomId</label>
+              <input id="ksRoomId" value="${escAttr(d.roomId || '')}" placeholder="快手直播间房间号">
+            </div>
+            <div class="form-field"><label>轮询间隔(ms)</label>
+              <input id="ksPoll" type="number" value="${d.pollIntervalMs || 800}">
+            </div>
+          </div>
+          <div class="form-field" style="margin-top:10px"><label>Cookie（已配置：${esc(d.cookiePreview || '无')}；留空则不修改）</label>
+            <textarea id="ksCookie" placeholder="从 live.kuaishou.com 复制 Cookie，仅在需要更新时粘贴"></textarea>
+          </div>
+          ${cookieWarn}
+          <div class="row">
+            <button type="button" onclick="ksSaveSettings()">保存设置</button>
+            <button type="button" onclick="ksSaveAndConnect()">保存并连接</button>
+            <button type="button" class="sec" onclick="showModule('ks-diagnose')">一键诊断</button>
+          </div>
+          <p class="hint">Cookie 获取：浏览器打开 https://live.kuaishou.com 登录 → F12 → Network → 任意请求 → Request Headers 的 Cookie。</p>
+        </div>`;
+    }
+
+    async function renderKsDiagnose() {
+      const d = await api('GET', '/api/kuaishou/diagnose');
+      const rows = (d.checks || []).map(c => {
+        const badge = c.ok ? '<span class="badge ok">通过</span>' : '<span class="badge warn">异常</span>';
+        return `<tr><td>${esc(c.name)}</td><td>${badge}</td><td>${esc(c.detail || '')}</td></tr>`;
+      }).join('');
+      document.getElementById('main').innerHTML = `
+        <p class="module-title">快手 · 一键诊断</p>
+        <h2>快手链路诊断</h2>
+        <div class="panel">
+          <p>${d.ok ? '<span class="badge ok">全部就绪</span>' : '<span class="badge warn">需处理</span>'} ${esc(d.summary || '')}</p>
+          <p class="hint">BaseUrl：${esc(d.baseUrl || '')}</p>
+          <div class="row">
+            <button type="button" onclick="renderKsDiagnose()">重新检测</button>
+            <button type="button" class="sec" onclick="ksConnect()">连接快手</button>
+            <button type="button" class="sec" onclick="showModule('playback')">去配置音频</button>
+          </div>
+          <div class="table-wrap" style="margin-top:12px">
+            <table>
+              <tr><th>检查项</th><th>结果</th><th>详情</th></tr>
+              ${rows || '<tr><td colspan="3" class="hint">无数据</td></tr>'}
+            </table>
+          </div>
+        </div>`;
+    }
+
+    async function renderKsFeatures() {
+      document.getElementById('main').innerHTML = `
+        <p class="module-title">快手 · 点歌能力</p>
+        <h2>已接入能力（与抖音共用）</h2>
+        <div class="panel">
+          <p class="hint">快手弹幕接入后，走与抖音相同的点歌/互动链路。配置请在左侧对应模块修改。</p>
+          <table>
+            <tr><th>#</th><th>能力</th><th>管理入口</th></tr>
+            <tr><td>1-6</td><td>点歌指令 / 搜歌 / 确认 / 取链入队 / 成功回复 / 播放</td><td>点歌管理</td></tr>
+            <tr><td>7-10</td><td>防刷去重</td><td>自动</td></tr>
+            <tr><td>11-16</td><td>开关 / 模式 / 积分 / 等级 / 黑名单 / 插队</td><td>点歌设置 · 等级权限 · 用户中心</td></tr>
+            <tr><td>17-20</td><td>队列与播放控制</td><td>点歌队列 · 播放控制</td></tr>
+            <tr><td>21-22</td><td>切歌 / 查积分</td><td>弹幕指令</td></tr>
+            <tr><td>23-24</td><td>关键词自动回复</td><td>回复管理 → 关键词回复</td></tr>
+            <tr><td>25-28</td><td>队列 UI / 策略 / 话术模板 / AI 点歌播报</td><td>各对应模块</td></tr>
+          </table>
+          <div class="row" style="margin-top:12px">
+            <button class="sm" onclick="showModule('song-mgmt')">打开点歌管理</button>
+            <button class="sm sec" onclick="showModule('reply')">打开回复管理</button>
+            <button class="sm sec" onclick="showModule('playback')">打开播放控制</button>
+          </div>
+        </div>`;
+    }
+
+    function escAttr(s) {
+      return String(s ?? '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+    }
+
+    async function ksSaveSettings() {
+      const cookie = (document.getElementById('ksCookie')?.value || '').trim();
+      const body = {
+        enabled: document.getElementById('ksEnabled').value === 'true',
+        baseUrl: document.getElementById('ksBaseUrl').value.trim(),
+        roomId: document.getElementById('ksRoomId').value.trim(),
+        pollIntervalMs: parseInt(document.getElementById('ksPoll').value, 10) || 800
+      };
+      if (cookie) body.cookie = cookie;
+      const r = await api('PUT', '/api/kuaishou/settings', body);
+      alert(r.ok ? '已保存' : (r.message || '保存失败'));
+      await renderKsRoom();
+    }
+
+    async function ksSaveAndConnect() {
+      await ksSaveSettings();
+      await ksConnect();
+    }
+
+    async function ksConnect() {
+      const r = await api('POST', '/api/kuaishou/connect');
+      alert(r.ok ? '已连接快手' : (r.message || '连接失败'));
+      await renderKsConn();
+    }
+
+    async function ksDisconnect() {
+      await api('POST', '/api/kuaishou/disconnect');
+      await renderKsConn();
+    }
+
     async function renderPlayback() {
-      const s = await api('GET', '/api/status');
+      const [s, audio] = await Promise.all([
+        api('GET', '/api/status'),
+        api('GET', '/api/audio/output')
+      ]);
+      const devices = audio.devices || [];
+      const songOpts = devices.map(d =>
+        `<option value="${d.deviceNumber}" ${d.deviceNumber === audio.song?.outputDeviceNumber ? 'selected' : ''}>${esc(d.name)}${d.deviceNumber < 0 ? '（系统默认）' : ''}</option>`
+      ).join('');
+      const aiDyNum = audio.aiDouyin?.outputDeviceNumber ?? audio.ai?.outputDeviceNumber;
+      const aiKsNum = audio.aiKuaishou?.outputDeviceNumber ?? audio.ai?.outputDeviceNumber;
+      const aiDyOpts = devices.map(d =>
+        `<option value="${d.deviceNumber}" ${d.deviceNumber === aiDyNum ? 'selected' : ''}>${esc(d.name)}${d.deviceNumber < 0 ? '（系统默认）' : ''}</option>`
+      ).join('');
+      const aiKsOpts = devices.map(d =>
+        `<option value="${d.deviceNumber}" ${d.deviceNumber === aiKsNum ? 'selected' : ''}>${esc(d.name)}${d.deviceNumber < 0 ? '（系统默认）' : ''}</option>`
+      ).join('');
       document.getElementById('main').innerHTML = `
         <h2>播放控制</h2>
         <div class="panel">
@@ -495,13 +681,45 @@
             <div class="stat"><label>剩余</label><div>${fmtTime(s.remainingSec)}</div></div>
           </div>
           <div class="row">
-            <button onclick="api('POST','/api/playback/skip').then(renderPlayback)">下一首</button>
-            <button onclick="api('POST','/api/playback/pause').then(renderPlayback)">暂停</button>
-            <button onclick="api('POST','/api/playback/resume').then(renderPlayback)">恢复</button>
-            <button onclick="kugouRelogin()">重新登录酷狗</button>
-            <button onclick="toggleSongRequest(${!s.songRequestEnabled})">${s.songRequestEnabled ? '关闭点歌' : '开启点歌'}</button>
-            <button class="sec" onclick="api('POST','/api/playback/clear-queue').then(renderPlayback)">清空队列</button>
+            <button type="button" onclick="api('POST','/api/playback/skip').then(renderPlayback)">下一首</button>
+            <button type="button" onclick="api('POST','/api/playback/pause').then(renderPlayback)">暂停</button>
+            <button type="button" onclick="api('POST','/api/playback/resume').then(renderPlayback)">恢复</button>
+            <button type="button" onclick="kugouRelogin()">重新登录酷狗</button>
+            <button type="button" onclick="toggleSongRequest(${!s.songRequestEnabled})">${s.songRequestEnabled ? '关闭点歌' : '开启点歌'}</button>
+            <button type="button" class="sec" onclick="api('POST','/api/playback/clear-queue').then(renderPlayback)">清空队列</button>
           </div>
+        </div>
+        <div class="panel">
+          <h3>音频输出（双通道 AI / VB-CABLE）</h3>
+          <p class="hint" style="white-space:pre-line">${esc(audio.hint || '')}</p>
+          <div class="form-grid">
+            <div class="form-field">
+              <label>歌曲输出设备</label>
+              <select id="songOutDev">${songOpts}</select>
+            </div>
+            <div class="form-field">
+              <label>抖音 AI 口播</label>
+              <select id="aiDyOutDev">${aiDyOpts}</select>
+            </div>
+            <div class="form-field">
+              <label>快手 AI 口播</label>
+              <select id="aiKsOutDev" data-separate="${audio.aiKuaishou?.separate ? '1' : '0'}" data-initial="${aiKsNum}">${aiKsOpts}</select>
+            </div>
+          </div>
+          <div class="row" style="margin-top:10px">
+            <label style="display:flex;align-items:center;gap:6px;width:auto;margin:0;flex:1 1 180px">
+              <input type="checkbox" id="syncAiDyOut" style="width:auto;margin:0" ${audio.aiDouyin?.outputDeviceNumber === audio.song?.outputDeviceNumber ? 'checked' : ''}>
+              抖音 AI 跟歌曲同设备
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;width:auto;margin:0;flex:1 1 180px">
+              <input type="checkbox" id="syncAiKsOut" style="width:auto;margin:0" ${audio.aiKuaishou?.separate && audio.aiKuaishou?.outputDeviceNumber === audio.song?.outputDeviceNumber ? 'checked' : ''}>
+              快手 AI 跟歌曲同设备
+            </label>
+            <button type="button" onclick="saveAudioOutput()">保存音频设备</button>
+            <button type="button" class="sec" onclick="pickDualCablePreset()">推荐双通道预设</button>
+            <button type="button" class="sec" onclick="renderPlayback()">刷新设备列表</button>
+          </div>
+          <p class="hint" style="margin-top:8px">当前：歌曲 → ${esc(audio.song?.resolvedName || '-')}；抖音AI → ${esc(audio.aiDouyin?.resolvedName || audio.ai?.resolvedName || '-')}；快手AI → ${esc(audio.aiKuaishou?.resolvedName || '-')}。改设备后<strong>下一首歌 / 下一句 AI</strong>生效。</p>
         </div>
         <div class="panel">
           <h3>随机补位</h3>
@@ -511,6 +729,102 @@
             <button class="sm" onclick="api('POST','/api/playback/random-fill',{enabled:true}).then(()=>alert('已触发随机补位'))">立即补位</button>
           </div>
         </div>`;
+      const syncDy = document.getElementById('syncAiDyOut');
+      const syncKs = document.getElementById('syncAiKsOut');
+      const aiDySel = document.getElementById('aiDyOutDev');
+      const aiKsSel = document.getElementById('aiKsOutDev');
+      const songSel = document.getElementById('songOutDev');
+      const applySync = () => {
+        if (aiDySel) {
+          aiDySel.disabled = !!(syncDy && syncDy.checked);
+          if (syncDy && syncDy.checked && songSel) aiDySel.value = songSel.value;
+        }
+        if (aiKsSel) {
+          aiKsSel.disabled = !!(syncKs && syncKs.checked);
+          if (syncKs && syncKs.checked && songSel) aiKsSel.value = songSel.value;
+        }
+      };
+      if (syncDy) syncDy.onchange = applySync;
+      if (syncKs) syncKs.onchange = applySync;
+      if (songSel) songSel.onchange = applySync;
+      applySync();
+    }
+
+    async function saveAudioOutput() {
+      const songSel = document.getElementById('songOutDev');
+      const aiDySel = document.getElementById('aiDyOutDev');
+      const aiKsSel = document.getElementById('aiKsOutDev');
+      const syncDy = document.getElementById('syncAiDyOut')?.checked;
+      const syncKs = document.getElementById('syncAiKsOut')?.checked;
+      const songNum = parseInt(songSel.value, 10);
+      const songName = songSel.options[songSel.selectedIndex]?.text?.replace('（系统默认）', '') || '';
+      const body = {
+        songDeviceNumber: songNum,
+        songDeviceName: songName,
+        syncAiToSong: !!syncDy,
+        syncKuaishouAiToSong: !!syncKs
+      };
+      if (!syncDy && aiDySel) {
+        body.aiDeviceNumber = parseInt(aiDySel.value, 10);
+        body.aiDeviceName = aiDySel.options[aiDySel.selectedIndex]?.text?.replace('（系统默认）', '') || '';
+      }
+      if (!syncKs && aiKsSel) {
+        const ksNum = parseInt(aiKsSel.value, 10);
+        const initial = parseInt(aiKsSel.dataset.initial || '', 10);
+        const wasSeparate = aiKsSel.dataset.separate === '1';
+        // 未单独配置且未改下拉时不要写入，保持「跟随抖音」回退，避免误固化
+        if (wasSeparate || ksNum !== initial) {
+          body.aiKuaishouDeviceNumber = ksNum;
+          body.aiKuaishouDeviceName = aiKsSel.options[aiKsSel.selectedIndex]?.text?.replace('（系统默认）', '') || '';
+        }
+      }
+      const r = await api('PUT', '/api/audio/output', body);
+      alert(r.ok ? '已保存音频输出设备' : (r.message || '保存失败'));
+      await renderPlayback();
+    }
+
+    function findCableOptionIndex(sel) {
+      if (!sel) return -1;
+      let found = -1;
+      for (let i = 0; i < sel.options.length; i++) {
+        const t = (sel.options[i].text || '').toLowerCase();
+        if (t.includes('cable') && t.includes('input')) { found = i; break; }
+        if (found < 0 && t.includes('cable')) found = i;
+        if (found < 0 && (t.includes('voicemeeter') || t.includes('vb-audio'))) found = i;
+      }
+      return found;
+    }
+
+    function pickDualCablePreset() {
+      const songSel = document.getElementById('songOutDev');
+      const aiDySel = document.getElementById('aiDyOutDev');
+      const aiKsSel = document.getElementById('aiKsOutDev');
+      const found = findCableOptionIndex(songSel);
+      if (found < 0) {
+        alert('未找到 CABLE Input。请先安装 VB-CABLE 并重启电脑，再点「刷新设备列表」。');
+        return;
+      }
+      songSel.selectedIndex = found;
+      if (aiKsSel) aiKsSel.selectedIndex = found;
+      // 抖音 AI：尽量选系统默认，避免打进 CABLE 被快手采到
+      if (aiDySel) {
+        let defIdx = 0;
+        for (let i = 0; i < aiDySel.options.length; i++) {
+          if (parseInt(aiDySel.options[i].value, 10) < 0) { defIdx = i; break; }
+        }
+        aiDySel.selectedIndex = defIdx;
+      }
+      const syncDy = document.getElementById('syncAiDyOut');
+      const syncKs = document.getElementById('syncAiKsOut');
+      if (syncDy) syncDy.checked = false;
+      if (syncKs) syncKs.checked = true;
+      if (aiDySel) aiDySel.disabled = false;
+      if (aiKsSel) aiKsSel.disabled = true;
+      saveAudioOutput();
+    }
+
+    function pickCableDevice() {
+      pickDualCablePreset();
     }
 
     async function refreshEmergencyState() {
@@ -1186,6 +1500,93 @@
         cooldownSeconds: +document.getElementById('wCd').value
       });
       alert('已保存');
+    }
+
+    let _machineSetupLastResultHtml = '';
+
+    async function renderMachineSetup(opts) {
+      const keepResult = !!(opts && opts.keepResult);
+      const st = await api('GET', '/api/machine-setup/status');
+      const rows = (st.components || []).map(c => {
+        const badge = c.state === 'ok' ? '<span class="badge ok">就绪</span>'
+          : c.state === 'needs_reboot' ? '<span class="badge warn">需重启</span>'
+          : c.state === 'broken' ? '<span class="badge warn">未配置</span>'
+          : '<span class="badge warn">缺失</span>';
+        const installBtn = c.canInstall
+          ? `<button type="button" class="sm" onclick="machineSetupInstall('${escAttr(c.id)}')">安装此项</button>`
+          : '';
+        return `<tr>
+          <td>${esc(c.name)}<div class="hint">${esc(c.category || '')}</div></td>
+          <td>${badge}</td>
+          <td>${esc(c.detail || '')}${c.fixHint ? `<div class="hint">${esc(c.fixHint)}</div>` : ''}</td>
+          <td>${installBtn}</td>
+        </tr>`;
+      }).join('');
+      const hints = (st.packHints || []).map(h => `<li>${esc(h)}</li>`).join('');
+      const resultBlock = keepResult && _machineSetupLastResultHtml
+        ? `<div id="machineSetupResult" class="panel">${_machineSetupLastResultHtml}</div>`
+        : `<div id="machineSetupResult" class="panel hidden"></div>`;
+      document.getElementById('main').innerHTML = `
+        <p class="module-title">系统设置 · 换机部署</p>
+        <h2>换机一键部署</h2>
+        <div class="panel">
+          <div class="grid">
+            <div class="stat"><label>总览</label><div>${esc(st.summary || '-')}</div></div>
+            <div class="stat"><label>安装包目录</label><div style="font-size:12px">${esc(st.kitRoot || '')}</div></div>
+          </div>
+          <p class="hint" style="margin-top:10px">把旧电脑上的侧车/VB-CABLE 安装包按 README 放进安装包目录，拷到新电脑后点「一键安装全部」。失败会显示具体原因。</p>
+          <div class="row">
+            <button type="button" onclick="machineSetupInstall('all')">一键安装全部</button>
+            <button type="button" class="sec" onclick="machineSetupInstall('sidecars')">只装侧车文件</button>
+            <button type="button" class="sec" onclick="machineSetupInstall('vbcable')">只装 VB-CABLE</button>
+            <button type="button" class="sec" onclick="machineSetupInstall('ai-speech')">只装 AI 语音</button>
+            <button type="button" class="sec" onclick="machineSetupInstall('ollama-model')">只拉 AI 模型</button>
+            <button type="button" class="sec" onclick="machineSetupInstall('audio-route')">配置音频到 CABLE</button>
+            <button type="button" class="sec" onclick="api('POST','/api/machine-setup/open-kit-folder').then(r=>r.ok||alert(r.message||'打开失败'))">打开安装包目录</button>
+            <button type="button" class="sec" onclick="_machineSetupLastResultHtml='';renderMachineSetup()">重新诊断</button>
+          </div>
+        </div>
+        <div class="panel">
+          <h3>组件状态</h3>
+          <div class="table-wrap">
+            <table>
+              <tr><th>组件</th><th>状态</th><th>详情</th><th>操作</th></tr>
+              ${rows || '<tr><td colspan="4" class="hint">无数据</td></tr>'}
+            </table>
+          </div>
+        </div>
+        <div class="panel">
+          <h3>打包提示</h3>
+          <ul class="hint" style="padding-left:18px;line-height:1.7">${hints}</ul>
+        </div>
+        ${resultBlock}`;
+    }
+
+    async function machineSetupInstall(id) {
+      const tip = id === 'vbcable' ? '将弹出 UAC，请点「是」允许管理员安装驱动…' : '正在安装，请稍候…';
+      if (!confirm(`确认执行安装：${id}？\n${tip}`)) return;
+      let box = document.getElementById('machineSetupResult');
+      if (box) {
+        box.classList.remove('hidden');
+        box.innerHTML = `<h3>安装中</h3><p class="hint">${esc(tip)}</p>`;
+      }
+      try {
+        const r = await api('POST', '/api/machine-setup/install', { componentId: id === 'all' ? null : id });
+        const steps = (r.steps || []).map(s => {
+          const ok = s.skipped ? '<span class="badge">跳过</span>' : (s.success ? '<span class="badge ok">成功</span>' : '<span class="badge warn">失败</span>');
+          const reason = s.failureReason ? `<div style="color:#f4212e;margin-top:4px"><b>原因：</b>${esc(s.failureReason)}</div>` : '';
+          const msg = s.message ? `<div class="hint">${esc(s.message)}</div>` : '';
+          const log = s.logTail ? `<div class="hint">log: ${esc(s.logTail)}</div>` : '';
+          return `<tr><td>${esc(s.name || s.componentId)}</td><td>${ok}</td><td>${reason}${msg}${log}</td></tr>`;
+        }).join('');
+        _machineSetupLastResultHtml = `
+            <h3>安装结果</h3>
+            <p>${r.ok ? '<span class="badge ok">全部成功</span>' : '<span class="badge warn">存在失败</span>'} ${esc(r.summary || '')}</p>
+            <div class="table-wrap"><table><tr><th>步骤</th><th>结果</th><th>说明</th></tr>${steps}</table></div>`;
+        await renderMachineSetup({ keepResult: true });
+      } catch (e) {
+        alert('安装请求失败：' + (e.message || e));
+      }
     }
 
     async function renderBanVote() {

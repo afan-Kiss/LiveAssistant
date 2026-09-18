@@ -147,6 +147,12 @@ public sealed class UserRepository
     }
 
     public UserProfile? FindByNickname(string nickname)
+        => FindByNickname(nickname, platform: null);
+
+    /// <summary>
+    /// 按昵称查找。platform=kuaishou 仅匹配 ks: 用户；platform=douyin 排除 ks:；null 不限。
+    /// </summary>
+    public UserProfile? FindByNickname(string nickname, string? platform)
     {
         if (string.IsNullOrWhiteSpace(nickname))
         {
@@ -155,11 +161,36 @@ public sealed class UserRepository
 
         using var conn = _db.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
-            SELECT user_id, nickname, role, status, points, level, request_count, last_request_at,
-                   song_permission_credits, song_permission_unlimited, updated_at
-            FROM users WHERE nickname = $nick COLLATE NOCASE LIMIT 1
-            """;
+        var p = (platform ?? "").Trim().ToLowerInvariant();
+        if (p is "kuaishou" or "ks")
+        {
+            cmd.CommandText = """
+                SELECT user_id, nickname, role, status, points, level, request_count, last_request_at,
+                       song_permission_credits, song_permission_unlimited, updated_at
+                FROM users
+                WHERE nickname = $nick COLLATE NOCASE AND user_id LIKE 'ks:%'
+                ORDER BY updated_at DESC LIMIT 1
+                """;
+        }
+        else if (p is "douyin" or "dy")
+        {
+            cmd.CommandText = """
+                SELECT user_id, nickname, role, status, points, level, request_count, last_request_at,
+                       song_permission_credits, song_permission_unlimited, updated_at
+                FROM users
+                WHERE nickname = $nick COLLATE NOCASE AND user_id NOT LIKE 'ks:%'
+                ORDER BY updated_at DESC LIMIT 1
+                """;
+        }
+        else
+        {
+            cmd.CommandText = """
+                SELECT user_id, nickname, role, status, points, level, request_count, last_request_at,
+                       song_permission_credits, song_permission_unlimited, updated_at
+                FROM users WHERE nickname = $nick COLLATE NOCASE LIMIT 1
+                """;
+        }
+
         cmd.Parameters.AddWithValue("$nick", nickname.Trim());
         using var reader = cmd.ExecuteReader();
         return reader.Read() ? ReadUser(reader) : null;

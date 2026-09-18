@@ -243,8 +243,8 @@ public sealed class AiSpeechServiceLauncher
                         FileName = "cmd.exe",
                         Arguments = args,
                         WorkingDirectory = workDir,
-                        UseShellExecute = true,
-                        WindowStyle = ProcessWindowStyle.Minimized
+                        UseShellExecute = false,
+                        CreateNoWindow = true
                     };
                     Process.Start(psi);
                     _lastTtsStartUtc = DateTime.UtcNow;
@@ -267,10 +267,11 @@ public sealed class AiSpeechServiceLauncher
             {
                 var psi = new ProcessStartInfo
                 {
-                    FileName = script,
+                    FileName = "cmd.exe",
+                    Arguments = $"/c \"{script}\"",
                     WorkingDirectory = Path.GetDirectoryName(script) ?? "",
-                    UseShellExecute = true,
-                    WindowStyle = ProcessWindowStyle.Minimized
+                    UseShellExecute = false,
+                    CreateNoWindow = true
                 };
                 Process.Start(psi);
                 _lastTtsStartUtc = DateTime.UtcNow;

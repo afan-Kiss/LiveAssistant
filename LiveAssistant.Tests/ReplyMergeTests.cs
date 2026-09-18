@@ -1,4 +1,5 @@
 using LiveAssistant.Config;
+using LiveAssistant.Models;
 using LiveAssistant.Services;
 using Xunit;
 
@@ -48,10 +49,10 @@ public sealed class ReplyMergeTests
             douyin,
             log,
             settings,
-            sendMention: (webRid, userId, content, _) =>
+            sendMention: (webRid, userId, content, _, _) =>
             {
                 sends.Add((userId, content));
-                return Task.FromResult(true);
+                return Task.FromResult(new MentionSendResult { Ok = true });
             });
 
         queue.EnqueueSongRequestReply("rid", "u1", "A", "歌1", 1);

@@ -202,11 +202,10 @@ public sealed class AiSpeechCoordinator : IDisposable
         lock (_speedLock) _latestSpeed = speed;
     }
 
-    public void ApplyDeviceFromSettings()
+    public void ApplyDeviceFromSettings(string? platform = null)
     {
-        var device = AudioOutputDevices.ResolveDeviceNumber(
-            Settings.OutputDeviceName,
-            Settings.OutputDeviceNumber);
+        var (name, number) = Settings.ResolveOutputDevice(platform);
+        var device = AudioOutputDevices.ResolveDeviceNumber(name, number);
         _player.SetDeviceNumber(device);
     }
 
@@ -229,7 +228,7 @@ public sealed class AiSpeechCoordinator : IDisposable
         _ollama.Configure(Settings.OllamaUrl, TimeSpan.FromSeconds(Settings.OllamaTimeoutSeconds));
         _tts.Configure(Settings.TtsUrl, TimeSpan.FromSeconds(Settings.TtsTimeoutSeconds));
         ApplyDeviceFromSettings();
-        _player.SetVolumePercent(Math.Clamp(Settings.VolumePercent <= 0 ? 180 : Settings.VolumePercent, 50, 200));
+        _player.SetVolumePercent(Math.Clamp(Settings.VolumePercent <= 0 ? 120 : Settings.VolumePercent, 50, 200));
         _config.Save();
         NotifyStatus();
     }
@@ -486,9 +485,10 @@ public sealed class AiSpeechCoordinator : IDisposable
             }
 
             var content = item.Content.Trim();
+            var platform = NormalizePlatform(item.Platform, item.RoomKey);
             if (!RoomConversationContext.IsNoise(content))
             {
-                _roomContext.Add(item.UserId, item.Nickname, content);
+                _roomContext.Add(item.UserId, item.Nickname, content, platform);
             }
 
             _userContext.AddUserMessage(item.UserId, content);
@@ -503,6 +503,8 @@ public sealed class AiSpeechCoordinator : IDisposable
                 ScoreDetail = scored.Detail,
                 ReceivedAt = item.Timestamp == default ? DateTime.Now : item.Timestamp,
                 EnqueuedAt = DateTime.UtcNow,
+                Platform = platform,
+                RoomKey = item.RoomKey ?? "",
                 Kind = AiSpeechEventKind.Danmaku,
                 Priority = AiSpeechPriority.DanmakuImportant,
                 EmotionRequested = Settings.Emotion,
@@ -512,7 +514,7 @@ public sealed class AiSpeechCoordinator : IDisposable
 
             _metrics.NoteReceived();
             _log.AiInfo(
-                $"AI_DANMAKU_RECEIVED task={task.TaskId} room={_config.Settings.Douyin.WebRid} user={MaskId(task.UserId)} nick={task.Nickname} len={task.Content.Length} score={task.Score} enter_ai=1 detail={task.ScoreDetail}");
+                $"AI_DANMAKU_RECEIVED task={task.TaskId} platform={task.Platform} room={task.RoomKey} user={MaskId(task.UserId)} nick={task.Nickname} len={task.Content.Length} score={task.Score} enter_ai=1 detail={task.ScoreDetail}");
 
             Enqueue(task);
         }
@@ -562,7 +564,8 @@ public sealed class AiSpeechCoordinator : IDisposable
             }
 
             var count = gift.Count > 0 ? gift.Count : Math.Max(1, gift.RepeatCount);
-            if (!_giftBuffer.TryAdd(gift.UserId, gift.Nickname, gift.GiftName, count, out var skipReason))
+            var platform = NormalizePlatform(null, gift.RoomKey);
+            if (!_giftBuffer.TryAdd(gift.UserId, gift.Nickname, gift.GiftName, count, platform, gift.RoomKey ?? "", out var skipReason))
             {
                 LogEventSkip("gift", skipReason);
                 _log.AiInfo($"AI_GIFT_SKIP reason={skipReason}");
@@ -570,7 +573,7 @@ public sealed class AiSpeechCoordinator : IDisposable
             }
 
             _log.AiInfo(
-                $"AI_GIFT_BUFFER user={MaskId(gift.UserId)} nick={gift.Nickname} gift={gift.GiftName} count={count}");
+                $"AI_GIFT_BUFFER platform={platform} user={MaskId(gift.UserId)} nick={gift.Nickname} gift={gift.GiftName} count={count}");
             LogEventState("gift", buffered: true);
         }
         catch (Exception ex)
@@ -611,14 +614,14 @@ public sealed class AiSpeechCoordinator : IDisposable
                 return;
             }
 
-            if (!_welcomeBuffer.TryAdd(item.UserId, item.Nickname, out var skipReason))
+            if (!_welcomeBuffer.TryAdd(item.UserId, item.Nickname, NormalizePlatform(item.Platform, item.RoomKey), out var skipReason))
             {
                 LogEventSkip("member", skipReason);
                 _log.AiInfo($"AI_MEMBER_SKIP reason={skipReason}");
                 return;
             }
 
-            _log.AiInfo($"AI_MEMBER_BUFFER user={MaskId(item.UserId)} nick={item.Nickname}");
+            _log.AiInfo($"AI_MEMBER_BUFFER platform={NormalizePlatform(item.Platform, item.RoomKey)} user={MaskId(item.UserId)} nick={item.Nickname}");
             LogEventState("member", buffered: true);
         }
         catch (Exception ex)
@@ -685,6 +688,8 @@ public sealed class AiSpeechCoordinator : IDisposable
                 Nickname = e.Nickname ?? "",
                 MsgId = e.QueueItemId > 0 ? $"song-{e.QueueItemId}" : "",
                 Content = $"昵称：{nick}\n歌名：{song}\n歌手：{(string.IsNullOrWhiteSpace(artist) ? "未知" : artist)}\n前方排队：{ahead}",
+                Platform = NormalizePlatform(e.Platform, e.RoomKey),
+                RoomKey = e.RoomKey ?? "",
                 Kind = AiSpeechEventKind.SongRequest,
                 Priority = AiSpeechPriority.SongRequest,
                 EmotionRequested = Settings.Emotion,
@@ -697,7 +702,7 @@ public sealed class AiSpeechCoordinator : IDisposable
 
             _metrics.NoteReceived();
             _log.AiInfo(
-                $"AI_SONG_ENQUEUE task={task.TaskId} user={MaskId(task.UserId)} song={song} ahead={ahead}");
+                $"AI_SONG_ENQUEUE task={task.TaskId} platform={task.Platform} user={MaskId(task.UserId)} song={song} ahead={ahead}");
             Enqueue(task);
             LogEventState("song", enqueued: true);
         }
@@ -724,8 +729,8 @@ public sealed class AiSpeechCoordinator : IDisposable
                 count = parsed;
             }
 
-            _likeBuffer.Add(count);
-            _log.AiInfo($"AI_LIKE_BUFFER count={count} user={MaskId(item.UserId)}");
+            _likeBuffer.Add(count, NormalizePlatform(item.Platform, item.RoomKey));
+            _log.AiInfo($"AI_LIKE_BUFFER platform={NormalizePlatform(item.Platform, item.RoomKey)} count={count} user={MaskId(item.UserId)}");
         }
         catch (Exception ex)
         {
@@ -913,6 +918,8 @@ public sealed class AiSpeechCoordinator : IDisposable
                 UserId = item.UserId,
                 Nickname = item.Nickname,
                 Content = content,
+                Platform = string.IsNullOrWhiteSpace(item.Platform) ? "douyin" : item.Platform,
+                RoomKey = item.RoomKey ?? "",
                 Kind = AiSpeechEventKind.Gift,
                 Priority = AiSpeechPriority.Gift,
                 EmotionRequested = Settings.Emotion,
@@ -923,7 +930,7 @@ public sealed class AiSpeechCoordinator : IDisposable
                 EnqueuedAt = DateTime.UtcNow
             };
             _log.AiInfo(
-                $"AI_GIFT_FLUSH task={task.TaskId} user={MaskId(item.UserId)} gift={item.GiftName} count={item.Count} mode={(prebuilt != null ? "template" : "ai")}");
+                $"AI_GIFT_FLUSH task={task.TaskId} platform={task.Platform} user={MaskId(item.UserId)} gift={item.GiftName} count={item.Count} mode={(prebuilt != null ? "template" : "ai")}");
             _metrics.NoteReceived();
             Enqueue(task);
             _log.AiInfo($"AI_GIFT_ENQUEUE task={task.TaskId} queue={_scheduler.Count}");
@@ -956,6 +963,7 @@ public sealed class AiSpeechCoordinator : IDisposable
             {
                 Nickname = batch.Nicknames[0],
                 Content = $"请欢迎这些进房观众：{names}",
+                Platform = string.IsNullOrWhiteSpace(batch.Platform) ? "douyin" : batch.Platform,
                 Kind = AiSpeechEventKind.Welcome,
                 Priority = AiSpeechPriority.Welcome,
                 EmotionRequested = Settings.Emotion,
@@ -963,8 +971,8 @@ public sealed class AiSpeechCoordinator : IDisposable
                 PromptVersion = _prompts.GetVersion(),
                 EnqueuedAt = DateTime.UtcNow
             };
-            _log.AiInfo($"AI_MEMBER_FLUSH task={task.TaskId} names={names}");
-            _log.AiInfo($"AI_WELCOME_FLUSH task={task.TaskId} names={names}");
+            _log.AiInfo($"AI_MEMBER_FLUSH task={task.TaskId} platform={task.Platform} names={names}");
+            _log.AiInfo($"AI_WELCOME_FLUSH task={task.TaskId} platform={task.Platform} names={names}");
             _metrics.NoteReceived();
             Enqueue(task);
             _log.AiInfo($"AI_MEMBER_ENQUEUE task={task.TaskId} queue={_scheduler.Count}");
@@ -989,6 +997,7 @@ public sealed class AiSpeechCoordinator : IDisposable
             {
                 Nickname = "观众",
                 Content = $"刚才累计约 {batch.Count} 个点赞，请口头感谢一下。",
+                Platform = string.IsNullOrWhiteSpace(batch.Platform) ? "douyin" : batch.Platform,
                 Kind = AiSpeechEventKind.Like,
                 Priority = AiSpeechPriority.Like,
                 EmotionRequested = Settings.Emotion,
@@ -1129,11 +1138,6 @@ public sealed class AiSpeechCoordinator : IDisposable
         }
 
         var min = Math.Clamp(Settings.SummaryMinDanmaku, 1, 100);
-        if (_roomContext.Count < min)
-        {
-            return;
-        }
-
         var interval = Math.Clamp(Settings.SummaryIntervalSeconds, 30, 900);
         if (_lastSummaryEnqueueUtc != DateTime.MinValue
             && DateTime.UtcNow - _lastSummaryEnqueueUtc < TimeSpan.FromSeconds(interval))
@@ -1147,11 +1151,28 @@ public sealed class AiSpeechCoordinator : IDisposable
             return;
         }
 
+        // 按平台分桶：哪边弹幕够了就总结哪边，口播走对应设备
+        string? platform = null;
+        if (_roomContext.Count("douyin") >= min)
+        {
+            platform = "douyin";
+        }
+        else if (_roomContext.Count("kuaishou") >= min)
+        {
+            platform = "kuaishou";
+        }
+
+        if (platform == null)
+        {
+            return;
+        }
+
         _lastSummaryEnqueueUtc = DateTime.UtcNow;
         var task = new AiSpeechTask
         {
             Nickname = "系统",
             Content = "请根据最近直播间弹幕氛围说一句短总结。",
+            Platform = platform,
             Kind = AiSpeechEventKind.Summary,
             Priority = AiSpeechPriority.Summary,
             EmotionRequested = Settings.Emotion,
@@ -1159,7 +1180,7 @@ public sealed class AiSpeechCoordinator : IDisposable
             PromptVersion = _prompts.GetVersion(),
             EnqueuedAt = DateTime.UtcNow
         };
-        _log.AiInfo($"AI_SUMMARY_ENQUEUE task={task.TaskId} room_msgs={_roomContext.Count}");
+        _log.AiInfo($"AI_SUMMARY_ENQUEUE task={task.TaskId} platform={platform} room_msgs={_roomContext.Count(platform)}");
         Enqueue(task);
     }
 
@@ -1201,7 +1222,7 @@ public sealed class AiSpeechCoordinator : IDisposable
                     return FailResult(task, $"输出被拒绝：{sanitizedPre.RejectReason}", 0, totalSw.ElapsedMilliseconds);
                 }
 
-                cleaned = SpeechTextCleaner.Clean(sanitizedPre.Text, Settings.MaxReplyLength);
+                cleaned = SpeechTextCleaner.Clean(sanitizedPre.Text, ResolveCleanMaxChars(task));
                 if (string.IsNullOrWhiteSpace(cleaned))
                 {
                     _metrics.NoteSkip("EMPTY_REPLY");
@@ -1215,7 +1236,7 @@ public sealed class AiSpeechCoordinator : IDisposable
             else
             {
                 var userCtx = _userContext.GetMessages(task.UserId);
-                var roomCtx = _roomContext.AsChatMessages();
+                var roomCtx = _roomContext.AsChatMessages(task.Platform);
                 var summary = _roomSummary.Summary;
                 var currentMsg = BuildCurrentUserMessage(task);
                 var messages = ContextPromptBuilder.Build(
@@ -1276,7 +1297,7 @@ public sealed class AiSpeechCoordinator : IDisposable
                     return FailResult(task, $"输出被拒绝：{sanitized.RejectReason}", ollamaMs, totalSw.ElapsedMilliseconds);
                 }
 
-                cleaned = SpeechTextCleaner.Clean(sanitized.Text, Settings.MaxReplyLength);
+                cleaned = SpeechTextCleaner.Clean(sanitized.Text, ResolveCleanMaxChars(task));
                 if (string.IsNullOrWhiteSpace(cleaned))
                 {
                     _metrics.NoteSkip("EMPTY_REPLY");
@@ -1290,7 +1311,8 @@ public sealed class AiSpeechCoordinator : IDisposable
                     $"AI_GENERATE_OK task={task.TaskId} kind={task.Kind} ollama_ms={ollamaMs} reply_len={cleaned.Length} ai_reply_ms={ollamaMs}");
             }
 
-            if (_replyDupGuard.IsDuplicate(cleaned))
+            // 礼物答谢模板常重复（感谢送出 小心心），不能因文案相同跳过播报
+            if (task.Kind != AiSpeechEventKind.Gift && _replyDupGuard.IsDuplicate(cleaned))
             {
                 _metrics.NoteSkip("DUPLICATE_REPLY");
                 _log.AiInfo($"AI_DUPLICATE_SKIP task={task.TaskId} kind={task.Kind} reply_len={cleaned.Length}");
@@ -1304,7 +1326,7 @@ public sealed class AiSpeechCoordinator : IDisposable
             if (task.Kind == AiSpeechEventKind.Danmaku && !string.IsNullOrWhiteSpace(task.UserId))
             {
                 _userContext.AddHostReply(task.UserId, cleaned);
-                _roomSummary.UpdateFromMessages(_roomContext.GetRecent());
+                _roomSummary.UpdateFromMessages(_roomContext.GetRecent(task.Platform));
             }
             else if (task.Kind == AiSpeechEventKind.Summary)
             {
@@ -1328,9 +1350,10 @@ public sealed class AiSpeechCoordinator : IDisposable
                 $"AI_EMOTION task={task.TaskId} used={emotion.EmotionUsed} configured={(emotion.Configured ? 1 : 0)} speed={speed}");
 
             SetPhase(AiSpeechPhase.Synthesizing);
-            _log.AiInfo($"AI_TTS_START task={task.TaskId} emotion={emotion.EmotionUsed} speed={speed}");
+            var ttsText = SpeechTextCleaner.FormatForTts(cleaned);
+            _log.AiInfo($"AI_TTS_START task={task.TaskId} emotion={emotion.EmotionUsed} speed={speed} tts_chars={SpeechTextCleaner.CountSpeechChars(ttsText)}");
             var ttsSw = Stopwatch.StartNew();
-            var synth = await SynthesizeWithRetryAsync(cleaned, speed, emotion.ReferWavPath, playCt);
+            var synth = await SynthesizeWithRetryAsync(ttsText, speed, emotion.ReferWavPath, playCt);
             ttsSw.Stop();
             Interlocked.Exchange(ref _lastTtsMs, ttsSw.ElapsedMilliseconds);
 
@@ -1363,9 +1386,9 @@ public sealed class AiSpeechCoordinator : IDisposable
                 $"AI_TTS_OK task={task.TaskId} tts_ms={ttsSw.ElapsedMilliseconds} bytes={synth.AudioWav.Length}");
 
             SetPhase(AiSpeechPhase.Playing);
-            ApplyDeviceFromSettings();
+            ApplyDeviceFromSettings(task.Platform);
             ApplyPlaybackVolumeFromSettings(task.TaskId);
-            _log.AiInfo($"AI_AUDIO_PLAY_START task={task.TaskId}");
+            _log.AiInfo($"AI_AUDIO_PLAY_START task={task.TaskId} platform={task.Platform}");
             var playSw = Stopwatch.StartNew();
             try
             {
@@ -1588,12 +1611,46 @@ public sealed class AiSpeechCoordinator : IDisposable
         _likeBuffer.IntervalSeconds = Settings.LikeIntervalSeconds;
     }
 
+    /// <summary>点歌/礼物预置口播允许更长，避免歌名被砍半句。</summary>
+    private int ResolveCleanMaxChars(AiSpeechTask task)
+    {
+        var configured = Math.Clamp(Settings.MaxReplyLength, 10, 160);
+        return task.Kind switch
+        {
+            AiSpeechEventKind.SongRequest => Math.Max(configured, 120),
+            AiSpeechEventKind.Gift => Math.Max(configured, 80),
+            AiSpeechEventKind.Summary => Math.Max(configured, 80),
+            _ => configured
+        };
+    }
+
+    private static string NormalizePlatform(string? platform, string? roomKey = null)
+    {
+        var p = (platform ?? "").Trim().ToLowerInvariant();
+        if (p is "kuaishou" or "ks")
+        {
+            return "kuaishou";
+        }
+
+        if (p is "douyin" or "dy")
+        {
+            return "douyin";
+        }
+
+        if (KuaishouService.IsKuaishouRoom(roomKey))
+        {
+            return "kuaishou";
+        }
+
+        return "douyin";
+    }
+
     private static void ClampSettings(AiSpeechSettings s)
     {
         s.MinIntervalSeconds = Math.Clamp(s.MinIntervalSeconds, 3, 60);
         s.ReplyIntervalSeconds = Math.Clamp(s.ReplyIntervalSeconds <= 0 ? s.MinIntervalSeconds : s.ReplyIntervalSeconds, 3, 60);
         s.MaxQueueSize = Math.Clamp(s.MaxQueueSize, 1, 20);
-        s.MaxReplyLength = Math.Clamp(s.MaxReplyLength, 10, 120);
+        s.MaxReplyLength = Math.Clamp(s.MaxReplyLength, 10, 160);
         s.OllamaTimeoutSeconds = Math.Clamp(s.OllamaTimeoutSeconds, 10, 120);
         s.TtsTimeoutSeconds = Math.Clamp(s.TtsTimeoutSeconds, 10, 120);
         s.ScoreThreshold = Math.Clamp(s.ScoreThreshold, 0, 20);
@@ -1614,14 +1671,14 @@ public sealed class AiSpeechCoordinator : IDisposable
         s.SummaryMinDanmaku = Math.Clamp(s.SummaryMinDanmaku, 1, 100);
         if (s.Speed <= 0 || s.Speed > 3 || double.IsNaN(s.Speed) || double.IsInfinity(s.Speed))
         {
-            s.Speed = 1.0;
+            s.Speed = 0.95;
         }
         else
         {
             s.Speed = Math.Clamp(s.Speed, 0.5, 2.0);
         }
 
-        s.VolumePercent = Math.Clamp(s.VolumePercent <= 0 ? 180 : s.VolumePercent, 50, 200);
+        s.VolumePercent = Math.Clamp(s.VolumePercent <= 0 ? 120 : s.VolumePercent, 50, 200);
 
         if (string.IsNullOrWhiteSpace(s.Model))
         {
@@ -1652,7 +1709,7 @@ public sealed class AiSpeechCoordinator : IDisposable
 
     private void ApplyPlaybackVolumeFromSettings(string? taskId = null)
     {
-        var pct = Math.Clamp(Settings.VolumePercent <= 0 ? 180 : Settings.VolumePercent, 50, 200);
+        var pct = Math.Clamp(Settings.VolumePercent <= 0 ? 120 : Settings.VolumePercent, 50, 200);
         _player.SetVolumePercent(pct);
         _log.AiInfo($"AI_AUDIO_VOLUME task={taskId ?? "-"} volumePercent={pct} user_gain={pct / 100.0:F2}");
     }
@@ -1695,7 +1752,7 @@ public sealed class AiSpeechCoordinator : IDisposable
             return "";
         }
 
-        return $"u:{userId}|g:{giftId}|grp:{group}|r:{gift.RepeatCount}|c:{gift.Count}";
+        return $"u:{userId}|g:{giftId}|grp:{group}|r:{gift.RepeatCount}|c:{gift.Count}|room:{(gift.RoomKey ?? "").Trim()}";
     }
 
     private void PruneGiftAiDedupe_NoLock(DateTime now)
@@ -1764,7 +1821,7 @@ public sealed class AiSpeechCoordinator : IDisposable
 
     private bool IsDuplicateRecent(DanmakuItem item)
     {
-        var key = $"{item.UserId}|{OutboundReplyTracker.NormalizeContent(item.Content)}";
+        var key = $"{NormalizePlatform(item.Platform, item.RoomKey)}|{item.UserId}|{OutboundReplyTracker.NormalizeContent(item.Content)}";
         var now = DateTime.UtcNow;
         lock (_recentContentLock)
         {

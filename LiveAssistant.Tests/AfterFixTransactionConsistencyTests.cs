@@ -196,7 +196,7 @@ public sealed class AfterFixTransactionConsistencyTests : IDisposable
             new DouyinService(config.Settings.Douyin, log),
             log,
             new ReplySettings { MaxPerSecond = 50, MaxRetries = 0, SongRequestBatchWindowMs = 50 },
-            sendMention: (_, _, _, _) => Task.FromResult(true));
+            sendMention: (_, _, _, _, _) => Task.FromResult(new MentionSendResult { Ok = true }));
         var kugou = new KugouService(config.Settings.Kugou, log, new HttpClient(new KugouOkHandler())
         {
             BaseAddress = new Uri("http://127.0.0.1:17888/")

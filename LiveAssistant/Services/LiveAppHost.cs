@@ -3,6 +3,7 @@ using LiveAssistant.Config;
 using LiveAssistant.Database;
 using LiveAssistant.Models;
 using LiveAssistant.Services.AiSpeech;
+using LiveAssistant.Utils;
 
 namespace LiveAssistant.Services;
 
@@ -13,6 +14,8 @@ public sealed class LiveAppHost : IDisposable
     private readonly SystemMessageService _system;
     private readonly AppDatabase _db;
     private readonly DouyinService _douyin;
+    private readonly KuaishouService _kuaishou;
+    private readonly KuaishouDanmakuService _ksDanmaku;
     private readonly KugouService _kugou;
     private readonly QueueService _queue;
     private readonly ReplyService _reply;
@@ -55,10 +58,12 @@ public sealed class LiveAppHost : IDisposable
     private readonly UserDetailService _userDetail;
     private readonly ReplyTemplatePreviewService _templatePreview;
     private readonly AiSpeechCoordinator _aiSpeech;
+    private readonly MachineSetupService _machineSetup;
     private readonly DateTime _startedAt = DateTime.Now;
     private string _lastPlayedTrackKey = "";
     private CancellationTokenSource? _watchCts;
     private volatile bool _douyinSidecarOk;
+    private volatile bool _ksSidecarOk;
     private volatile bool _kugouSidecarOk;
     private volatile string _kugouLoginStatus = "未检测";
     private volatile string _kugouVipLabel = "";
@@ -71,6 +76,9 @@ public sealed class LiveAppHost : IDisposable
     private volatile string _currentTask = "空闲";
     private volatile bool _isRunning;
     private int _disposed;
+    /// <summary>限制弹幕处理并发，避免高峰期 Task 堆积拖垮线程池。</summary>
+    private readonly SemaphoreSlim _danmakuProcessGate = new(8, 8);
+    private DateTime _lastDanmakuOverloadLogUtc = DateTime.MinValue;
 
     public LiveAppHost()
     {
@@ -107,6 +115,7 @@ public sealed class LiveAppHost : IDisposable
         _settingsStore.ApplyDbToMemory();
 
         _douyin = new DouyinService(_config.Settings.Douyin, _log);
+        _kuaishou = new KuaishouService(_config, _log);
         _kugou = new KugouService(_config.Settings.Kugou, _log, dataDirectory: _config.DataDirectory);
         _queue = new QueueService(_db);
         _reply = new ReplyService(_config);
@@ -117,10 +126,14 @@ public sealed class LiveAppHost : IDisposable
             _config.Settings.Reply,
             outboundTracker: _outboundTracker,
             onSendFailed: msg => _system.Add(msg),
-            onSendSucceeded: content => _system.Add($"弹幕已发出：{TruncateForUi(content, 80)}"));
+            onSendSucceeded: content => _system.Add($"弹幕已发出：{TruncateForUi(content, 80)}"),
+            sendMention: SendPlatformMentionAsync);
         _random = new RandomPlaylistService(_config, _db);
         _playback = new PlaybackService(_log);
         _playback.SetVolume(_config.Settings.Playback.Volume);
+        _playback.SetDeviceNumber(AudioOutputDevices.ResolveDeviceNumber(
+            _config.Settings.Playback.OutputDeviceName,
+            _config.Settings.Playback.OutputDeviceNumber));
 
         _playbackCommands = new PlaybackCommandQueue(
             _config, _queue, _kugou, _random, _playback, _reply, _system, _log);
@@ -139,6 +152,7 @@ public sealed class LiveAppHost : IDisposable
             _config, _users, _queue, songBlacklist, _levelPermRepo, _userLevel, _giftRepo, _songRequestControl);
         _songRequest = new SongRequestService(_config, _kugou, _queue, _permission, _reply, _replyQueue, _system, _log);
         _gift = new GiftService(_config, _douyin, _giftRepo, _users, _userLevel, _giftRuleRepo, _log, _system, _reply, _replyQueue);
+        _ksDanmaku = new KuaishouDanmakuService(_kuaishou, _config, _log, _system, _gift, _outboundTracker);
         _giftCollector = new GiftCollectorService(_config, _douyin, _gift, _log, giftRepo: _giftRepo);
         _banVote = new BanVoteService(_config, _banVoteRepo, _users, _douyin, _replyQueue, _reply, _system, _log);
         _welcome = new WelcomeService(_config, _reply, _replyQueue, _system, _welcomeCooldownRepo);
@@ -178,8 +192,10 @@ public sealed class LiveAppHost : IDisposable
         _adminTunnel = new AdminTunnelService(_config, _log, _system);
         _aiSpeech = new AiSpeechCoordinator(_config, _log, _outboundTracker);
         _aiSpeech.StatusChanged += () => NotifyStateChanged();
+        _machineSetup = new MachineSetupService(_config, _log, _playback, _aiSpeech);
 
         _danmaku.DanmakuReceived += OnDanmakuReceived;
+        _ksDanmaku.DanmakuReceived += OnDanmakuReceived;
         _songRequest.RequestHandled += () =>
         {
             _health.RecordSongRequest();
@@ -213,6 +229,8 @@ public sealed class LiveAppHost : IDisposable
 
         StartSidecarWatchdog();
     }
+
+    public MachineSetupService MachineSetup => _machineSetup;
 
     public IReadOnlyList<string> GetMissingSidecarFiles() => _watchdog.GetMissingRequiredFiles();
 
@@ -255,8 +273,15 @@ public sealed class LiveAppHost : IDisposable
         return new RuntimeStatus
         {
             DouyinOnline = _douyinSidecarOk,
+            KuaishouOnline = _ksDanmaku.IsLiveConnected,
             KugouOnline = _kugouSidecarOk,
             DouyinStatus = _douyinSidecarOk ? "在线" : "离线",
+            KuaishouStatus = _ksSidecarOk ? "在线" : "离线",
+            KuaishouConnection = _ksDanmaku.ConnectionStatus,
+            KuaishouRoomId = string.IsNullOrWhiteSpace(_ksDanmaku.RoomId)
+                ? (_config.Settings.Kuaishou.RoomId ?? "")
+                : _ksDanmaku.RoomId,
+            KuaishouRoomTitle = _ksDanmaku.RoomTitle,
             KugouStatus = _kugouSidecarOk ? "在线" : "离线",
             KugouLoginStatus = _kugouSidecarOk ? _kugouLoginStatus : "离线",
             KugouVipLabel = _kugouVipLabel,
@@ -312,17 +337,40 @@ public sealed class LiveAppHost : IDisposable
         StartSidecarWatchdog();
 
         var webRid = _config.Settings.Douyin.WebRid;
-        if (string.IsNullOrWhiteSpace(webRid))
+        var ks = _config.Settings.Kuaishou;
+        var ksReady = ks.Enabled
+            && !string.IsNullOrWhiteSpace(ks.RoomId)
+            && !string.IsNullOrWhiteSpace(ks.Cookie);
+
+        if (string.IsNullOrWhiteSpace(webRid) && !ksReady)
         {
-            _system.Add("未配置 web_rid，请在设置中填写后点击「连接」");
+            _system.Add("未配置抖音 web_rid 或快手房间，请在设置/后台填写后连接");
             return;
         }
 
         _isRunning = true;
         _currentTask = "连接直播间";
-        await _danmaku.StartAsync(webRid, ct);
-        _gift.Start(webRid);
-        _giftCollector.StartGiftCollector(webRid);
+
+        if (!string.IsNullOrWhiteSpace(webRid))
+        {
+            await _danmaku.StartAsync(webRid, ct);
+            _gift.Start(webRid);
+            _giftCollector.StartGiftCollector(webRid);
+        }
+
+        if (ksReady)
+        {
+            try
+            {
+                await _ksDanmaku.StartAsync(ct);
+            }
+            catch (Exception ex)
+            {
+                _log.KuaishouWarn($"启动快手通道失败: {ex.Message}");
+                _system.Add($"快手连接失败：{ex.Message}");
+            }
+        }
+
         _currentTask = "监控中";
         _system.Add(_reply.Render("systemConnected", new Dictionary<string, string>()));
         await _engine.EnsurePlayingAsync();
@@ -334,6 +382,7 @@ public sealed class LiveAppHost : IDisposable
         _isRunning = false;
         _currentTask = "已停止";
         _danmaku.Stop();
+        _ksDanmaku.Stop();
         _giftCollector.StopGiftCollector();
         _gift.Stop();
         _engine.Stop();
@@ -348,6 +397,366 @@ public sealed class LiveAppHost : IDisposable
         await StartAsync(ct);
     }
 
+    public async Task ConnectKuaishouAsync(CancellationToken ct = default)
+    {
+        _config.Settings.Kuaishou.Enabled = true;
+        _config.Save();
+        _isRunning = true;
+        _currentTask = "连接快手直播间";
+        await _ksDanmaku.StartAsync(ct);
+        _currentTask = "监控中";
+        _system.Add(_reply.Render("systemConnected", new Dictionary<string, string>()));
+        await _engine.EnsurePlayingAsync();
+        NotifyStateChanged();
+    }
+
+    public void DisconnectKuaishou()
+    {
+        _ksDanmaku.Stop();
+        if (!_danmaku.IsRunning)
+        {
+            _isRunning = false;
+            _currentTask = "已停止";
+        }
+
+        _system.Add("已断开快手直播间");
+        NotifyStateChanged();
+    }
+
+    public void SaveKuaishouSettings(bool enabled, string baseUrl, string roomId, string? cookie, int? pollIntervalMs = null)
+    {
+        var ks = _config.Settings.Kuaishou;
+        var prevBase = ks.BaseUrl?.Trim() ?? "";
+        var wasRunning = _ksDanmaku.IsRunning || _ksDanmaku.WantConnected;
+        ks.Enabled = enabled;
+        if (!string.IsNullOrWhiteSpace(baseUrl))
+        {
+            ks.BaseUrl = baseUrl.Trim();
+        }
+
+        ks.RoomId = roomId?.Trim() ?? "";
+        if (cookie != null && cookie.Trim().Length > 0)
+        {
+            ks.Cookie = cookie.Trim();
+            ks.CookieSavedAtUtcTicks = DateTime.UtcNow.Ticks;
+            var exp = KuaishouCookieHelper.TryParseEarliestExpiryUtc(ks.Cookie);
+            ks.CookieExpiresAtUtcTicks = exp?.Ticks ?? 0;
+            ks.ConnectFailureStreak = 0;
+        }
+
+        if (pollIntervalMs is > 0)
+        {
+            ks.PollIntervalMs = pollIntervalMs.Value;
+        }
+
+        _config.Save();
+        _kuaishou.ReloadBaseUrl();
+
+        var baseChanged = !string.Equals(prevBase, ks.BaseUrl?.Trim() ?? "", StringComparison.OrdinalIgnoreCase);
+        if (wasRunning && enabled && (baseChanged || !string.IsNullOrWhiteSpace(cookie)))
+        {
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await _ksDanmaku.StartAsync();
+                    _system.Add("快手设置已更新并重新连接");
+                    NotifyStateChanged();
+                }
+                catch (Exception ex)
+                {
+                    _log.KuaishouWarn($"保存后重连失败: {ex.Message}");
+                    _system.Add($"快手重连失败：{ex.Message}");
+                }
+            });
+        }
+        else if (!enabled && _ksDanmaku.IsRunning)
+        {
+            _ksDanmaku.Stop();
+        }
+
+        NotifyStateChanged();
+    }
+
+    public object GetAudioOutputSnapshot()
+    {
+        var pb = _config.Settings.Playback;
+        var ai = _config.Settings.AiSpeech;
+        var devices = AudioOutputDevices.ListDevices()
+            .Select(d => new { deviceNumber = d.DeviceNumber, name = d.Name })
+            .ToList();
+        var songDev = AudioOutputDevices.ResolveDeviceNumber(pb.OutputDeviceName, pb.OutputDeviceNumber);
+        var (dyName, dyNum) = ai.ResolveOutputDevice("douyin");
+        var (ksName, ksNum) = ai.ResolveOutputDevice("kuaishou");
+        var dyDev = AudioOutputDevices.ResolveDeviceNumber(dyName, dyNum);
+        var ksDev = AudioOutputDevices.ResolveDeviceNumber(ksName, ksNum);
+        return new
+        {
+            devices,
+            song = new
+            {
+                outputDeviceNumber = songDev,
+                outputDeviceName = pb.OutputDeviceName ?? "",
+                resolvedName = devices.FirstOrDefault(d => d.deviceNumber == songDev)?.name ?? "系统默认"
+            },
+            ai = new
+            {
+                outputDeviceNumber = dyDev,
+                outputDeviceName = ai.OutputDeviceName ?? "",
+                resolvedName = devices.FirstOrDefault(d => d.deviceNumber == dyDev)?.name ?? "系统默认"
+            },
+            aiDouyin = new
+            {
+                outputDeviceNumber = dyDev,
+                outputDeviceName = ai.OutputDeviceName ?? "",
+                resolvedName = devices.FirstOrDefault(d => d.deviceNumber == dyDev)?.name ?? "系统默认"
+            },
+            aiKuaishou = new
+            {
+                outputDeviceNumber = ksDev,
+                outputDeviceName = ai.HasSeparateKuaishouOutput ? (ai.KuaishouOutputDeviceName ?? "") : (ai.OutputDeviceName ?? ""),
+                resolvedName = devices.FirstOrDefault(d => d.deviceNumber == ksDev)?.name ?? "系统默认",
+                separate = ai.HasSeparateKuaishouOutput
+            },
+            hint = "【双通道 AI】抖音弹幕口播 → 抖音设备；快手弹幕口播 → 快手设备，避免串台。\n"
+                 + "【推荐】歌曲与快手 AI 选 CABLE Input（快手「系统声音」采 CABLE）；抖音 AI 选系统默认/耳机（抖音「应用进程」采本软件）。\n"
+                 + "注意：抖音若用进程采音，仍会听到本软件播到任意设备的声音；要完全隔离需两路虚拟线且抖音也不要采进程。改设备后下一句 AI 生效。",
+            syncSuggested = songDev == dyDev && dyDev == ksDev
+        };
+    }
+
+    public object SaveAudioOutput(
+        int? songDeviceNumber,
+        string? songDeviceName,
+        int? aiDeviceNumber,
+        string? aiDeviceName,
+        bool syncAiToSong,
+        int? aiKuaishouDeviceNumber = null,
+        string? aiKuaishouDeviceName = null,
+        bool? syncKuaishouAiToSong = null)
+    {
+        var devices = AudioOutputDevices.ListDevices();
+        var pb = _config.Settings.Playback;
+
+        if (songDeviceNumber.HasValue || !string.IsNullOrWhiteSpace(songDeviceName))
+        {
+            var num = songDeviceNumber ?? pb.OutputDeviceNumber;
+            var name = songDeviceName?.Trim() ?? pb.OutputDeviceName;
+            if (songDeviceNumber.HasValue)
+            {
+                var match = devices.FirstOrDefault(d => d.DeviceNumber == songDeviceNumber.Value);
+                if (match != null)
+                {
+                    num = match.DeviceNumber;
+                    name = match.Name;
+                }
+            }
+
+            num = AudioOutputDevices.ResolveDeviceNumber(name, num);
+            pb.OutputDeviceNumber = num;
+            pb.OutputDeviceName = num < 0 ? "" : name;
+            _playback.SetDeviceNumber(num);
+        }
+
+        if (syncAiToSong)
+        {
+            _config.Settings.AiSpeech.OutputDeviceNumber = pb.OutputDeviceNumber;
+            _config.Settings.AiSpeech.OutputDeviceName = pb.OutputDeviceName ?? "";
+            _aiSpeech.ApplyDeviceFromSettings("douyin");
+        }
+        else if (aiDeviceNumber.HasValue || !string.IsNullOrWhiteSpace(aiDeviceName))
+        {
+            var num = aiDeviceNumber ?? _config.Settings.AiSpeech.OutputDeviceNumber;
+            var name = aiDeviceName?.Trim() ?? _config.Settings.AiSpeech.OutputDeviceName;
+            if (aiDeviceNumber.HasValue)
+            {
+                var match = devices.FirstOrDefault(d => d.DeviceNumber == aiDeviceNumber.Value);
+                if (match != null)
+                {
+                    num = match.DeviceNumber;
+                    name = match.Name;
+                }
+            }
+
+            num = AudioOutputDevices.ResolveDeviceNumber(name, num);
+            _config.Settings.AiSpeech.OutputDeviceNumber = num;
+            _config.Settings.AiSpeech.OutputDeviceName = num < 0 ? "" : name;
+            _aiSpeech.ApplyDeviceFromSettings("douyin");
+        }
+
+        if (syncKuaishouAiToSong == true)
+        {
+            _config.Settings.AiSpeech.KuaishouOutputDeviceNumber = pb.OutputDeviceNumber;
+            _config.Settings.AiSpeech.KuaishouOutputDeviceName = pb.OutputDeviceName ?? "";
+            _aiSpeech.ApplyDeviceFromSettings("kuaishou");
+        }
+        else if (aiKuaishouDeviceNumber.HasValue || aiKuaishouDeviceName != null)
+        {
+            var num = aiKuaishouDeviceNumber ?? _config.Settings.AiSpeech.KuaishouOutputDeviceNumber ?? -1;
+            var name = aiKuaishouDeviceName?.Trim()
+                       ?? _config.Settings.AiSpeech.KuaishouOutputDeviceName
+                       ?? "";
+            if (aiKuaishouDeviceNumber.HasValue)
+            {
+                var match = devices.FirstOrDefault(d => d.DeviceNumber == aiKuaishouDeviceNumber.Value);
+                if (match != null)
+                {
+                    num = match.DeviceNumber;
+                    name = match.Name;
+                }
+            }
+
+            num = AudioOutputDevices.ResolveDeviceNumber(name, num);
+            _config.Settings.AiSpeech.KuaishouOutputDeviceNumber = num;
+            _config.Settings.AiSpeech.KuaishouOutputDeviceName = num < 0 ? "" : name;
+            _aiSpeech.ApplyDeviceFromSettings("kuaishou");
+        }
+
+        _config.Save();
+        NotifyStateChanged();
+        return GetAudioOutputSnapshot();
+    }
+
+    public object GetKuaishouAdminSnapshot()
+    {
+        var ks = _config.Settings.Kuaishou;
+        var cookieEval = KuaishouCookieHelper.Evaluate(
+            ks.Cookie, ks.CookieSavedAtUtcTicks, ks.CookieExpiresAtUtcTicks, ks.ConnectFailureStreak);
+        return new
+        {
+            enabled = ks.Enabled,
+            baseUrl = ks.BaseUrl,
+            roomId = ks.RoomId,
+            cookieConfigured = !string.IsNullOrWhiteSpace(ks.Cookie),
+            cookiePreview = MaskCookie(ks.Cookie),
+            cookieHint = cookieEval.Hint,
+            cookieStale = cookieEval.Stale,
+            cookieSavedAt = ks.CookieSavedAtUtcTicks > 0
+                ? new DateTime(ks.CookieSavedAtUtcTicks, DateTimeKind.Utc).ToLocalTime().ToString("yyyy-MM-dd HH:mm")
+                : "",
+            connectFailureStreak = ks.ConnectFailureStreak,
+            pollIntervalMs = ks.PollIntervalMs,
+            online = _ksDanmaku.IsLiveConnected,
+            connection = _ksDanmaku.ConnectionStatus,
+            roomTitle = _ksDanmaku.RoomTitle,
+            sidecarOk = _ksSidecarOk,
+            wantConnected = _ksDanmaku.WantConnected,
+            featuresNote = "点歌/队列/积分/关键词/切歌等与抖音共用「点歌管理」「回复管理」模块；快手弹幕经侧车接入同一处理链路。"
+        };
+    }
+
+    public async Task<object> GetKuaishouDiagnoseAsync(CancellationToken ct = default)
+    {
+        var ks = _config.Settings.Kuaishou;
+        var jar = Path.Combine(AppPaths.ExeDirectory, "sidecars", "kuaishou", "ks-ui-server.jar");
+        var java = ProcessWatchdogService.ResolveJavaExePublic();
+        var port = 18900;
+        try
+        {
+            if (Uri.TryCreate(ks.BaseUrl?.Trim() ?? "", UriKind.Absolute, out var uri) && uri.Port > 0)
+            {
+                port = uri.Port;
+            }
+        }
+        catch { /* ignore */ }
+
+        var health = false;
+        string healthErr = "";
+        try { health = await _kuaishou.HealthCheckAsync(ct); }
+        catch (Exception ex) { healthErr = ex.Message; }
+
+        KuaishouBridgeStatus? bridge = null;
+        try { bridge = await _kuaishou.GetBridgeStatusAsync(ct); } catch { /* ignore */ }
+
+        var portOpen = false;
+        try
+        {
+            using var tcp = new System.Net.Sockets.TcpClient();
+            var connect = tcp.ConnectAsync("127.0.0.1", port);
+            var done = await Task.WhenAny(connect, Task.Delay(800, ct));
+            if (done == connect)
+            {
+                await connect;
+                portOpen = tcp.Connected;
+            }
+        }
+        catch { /* ignore */ }
+
+        var cookieEval = KuaishouCookieHelper.Evaluate(
+            ks.Cookie, ks.CookieSavedAtUtcTicks, ks.CookieExpiresAtUtcTicks, ks.ConnectFailureStreak);
+
+        var checks = new List<(string name, bool ok, string detail)>
+        {
+            ("Java 运行时", !string.IsNullOrWhiteSpace(java), java ?? "未找到 JAVA_HOME / java.exe"),
+            ("ks-ui-server.jar", File.Exists(jar), File.Exists(jar) ? jar : "缺少 sidecars/kuaishou/ks-ui-server.jar"),
+            ($"端口 :{port}", portOpen, portOpen ? "已监听" : "未监听（侧车未启动？）"),
+            ("侧车 Health", health, health ? "api/health 正常" : (string.IsNullOrWhiteSpace(healthErr) ? "不可达" : healthErr)),
+            ("桥接连接", bridge?.Connected == true, bridge == null ? "无状态" : $"{bridge.Status} / {bridge.RoomTitle}"),
+            ("房间号", !string.IsNullOrWhiteSpace(ks.RoomId), string.IsNullOrWhiteSpace(ks.RoomId) ? "未配置" : ks.RoomId),
+            ("Cookie", !cookieEval.Stale && !string.IsNullOrWhiteSpace(ks.Cookie), cookieEval.Hint),
+            ("通道意图", _ksDanmaku.WantConnected, _ksDanmaku.WantConnected ? $"运行中 / {_ksDanmaku.ConnectionStatus}" : "未连接（后台点「连接快手」）")
+        };
+
+        return new
+        {
+            ok = checks.All(c => c.ok),
+            summary = checks.All(c => c.ok) ? "快手链路就绪" : "存在待处理项，请按下方清单排查",
+            baseUrl = ks.BaseUrl,
+            checks = checks.Select(c => new { name = c.name, ok = c.ok, detail = c.detail }).ToList(),
+            snapshot = GetKuaishouAdminSnapshot()
+        };
+    }
+
+    private static string MaskCookie(string? cookie)
+    {
+        if (string.IsNullOrWhiteSpace(cookie))
+        {
+            return "";
+        }
+
+        var s = cookie.Trim();
+        return s.Length <= 12 ? "***" : s[..6] + "…" + s[^4..] + $"（{s.Length}字）";
+    }
+
+    private async Task<MentionSendResult> SendPlatformMentionAsync(
+        string webRid, string userId, string content, string? nickname, CancellationToken ct)
+    {
+        if (KuaishouService.IsKuaishouRoom(webRid))
+        {
+            var nick = nickname?.Trim();
+            if (string.IsNullOrWhiteSpace(nick))
+            {
+                nick = _users.GetUser(userId)?.Nickname;
+            }
+
+            if (string.IsNullOrWhiteSpace(nick))
+            {
+                nick = PlatformUserIds.RawForApi(userId);
+            }
+
+            var ok = await _kuaishou.SendAtReplyAsync(nick!, content, ct);
+            if (ok)
+            {
+                // 快手侧车会把正文变成「@昵称 内容」，两侧都 Track 便于回声过滤
+                var full = $"@{nick} {content}".Trim();
+                _outboundTracker.Track(Guid.NewGuid().ToString("N"), content, roomKey: webRid);
+                _outboundTracker.Track(Guid.NewGuid().ToString("N"), full, roomKey: webRid);
+            }
+
+            return new MentionSendResult
+            {
+                Ok = ok,
+                HttpStatus = ok ? 200 : 400,
+                ErrorReason = ok ? "" : "快手发弹幕失败",
+                ReplyType = "mention"
+            };
+        }
+
+        // 抖音走详细发送，保留 PlatformMessageId 供回显过滤
+        return await _douyin.SendMentionDetailedAsync(
+            webRid, PlatformUserIds.RawForApi(userId), content, ct);
+    }
+
     private void OnDanmakuReceived(DanmakuItem item)
     {
         _ = ProcessDanmakuSafeAsync(item);
@@ -355,6 +764,33 @@ public sealed class LiveAppHost : IDisposable
 
     private async Task ProcessDanmakuSafeAsync(DanmakuItem item)
     {
+        // 点歌/确认/切歌等业务指令绕过并发门控，避免高峰被闲聊挤掉
+        if (IsPriorityDanmaku(item.Content))
+        {
+            try
+            {
+                await ProcessDanmakuAsync(item);
+            }
+            catch (Exception ex)
+            {
+                _log.Error("app", "处理弹幕异常", ex);
+                _log.SetLastError("app", ex.Message);
+            }
+
+            return;
+        }
+
+        if (!await _danmakuProcessGate.WaitAsync(0))
+        {
+            if (DateTime.UtcNow - _lastDanmakuOverloadLogUtc > TimeSpan.FromSeconds(30))
+            {
+                _lastDanmakuOverloadLogUtc = DateTime.UtcNow;
+                _log.Warn("弹幕处理过载，已跳过部分闲聊消息");
+            }
+
+            return;
+        }
+
         try
         {
             await ProcessDanmakuAsync(item);
@@ -364,6 +800,26 @@ public sealed class LiveAppHost : IDisposable
             _log.Error("app", "处理弹幕异常", ex);
             _log.SetLastError("app", ex.Message);
         }
+        finally
+        {
+            try { _danmakuProcessGate.Release(); } catch { /* ignore */ }
+        }
+    }
+
+    private static bool IsPriorityDanmaku(string? content)
+    {
+        content = (content ?? "").Trim();
+        if (content.Length == 0)
+        {
+            return false;
+        }
+
+        return SongRequestConfirmParser.IsConfirm(content)
+               || SongRequestConfirmParser.IsCancel(content)
+               || SongNameParser.TryParse(content, out _)
+               || SkipSongParser.TryParse(content)
+               || PointsQueryParser.TryParse(content)
+               || content.StartsWith("禁言", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task ProcessDanmakuAsync(DanmakuItem item)
@@ -375,11 +831,18 @@ public sealed class LiveAppHost : IDisposable
             return;
         }
 
-        var webRid = _config.Settings.Douyin.WebRid;
+        var webRid = !string.IsNullOrWhiteSpace(item.RoomKey)
+            ? item.RoomKey!
+            : item.Platform == "kuaishou"
+                ? KuaishouService.RoomKey(_config.Settings.Kuaishou.RoomId)
+                : _config.Settings.Douyin.WebRid;
+
         if (string.IsNullOrWhiteSpace(webRid))
         {
             return;
         }
+
+        item.RoomKey = webRid;
 
         _users.EnsureUser(item.UserId, item.Nickname);
         _users.TouchInteraction(item.UserId, item.Nickname);
@@ -449,10 +912,16 @@ public sealed class LiveAppHost : IDisposable
         // 仅未被业务模块消费的普通聊天进入 AI 语音
         try
         {
-            _aiSpeech.TryEnqueueDanmaku(
-                item,
-                _danmaku.RoomOwnerNickname,
-                string.IsNullOrWhiteSpace(_adminNickname) ? _danmaku.DouyinLoginNickname : _adminNickname);
+            var roomOwner = item.Platform == "kuaishou" || KuaishouService.IsKuaishouRoom(webRid)
+                ? (string.IsNullOrWhiteSpace(_ksDanmaku.RoomTitle) || _ksDanmaku.RoomTitle == "-"
+                    ? _config.Settings.Kuaishou.RoomId
+                    : _ksDanmaku.RoomTitle)
+                : _danmaku.RoomOwnerNickname;
+            // 快手勿套用抖音登录昵称做自过滤，避免误杀同名观众
+            var loginNick = item.Platform == "kuaishou" || KuaishouService.IsKuaishouRoom(webRid)
+                ? null
+                : (string.IsNullOrWhiteSpace(_adminNickname) ? _danmaku.DouyinLoginNickname : _adminNickname);
+            _aiSpeech.TryEnqueueDanmaku(item, roomOwner, loginNick);
             _log.DouyinInfo(
                 $"DANMAKU_ROUTE msgId={msgId} userId={item.UserId} content={contentSummary} route=ai consumed=false");
         }
@@ -478,6 +947,8 @@ public sealed class LiveAppHost : IDisposable
     private async Task WatchSidecarsAsync(CancellationToken ct)
     {
         var wasDouyinDown = false;
+        var wasKsDown = false;
+        var lastKsReconnectUtc = DateTime.MinValue;
         while (!ct.IsCancellationRequested)
         {
             try
@@ -486,12 +957,14 @@ public sealed class LiveAppHost : IDisposable
                 await _watchdog.EnsureSidecarsAsync(
                     () => _douyin.HealthCheckAsync(ct),
                     () => Task.FromResult(kgOk),
+                    () => _kuaishou.HealthCheckAsync(ct),
                     ct);
 
                 var health = await _douyin.GetHealthAsync(ct);
                 var dyOk = health != null;
                 _douyinSidecarOk = dyOk;
                 _kugouSidecarOk = kgOk;
+                _ksSidecarOk = await _kuaishou.HealthCheckAsync(ct);
 
                 if (kgOk)
                 {
@@ -574,6 +1047,37 @@ public sealed class LiveAppHost : IDisposable
                 }
                 wasDouyinDown = !dyOk;
 
+                // 快手：侧车恢复或桥断开时自动重连（限流）
+                if (_ksDanmaku.WantConnected && _config.Settings.Kuaishou.Enabled)
+                {
+                    var needReconnect = false;
+                    if (_ksSidecarOk && wasKsDown)
+                    {
+                        needReconnect = true;
+                    }
+                    else if (_ksSidecarOk && !_ksDanmaku.IsLiveConnected)
+                    {
+                        needReconnect = true;
+                    }
+
+                    if (needReconnect && DateTime.UtcNow - lastKsReconnectUtc > TimeSpan.FromSeconds(20))
+                    {
+                        lastKsReconnectUtc = DateTime.UtcNow;
+                        try
+                        {
+                            _log.KuaishouInfo("快手 Sidecar/桥接恢复，尝试重连");
+                            await _ksDanmaku.StartAsync(ct);
+                            _system.Add("快手服务已恢复并重连");
+                        }
+                        catch (Exception ex)
+                        {
+                            _log.KuaishouWarn($"快手自动重连失败: {ex.Message}");
+                        }
+                    }
+                }
+
+                wasKsDown = !_ksSidecarOk;
+
                 if (!dyOk)
                 {
                     _system.Add(_reply.Render("systemDouyinDown", new Dictionary<string, string>()));
@@ -627,6 +1131,8 @@ public sealed class LiveAppHost : IDisposable
         }
 
         try { _watchCts?.Cancel(); } catch { /* ignore */ }
+        try { _danmaku.DanmakuReceived -= OnDanmakuReceived; } catch { /* ignore */ }
+        try { _ksDanmaku.DanmakuReceived -= OnDanmakuReceived; } catch { /* ignore */ }
         try { _banVote.Dispose(); } catch { /* ignore */ }
         try { _aiSpeech.Dispose(); } catch { /* ignore */ }
         try { _dataCleanup.Dispose(); } catch { /* ignore */ }
@@ -636,9 +1142,12 @@ public sealed class LiveAppHost : IDisposable
         try { _giftCollector.Dispose(); } catch { /* ignore */ }
         try { _gift.Dispose(); } catch { /* ignore */ }
         try { _danmaku.Dispose(); } catch { /* ignore */ }
+        try { _ksDanmaku.Dispose(); } catch { /* ignore */ }
+        try { _kuaishou.Dispose(); } catch { /* ignore */ }
         try { _replyQueue.Dispose(); } catch { /* ignore */ }
         try { _playbackCommands.Dispose(); } catch { /* ignore */ }
         try { _playback.Dispose(); } catch { /* ignore */ }
+        try { _danmakuProcessGate.Dispose(); } catch { /* ignore */ }
         try { _db.Dispose(); } catch { /* ignore */ }
         try { _log.Info($"{AppBranding.DisplayName} 已退出"); } catch { /* ignore */ }
     }

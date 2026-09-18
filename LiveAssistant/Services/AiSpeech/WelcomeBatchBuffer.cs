@@ -1,17 +1,25 @@
 namespace LiveAssistant.Services.AiSpeech;
 
 /// <summary>
-/// 进房昵称批处理：按间隔刷新，最多 N 个名字。
+/// 进房昵称批处理：按平台分轨（独立窗口与人数上限），按间隔刷新。
 /// </summary>
 public sealed class WelcomeBatchBuffer : IDisposable
 {
-    public readonly record struct WelcomeBatch(IReadOnlyList<string> Nicknames, DateTime FlushedAtUtc);
+    public readonly record struct WelcomeBatch(
+        IReadOnlyList<string> Nicknames,
+        DateTime FlushedAtUtc,
+        string Platform);
+
+    private sealed class PlatformBucket
+    {
+        public List<(string UserId, string Nickname)> Pending { get; } = new();
+        public HashSet<string> SeenIds { get; } = new(StringComparer.Ordinal);
+        public DateTime WindowStartUtc { get; set; } = DateTime.UtcNow;
+    }
 
     private readonly object _gate = new();
-    private readonly List<(string UserId, string Nickname)> _pending = new();
-    private readonly HashSet<string> _seenIds = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, PlatformBucket> _byPlatform = new(StringComparer.Ordinal);
     private System.Threading.Timer? _timer;
-    private DateTime _windowStartUtc = DateTime.UtcNow;
     private int _intervalSeconds = 20;
     private int _maxNames = 3;
     private int _disposed;
@@ -30,14 +38,15 @@ public sealed class WelcomeBatchBuffer : IDisposable
         set => _maxNames = Math.Clamp(value, 1, 10);
     }
 
-    public void Add(string userId, string nickname)
-        => TryAdd(userId, nickname, out _);
+    public void Add(string userId, string nickname, string platform = "douyin")
+        => TryAdd(userId, nickname, platform, out _);
 
     /// <summary>返回 false 时 skipReason：empty_nickname / duplicate_user。</summary>
-    public bool TryAdd(string userId, string nickname, out string skipReason)
+    public bool TryAdd(string userId, string nickname, string platform, out string skipReason)
     {
         userId = (userId ?? "").Trim();
         nickname = SpeechNameCleaner.Clean(nickname);
+        platform = NormalizePlatform(platform);
         if (nickname.Length == 0)
         {
             skipReason = "empty_nickname";
@@ -46,18 +55,24 @@ public sealed class WelcomeBatchBuffer : IDisposable
 
         lock (_gate)
         {
-            if (userId.Length > 0 && !_seenIds.Add(userId))
+            if (!_byPlatform.TryGetValue(platform, out var bucket))
+            {
+                bucket = new PlatformBucket();
+                _byPlatform[platform] = bucket;
+            }
+
+            if (userId.Length > 0 && !bucket.SeenIds.Add(userId))
             {
                 skipReason = "duplicate_user";
                 return false;
             }
 
-            if (_pending.Count == 0)
+            if (bucket.Pending.Count == 0)
             {
-                _windowStartUtc = DateTime.UtcNow;
+                bucket.WindowStartUtc = DateTime.UtcNow;
             }
 
-            _pending.Add((userId, nickname));
+            bucket.Pending.Add((userId, nickname));
             EnsureTimer_NoLock();
         }
 
@@ -65,34 +80,29 @@ public sealed class WelcomeBatchBuffer : IDisposable
         return true;
     }
 
+    /// <summary>兼容旧签名。</summary>
+    public bool TryAdd(string userId, string nickname, out string skipReason)
+        => TryAdd(userId, nickname, "douyin", out skipReason);
+
+    /// <summary>取出一个已到期平台批次；不会丢弃其它平台。</summary>
     public WelcomeBatch? DrainReady()
     {
         lock (_gate)
         {
-            if (_pending.Count == 0)
-            {
-                return null;
-            }
-
-            if (DateTime.UtcNow - _windowStartUtc < TimeSpan.FromSeconds(_intervalSeconds)
-                && _pending.Count < _maxNames)
-            {
-                return null;
-            }
-
-            return TakeBatch_NoLock();
+            var ready = TakeReady_NoLock(takeAllReady: false);
+            return ready.Count > 0 ? ready[0] : null;
         }
     }
 
     public void FlushNow()
     {
-        WelcomeBatch? batch;
+        List<WelcomeBatch> batches;
         lock (_gate)
         {
-            batch = _pending.Count == 0 ? null : TakeBatch_NoLock();
+            batches = TakeAll_NoLock();
         }
 
-        if (batch is { } b)
+        foreach (var b in batches)
         {
             try { Flushed?.Invoke(b); } catch { /* ignore */ }
         }
@@ -105,39 +115,96 @@ public sealed class WelcomeBatchBuffer : IDisposable
 
     private void Tick()
     {
-        WelcomeBatch? batch = null;
+        List<WelcomeBatch> batches;
         lock (_gate)
         {
-            if (_pending.Count == 0)
-            {
-                return;
-            }
-
-            if (DateTime.UtcNow - _windowStartUtc >= TimeSpan.FromSeconds(_intervalSeconds)
-                || _pending.Count >= _maxNames)
-            {
-                batch = TakeBatch_NoLock();
-            }
+            batches = TakeReady_NoLock(takeAllReady: true);
         }
 
-        if (batch is { } b)
+        foreach (var b in batches)
         {
             try { Flushed?.Invoke(b); } catch { /* ignore */ }
         }
     }
 
-    private WelcomeBatch TakeBatch_NoLock()
+    private WelcomeBatch TakePlatformBatch_NoLock(string platform, PlatformBucket bucket)
     {
-        var names = _pending
+        var names = bucket.Pending
             .Select(p => p.Nickname)
             .Where(n => n.Length > 0)
             .Distinct(StringComparer.Ordinal)
             .Take(_maxNames)
             .ToList();
-        _pending.Clear();
-        _seenIds.Clear();
-        _windowStartUtc = DateTime.UtcNow;
-        return new WelcomeBatch(names, DateTime.UtcNow);
+        bucket.Pending.Clear();
+        bucket.SeenIds.Clear();
+        bucket.WindowStartUtc = DateTime.UtcNow;
+        return new WelcomeBatch(names, DateTime.UtcNow, platform);
+    }
+
+    private List<WelcomeBatch> TakeReady_NoLock(bool takeAllReady)
+    {
+        var now = DateTime.UtcNow;
+        var interval = TimeSpan.FromSeconds(_intervalSeconds);
+        var result = new List<WelcomeBatch>();
+
+        foreach (var kv in _byPlatform.ToList())
+        {
+            var platform = kv.Key;
+            var bucket = kv.Value;
+            if (bucket.Pending.Count == 0)
+            {
+                continue;
+            }
+
+            var due = now - bucket.WindowStartUtc >= interval
+                      || bucket.Pending.Count >= _maxNames;
+            if (!due)
+            {
+                continue;
+            }
+
+            var batch = TakePlatformBatch_NoLock(platform, bucket);
+            if (batch.Nicknames.Count == 0)
+            {
+                continue;
+            }
+
+            result.Add(batch);
+            if (!takeAllReady)
+            {
+                break;
+            }
+        }
+
+        return result;
+    }
+
+    private List<WelcomeBatch> TakeAll_NoLock()
+    {
+        var result = new List<WelcomeBatch>();
+        foreach (var kv in _byPlatform.ToList())
+        {
+            if (kv.Value.Pending.Count == 0)
+            {
+                continue;
+            }
+
+            var batch = TakePlatformBatch_NoLock(kv.Key, kv.Value);
+            if (batch.Nicknames.Count == 0)
+            {
+                continue;
+            }
+
+            result.Add(batch);
+        }
+
+        return result;
+    }
+
+    private static string NormalizePlatform(string? platform)
+    {
+        var p = (platform ?? "").Trim().ToLowerInvariant();
+        return p is "kuaishou" or "ks" ? "kuaishou" : "douyin";
     }
 
     public void Dispose()

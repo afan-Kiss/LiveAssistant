@@ -11,6 +11,12 @@ public sealed class DanmakuItem
     public string MsgType { get; set; } = "chat";
     public DateTime Timestamp { get; set; } = DateTime.Now;
 
+    /// <summary>直播平台：douyin / kuaishou。</summary>
+    public string Platform { get; set; } = "douyin";
+
+    /// <summary>房间键：抖音 web_rid，或快手 ks:{roomId}。</summary>
+    public string RoomKey { get; set; } = "";
+
     public string DisplayLine
     {
         get

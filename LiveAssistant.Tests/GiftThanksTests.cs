@@ -29,10 +29,10 @@ public sealed class GiftThanksTests : IDisposable
             new DouyinService(config.Settings.Douyin, log),
             log,
             config.Settings.Reply,
-            sendMention: (_, userId, content, _) =>
+            sendMention: (_, userId, content, _, _) =>
             {
                 sent.Add((userId, content));
-                return Task.FromResult(true);
+                return Task.FromResult(new MentionSendResult { Ok = true });
             });
 
         var gifts = new GiftService(

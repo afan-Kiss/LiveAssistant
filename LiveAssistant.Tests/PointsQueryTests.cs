@@ -36,10 +36,10 @@ public sealed class PointsQueryTests : IDisposable
             new DouyinService(config.Settings.Douyin, new LogService(_dir)),
             new LogService(_dir),
             config.Settings.Reply,
-            sendMention: (_, _, content, _) =>
+            sendMention: (_, _, content, _, _) =>
             {
                 sent.Add(content);
-                return Task.FromResult(true);
+                return Task.FromResult(new MentionSendResult { Ok = true });
             });
 
         var svc = new PointsQueryService(users, ledger);

@@ -119,10 +119,10 @@ public class AiSpeechLoudnessNormalizationTests
     }
 
     [Fact]
-    public void DefaultVolumePercent_Is180()
+    public void DefaultVolumePercent_Is120()
     {
         var s = new LiveAssistant.Config.AiSpeechSettings();
-        Assert.Equal(180, s.VolumePercent);
+        Assert.Equal(120, s.VolumePercent);
     }
 
     [Fact]

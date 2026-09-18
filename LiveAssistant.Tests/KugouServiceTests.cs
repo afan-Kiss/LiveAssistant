@@ -1068,6 +1068,41 @@ public sealed class KugouServiceTests
         Assert.Equal("55667788", songs[0].SongId);
     }
 
+    [Fact]
+    public async Task SearchCandidates_SkipsUnrelatedEnglishTitles()
+    {
+        var handler = new StubHandler(req =>
+        {
+            if ((req.RequestUri?.AbsolutePath ?? "").Contains("search", StringComparison.Ordinal))
+            {
+                return Json(new
+                {
+                    code = 0,
+                    data = new
+                    {
+                        歌单 = new object[]
+                        {
+                            new { hash = "punk", 歌曲名称 = "Punk Girl", 歌手名称 = "徐昊HowRio", 歌曲ID = "1" },
+                            new { hash = "moon", 歌曲名称 = "MOONSTAR", 歌手名称 = "Starling", 歌曲ID = "2" },
+                            new { hash = "dj", 歌曲名称 = "最浪漫的事", 歌手名称 = "赵传、DJ Wave", 歌曲ID = "3" },
+                            new { hash = "hit", 歌曲名称 = "最浪漫的事", 歌手名称 = "赵传", 歌曲ID = "4" },
+                            new { hash = "cover", 歌曲名称 = "最浪漫的事", 歌手名称 = "李圣杰", 歌曲ID = "5" }
+                        }
+                    }
+                });
+            }
+
+            return Json(new { code = 1, msg = "unknown" });
+        });
+
+        var svc = CreateService(handler);
+        var candidates = await svc.SearchCandidatesAsync("最浪漫的事", displayLimit: 1);
+
+        Assert.Single(candidates);
+        Assert.Equal("最浪漫的事", candidates[0].SongName);
+        Assert.Equal("赵传", candidates[0].Artist);
+    }
+
     private static KugouService CreateService(
         HttpMessageHandler handler,
         bool requireFullPlayback = true,

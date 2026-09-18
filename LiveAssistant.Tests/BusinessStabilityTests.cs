@@ -82,10 +82,10 @@ public sealed class BusinessStabilityTests : IDisposable
             new DouyinService(config.Settings.Douyin, log),
             log,
             config.Settings.Reply,
-            sendMention: (_, _, content, _) =>
+            sendMention: (_, _, content, _, _) =>
             {
                 sent.Add(content);
-                return Task.FromResult(true);
+                return Task.FromResult(new MentionSendResult { Ok = true });
             });
 
         var gifts = new GiftService(

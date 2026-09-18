@@ -8,7 +8,7 @@ namespace LiveAssistant.Services.AiSpeech;
 /// </summary>
 public static class AiDanmakuFilter
 {
-    public const int DefaultScoreThreshold = 0;
+    public const int DefaultScoreThreshold = 1;
 
     private static readonly string[] DefaultHostKeywords =
     {
@@ -30,6 +30,8 @@ public static class AiDanmakuFilter
     {
         "哈哈", "哈哈哈", "哈哈哈哈", "哈哈哈哈哈", "666", "6666", "66666", "233", "2333",
         "awsl", "yyds", "xswl", "hhh", "hhhh", "lol",
+        "来了", "来啦", "坐", "沙发", "前排", "打卡", "签到", "路过", "水水",
+        "111", "1111", "加油加油", "冲冲冲",
         "👍", "🔥", "❤️", "😂", "🤣", "😊", "👏", "💪", "🎁", "✨"
     };
 
@@ -165,7 +167,24 @@ public static class AiDanmakuFilter
             parts.Add("-刷屏语气-2");
         }
 
-        // 短弹幕（如「你好」）允许进入：阈值=0 时 score=0 即可回复，不再额外扣「过短」分
+        // 有实质长度的闲聊可进（阈值默认 1：无加分短弹幕进不来）
+        if (compact.Length >= 4)
+        {
+            score += 1;
+            parts.Add("+长度4++1");
+        }
+
+        if (compact.Length >= 10)
+        {
+            score += 1;
+            parts.Add("+长度10++1");
+        }
+
+        // 过短且无任何加分项：视为无意义
+        if (compact.Length <= 2 && score <= 0)
+        {
+            return Hard("too_short", len);
+        }
 
         var detail = parts.Count == 0 ? "无加分项" : string.Join(" ", parts);
         var enter = score >= scoreThreshold;

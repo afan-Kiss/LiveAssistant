@@ -10,6 +10,8 @@ public sealed class ReplyJob
     public required string WebRid { get; init; }
     public required string UserId { get; init; }
     public required string Content { get; init; }
+    /// <summary>快手 @ 依赖昵称；抖音可空。</summary>
+    public string? Nickname { get; init; }
     public int RetryCount { get; set; }
     public bool IsSongRequestBatch { get; init; }
     /// <summary>点歌相关结果不可因积压静默丢弃。</summary>
@@ -35,7 +37,7 @@ public sealed class ReplyQueue : IDisposable
     private readonly OutboundReplyTracker? _outboundTracker;
     private readonly Action<string>? _onSendFailed;
     private readonly Action<string>? _onSendSucceeded;
-    private readonly Func<string, string, string, CancellationToken, Task<bool>> _sendMention;
+    private readonly Func<string, string, string, string?, CancellationToken, Task<MentionSendResult>> _sendMention;
     private readonly bool _sendMentionInjected;
     private readonly CancellationTokenSource _cts = new();
     private readonly Task _worker;
@@ -56,7 +58,7 @@ public sealed class ReplyQueue : IDisposable
         LogService log,
         ReplySettings settings,
         ReplyIdempotencyStore? idempotency = null,
-        Func<string, string, string, CancellationToken, Task<bool>>? sendMention = null,
+        Func<string, string, string, string?, CancellationToken, Task<MentionSendResult>>? sendMention = null,
         OutboundReplyTracker? outboundTracker = null,
         Action<string>? onSendFailed = null,
         Action<string>? onSendSucceeded = null)
@@ -69,8 +71,8 @@ public sealed class ReplyQueue : IDisposable
         _onSendFailed = onSendFailed;
         _onSendSucceeded = onSendSucceeded;
         _sendMentionInjected = sendMention != null;
-        _sendMention = sendMention ?? ((webRid, userId, content, ct) =>
-            _douyin.SendMentionAsync(webRid, userId, content, ct));
+        _sendMention = sendMention ?? ((webRid, userId, content, _, ct) =>
+            _douyin.SendMentionDetailedAsync(webRid, userId, content, ct));
         _worker = Task.Run(() => WorkerLoopAsync(_cts.Token));
     }
 
@@ -79,7 +81,7 @@ public sealed class ReplyQueue : IDisposable
     internal long DroppedCount => Interlocked.Read(ref _droppedCount);
     internal long ExpiredCount => Interlocked.Read(ref _expiredCount);
 
-    public void EnqueueMention(string webRid, string userId, string content, bool critical = false)
+    public void EnqueueMention(string webRid, string userId, string content, bool critical = false, string? nickname = null)
     {
         if (string.IsNullOrWhiteSpace(webRid) || string.IsNullOrWhiteSpace(userId) || string.IsNullOrWhiteSpace(content))
         {
@@ -92,6 +94,7 @@ public sealed class ReplyQueue : IDisposable
             WebRid = webRid,
             UserId = userId,
             Content = content,
+            Nickname = nickname,
             IsCritical = critical,
             EnqueuedAtUtc = DateTime.UtcNow
         });
@@ -156,7 +159,8 @@ public sealed class ReplyQueue : IDisposable
                 UserId = userId,
                 Nickname = nickname,
                 SongName = songName,
-                AheadCount = Math.Max(0, aheadCount)
+                AheadCount = Math.Max(0, aheadCount),
+                WebRid = webRid
             });
 
             // 固定窗口：仅空批次启动一次计时，后续加入不得重置
@@ -188,7 +192,6 @@ public sealed class ReplyQueue : IDisposable
     internal void FlushSongRequestBatch()
     {
         List<SongRequestReplyEntry> items;
-        string webRid;
 
         lock (_batchLock)
         {
@@ -199,35 +202,42 @@ public sealed class ReplyQueue : IDisposable
             }
 
             items = _songBatch.ToList();
-            webRid = _batchWebRid;
             _songBatch.Clear();
         }
 
-        foreach (var group in items.GroupBy(e => e.UserId, StringComparer.Ordinal))
+        foreach (var roomGroup in items.GroupBy(
+                     e => string.IsNullOrWhiteSpace(e.WebRid) ? _batchWebRid : e.WebRid,
+                     StringComparer.Ordinal))
         {
-            var userId = group.Key;
-            if (string.IsNullOrWhiteSpace(userId))
+            var webRid = roomGroup.Key;
+            foreach (var group in roomGroup.GroupBy(e => e.UserId, StringComparer.Ordinal))
             {
-                _log.DouyinWarn("点歌回复跳过：缺少 user_id，无法 @ 对方");
-                continue;
-            }
+                var userId = group.Key;
+                if (string.IsNullOrWhiteSpace(userId) || string.IsNullOrWhiteSpace(webRid))
+                {
+                    _log.DouyinWarn("点歌回复跳过：缺少 user_id/webRid，无法 @ 对方");
+                    continue;
+                }
 
-            var content = SongRequestReplyFormatter.FormatForUser(group.ToList());
-            if (string.IsNullOrWhiteSpace(content))
-            {
-                continue;
-            }
+                var list = group.ToList();
+                var content = SongRequestReplyFormatter.FormatForUser(list);
+                if (string.IsNullOrWhiteSpace(content))
+                {
+                    continue;
+                }
 
-            TryEnqueue(new ReplyJob
-            {
-                ReplyId = NewReplyId(),
-                WebRid = webRid,
-                UserId = userId,
-                Content = content,
-                IsSongRequestBatch = group.Count() > 1,
-                IsCritical = true,
-                EnqueuedAtUtc = DateTime.UtcNow
-            });
+                TryEnqueue(new ReplyJob
+                {
+                    ReplyId = NewReplyId(),
+                    WebRid = webRid,
+                    UserId = userId,
+                    Nickname = list[0].Nickname,
+                    Content = content,
+                    IsSongRequestBatch = list.Count > 1,
+                    IsCritical = true,
+                    EnqueuedAtUtc = DateTime.UtcNow
+                });
+            }
         }
     }
 
@@ -267,7 +277,7 @@ public sealed class ReplyQueue : IDisposable
                     {
                         _idempotency.MarkSucceeded(job.ReplyId);
                         RecordSent();
-                        _outboundTracker?.Track(job.ReplyId, job.Content, detail.PlatformMessageId);
+                        _outboundTracker?.Track(job.ReplyId, job.Content, detail.PlatformMessageId, job.WebRid);
                         _log.DouyinInfo(
                             $"REPLY_QUEUE replyId={job.ReplyId} type={(job.IsSongRequestBatch ? "song_request_batch" : "mention")} " +
                             $"enqueueAt={job.EnqueuedAtUtc:O} sendAt={sentAt:O} retry={job.RetryCount} success=true " +
@@ -307,14 +317,7 @@ public sealed class ReplyQueue : IDisposable
     {
         if (_sendMentionInjected)
         {
-            var ok = await _sendMention(job.WebRid, job.UserId, job.Content, ct);
-            return new MentionSendResult
-            {
-                Ok = ok,
-                HttpStatus = ok ? 200 : 400,
-                ErrorReason = ok ? "" : "发送返回失败",
-                ReplyType = job.IsSongRequestBatch ? "song_request_batch" : "mention"
-            };
+            return await _sendMention(job.WebRid, job.UserId, job.Content, job.Nickname, ct);
         }
 
         return await _douyin.SendMentionDetailedAsync(job.WebRid, job.UserId, job.Content, ct);
@@ -345,7 +348,7 @@ public sealed class ReplyQueue : IDisposable
         {
             _idempotency.MarkSucceeded(job.ReplyId);
             RecordSent();
-            _outboundTracker?.Track(job.ReplyId, job.Content, detail.PlatformMessageId);
+            _outboundTracker?.Track(job.ReplyId, job.Content, detail.PlatformMessageId, job.WebRid);
             _log.DouyinInfo(
                 $"REPLY_QUEUE replyId={job.ReplyId} type={(job.IsSongRequestBatch ? "song_request_batch" : "mention")} " +
                 $"sendAt={DateTime.UtcNow:O} retry={job.RetryCount} success=true result=ok_likely_sent error={reason}");
@@ -406,10 +409,12 @@ public sealed class ReplyQueue : IDisposable
         if (now - _lastFailureNoticeUtc > TimeSpan.FromSeconds(30))
         {
             _lastFailureNoticeUtc = now;
-            var tip = DouyinService.IsBizAuthFailure(reason, detail.HttpStatus)
-                      || DouyinService.IsWriteCredentialPending(reason, detail.HttpStatus)
-                ? $"弹幕@回复失败：{reason}。请重新登录抖音助手后再试"
-                : $"弹幕@回复失败：{reason}";
+            var tip = KuaishouService.IsKuaishouRoom(job.WebRid)
+                ? $"快手弹幕@回复失败：{reason}。请检查 ks 侧车、Cookie 与房间连接"
+                : DouyinService.IsBizAuthFailure(reason, detail.HttpStatus)
+                  || DouyinService.IsWriteCredentialPending(reason, detail.HttpStatus)
+                    ? $"弹幕@回复失败：{reason}。请重新登录抖音助手后再试"
+                    : $"弹幕@回复失败：{reason}";
             _onSendFailed?.Invoke(tip);
         }
     }

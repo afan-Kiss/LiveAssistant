@@ -142,7 +142,7 @@ public sealed class AfterFixConsistencyTests : IDisposable
             new DouyinService(config.Settings.Douyin, log),
             log,
             new ReplySettings { MaxPerSecond = 50, MaxRetries = 0 },
-            sendMention: (_, _, _, _) => Task.FromResult(true));
+            sendMention: (_, _, _, _, _) => Task.FromResult(new MentionSendResult { Ok = true }));
         var skip = new SkipSongService(
             config, users, playback, queue, engine, new ReplyService(config), replyQueue, system, log);
 
@@ -165,11 +165,13 @@ public sealed class AfterFixConsistencyTests : IDisposable
             log,
             new ReplySettings { MaxPerSecond = 50, MaxRetries = 0 },
             outboundTracker: tracker,
-            sendMention: (_, _, _, _) => Task.FromResult(true));
+            sendMention: (_, _, _, _, _) => Task.FromResult(new MentionSendResult { Ok = true }));
 
         const string text = "点歌成功《泡沫》前面还有0首";
         queue.EnqueueMention("rid", "bot-user", text);
-        Assert.True(await WaitUntil(() => tracker.HasRecentOutboundContent(text), TimeSpan.FromSeconds(2)));
+        Assert.True(await WaitUntil(() => tracker.HasRecentOutboundContent(text, "rid"), TimeSpan.FromSeconds(2)));
+        Assert.False(tracker.HasRecentOutboundContent(text));
+        Assert.False(tracker.HasRecentOutboundContent(text, "other-room"));
 
         // Track 使用 replyId：仅靠正文不能再判定为出站回显
         Assert.False(tracker.IsRecentOutbound(null, text));
@@ -214,10 +216,10 @@ public sealed class AfterFixConsistencyTests : IDisposable
                 MaxRetries = 0,
                 SongRequestBatchWindowMs = windowMs
             },
-            sendMention: (_, _, content, _) =>
+            sendMention: (_, _, content, _, _) =>
             {
                 sends.Add((DateTime.UtcNow, content));
-                return Task.FromResult(true);
+                return Task.FromResult(new MentionSendResult { Ok = true });
             });
 
         var started = DateTime.UtcNow;
@@ -317,7 +319,7 @@ public sealed class AfterFixConsistencyTests : IDisposable
             new DouyinService(config.Settings.Douyin, log),
             log,
             new ReplySettings { MaxPerSecond = 50, MaxRetries = 0, SongRequestBatchWindowMs = 50 },
-            sendMention: (_, _, _, _) => Task.FromResult(true));
+            sendMention: (_, _, _, _, _) => Task.FromResult(new MentionSendResult { Ok = true }));
         var handler = new KugouOkHandler();
         var kugou = new KugouService(config.Settings.Kugou, log, new HttpClient(handler)
         {

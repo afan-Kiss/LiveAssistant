@@ -8,6 +8,7 @@ namespace LiveAssistant.Config;
 public sealed class AppSettings
 {
     public DouyinSettings Douyin { get; set; } = new();
+    public KuaishouSettings Kuaishou { get; set; } = new();
     public KugouSettings Kugou { get; set; } = new();
     public PlaybackSettings Playback { get; set; } = new();
     public RandomPlaylistSettings RandomPlaylist { get; set; } = new();
@@ -37,17 +38,22 @@ public sealed class AiSpeechSettings
     public string Model { get; set; } = "qwen3:8b";
     public string TtsUrl { get; set; } = "http://127.0.0.1:9880";
     public string Voice { get; set; } = "my_voice";
+    /// <summary>抖音 AI 口播输出设备；-1=系统默认。双开播时建议勿与快手共用 CABLE。</summary>
     public int OutputDeviceNumber { get; set; } = -1;
     public string OutputDeviceName { get; set; } = "";
+    /// <summary>快手 AI 口播输出；null 表示与抖音 OutputDevice 相同（兼容旧配置）。</summary>
+    public int? KuaishouOutputDeviceNumber { get; set; }
+    /// <summary>快手 AI 口播设备名；null/空且 Number 未设时回退抖音设备。</summary>
+    public string? KuaishouOutputDeviceName { get; set; }
     /// <summary>兼容旧字段；与 ReplyIntervalSeconds 同步。</summary>
     public int MinIntervalSeconds { get; set; } = 8;
     public int MaxQueueSize { get; set; } = 5;
-    public int MaxReplyLength { get; set; } = 50;
+    public int MaxReplyLength { get; set; } = 80;
     public int OllamaTimeoutSeconds { get; set; } = 45;
     public int TtsTimeoutSeconds { get; set; } = 30;
     public int MaxAgeSeconds { get; set; } = 30;
-    /// <summary>弹幕评分阈值；低于此分不进入 AI。</summary>
-    public int ScoreThreshold { get; set; } = 0;
+    /// <summary>弹幕评分阈值；低于此分不进入 AI。默认 1，过滤无加分的无意义短弹幕。</summary>
+    public int ScoreThreshold { get; set; } = 1;
     /// <summary>兼容旧配置的回退人格；优先使用 Config/AiSpeech/personality.txt。</summary>
     public string SystemPrompt { get; set; } = "";
 
@@ -60,8 +66,8 @@ public sealed class AiSpeechSettings
     /// <summary>点歌真实入队并扣积分成功后播报；默认关闭，兼容旧配置。</summary>
     public bool AnnounceSongRequest { get; set; }
 
-    /// <summary>AI 语音用户音量百分比：叠加在自动归一化之后。100=归一化后原量，180≈+5.1dB，200≈+6dB。范围 50～200。</summary>
-    public int VolumePercent { get; set; } = 180;
+    /// <summary>AI 语音用户音量百分比：叠加在自动归一化之后。100=归一化后原量，120≈+1.6dB。过高易软限幅导致黏糊。范围 50～200。</summary>
+    public int VolumePercent { get; set; } = 120;
 
     /// <summary>弹幕回复最小间隔（秒）；与 MinIntervalSeconds 保持同步。</summary>
     public int ReplyIntervalSeconds { get; set; } = 8;
@@ -86,7 +92,8 @@ public sealed class AiSpeechSettings
 
     /// <summary>情感预设 id；auto 表示按事件类型选择。</summary>
     public string Emotion { get; set; } = "auto";
-    public double Speed { get; set; } = 1.0;
+    /// <summary>TTS 语速；略低于 1.0 可减轻黏嘴（推荐 0.92～1.0）。</summary>
+    public double Speed { get; set; } = 0.95;
 
     /// <summary>礼物感谢：ai / template。默认 template，口播更稳、更自然。</summary>
     public string GiftThankMode { get; set; } = "template";
@@ -103,6 +110,28 @@ public sealed class AiSpeechSettings
     public string CondaActivateBat { get; set; } = "";
     /// <summary>Conda 环境名，默认 GPTSoVits。</summary>
     public string CondaEnvName { get; set; } = "GPTSoVits";
+
+    /// <summary>是否已单独配置快手 AI 输出（未配置则与抖音共用，可能串台）。</summary>
+    [JsonIgnore]
+    public bool HasSeparateKuaishouOutput =>
+        KuaishouOutputDeviceNumber.HasValue
+        || !string.IsNullOrWhiteSpace(KuaishouOutputDeviceName);
+
+    /// <summary>按平台解析 AI 输出设备；快手未单独配置（字段皆未设）时回退抖音设备。</summary>
+    public (string Name, int Number) ResolveOutputDevice(string? platform)
+    {
+        var isKs = string.Equals(platform?.Trim(), "kuaishou", StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(platform?.Trim(), "ks", StringComparison.OrdinalIgnoreCase);
+        if (isKs && HasSeparateKuaishouOutput)
+        {
+            // Number 有值（含 -1=系统默认）或以非空名称单独配置时，都视为快手专用
+            var name = KuaishouOutputDeviceName ?? "";
+            var num = KuaishouOutputDeviceNumber ?? -1;
+            return (name, num);
+        }
+
+        return (OutputDeviceName ?? "", OutputDeviceNumber);
+    }
 }
 
 public sealed class DouyinSettings
@@ -115,6 +144,26 @@ public sealed class DouyinSettings
     public string DouyinExePath { get; set; } = "";
     /// <summary>Sidecar cookies.json 路径；空则按 exe 旁 data/cookies.json 推断。</summary>
     public string CookieStorePath { get; set; } = "";
+}
+
+public sealed class KuaishouSettings
+{
+    /// <summary>是否启用快手点歌通道。</summary>
+    public bool Enabled { get; set; }
+    public string BaseUrl { get; set; } = "http://127.0.0.1:18900";
+    public string RoomId { get; set; } = "";
+    /// <summary>live.kuaishou.com 登录 Cookie。</summary>
+    public string Cookie { get; set; } = "";
+    public int PollIntervalMs { get; set; } = 800;
+
+    /// <summary>最近一次保存 Cookie 的 UTC 时间（Ticks）。</summary>
+    public long CookieSavedAtUtcTicks { get; set; }
+
+    /// <summary>从 Cookie 解析出的最早过期点（Ticks）；0=未知。</summary>
+    public long CookieExpiresAtUtcTicks { get; set; }
+
+    /// <summary>连续连接失败次数（成功后清零）。</summary>
+    public int ConnectFailureStreak { get; set; }
 }
 
 public sealed class KugouSettings
@@ -138,6 +187,12 @@ public sealed class PlaybackSettings
     public int Volume { get; set; } = 80;
     public bool AutoSkipOnError { get; set; } = true;
     public bool RandomFillEnabled { get; set; } = true;
+
+    /// <summary>歌曲播放输出设备号；-1=系统默认。多平台直播时选 VB-CABLE 的 CABLE Input。</summary>
+    public int OutputDeviceNumber { get; set; } = -1;
+
+    /// <summary>按名称优先匹配（设备热插拔后编号可能变）。</summary>
+    public string OutputDeviceName { get; set; } = "";
 }
 
 public sealed class RandomPlaylistItem
@@ -405,7 +460,7 @@ public sealed class ConfigManager
 
         if (ai.ScoreThreshold < 0 || ai.ScoreThreshold > 20)
         {
-            ai.ScoreThreshold = 0;
+            ai.ScoreThreshold = 1;
             changed = true;
         }
 
@@ -460,7 +515,7 @@ public sealed class ConfigManager
 
         if (ai.VolumePercent < 50 || ai.VolumePercent > 200)
         {
-            ai.VolumePercent = 180;
+            ai.VolumePercent = 120;
             changed = true;
         }
 

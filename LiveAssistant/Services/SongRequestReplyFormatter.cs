@@ -6,6 +6,8 @@ public sealed class SongRequestReplyEntry
     public required string Nickname { get; init; }
     public required string SongName { get; init; }
     public int AheadCount { get; init; }
+    /// <summary>抖音 web_rid 或快手 ks:{roomId}，双平台并存时按房间分批发回复。</summary>
+    public string WebRid { get; init; } = "";
 }
 
 public static class SongRequestReplyFormatter

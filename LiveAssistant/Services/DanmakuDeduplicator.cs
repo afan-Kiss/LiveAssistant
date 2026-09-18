@@ -23,13 +23,23 @@ public sealed class DanmakuDeduplicator
     private readonly TimeSpan _contentWindow;
 
     public DanmakuDeduplicator(string? dataDirectory = null, TimeSpan? ttl = null, TimeSpan? contentWindow = null)
+        : this(dataDirectory, fileName: null, ttl, contentWindow)
+    {
+    }
+
+    public DanmakuDeduplicator(
+        string? dataDirectory,
+        string? fileName,
+        TimeSpan? ttl = null,
+        TimeSpan? contentWindow = null)
     {
         _ttl = ttl ?? TimeSpan.FromMinutes(30);
         _contentWindow = contentWindow ?? TimeSpan.FromSeconds(20);
         if (!string.IsNullOrWhiteSpace(dataDirectory))
         {
             Directory.CreateDirectory(dataDirectory);
-            _path = Path.Combine(dataDirectory, "danmaku_dedupe.json");
+            var name = string.IsNullOrWhiteSpace(fileName) ? "danmaku_dedupe.json" : fileName.Trim();
+            _path = Path.Combine(dataDirectory, name);
             LoadFromDisk();
         }
     }

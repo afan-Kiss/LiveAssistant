@@ -3,8 +3,13 @@ namespace LiveAssistant.Models;
 public sealed class RuntimeStatus
 {
     public bool DouyinOnline { get; set; }
+    public bool KuaishouOnline { get; set; }
     public bool KugouOnline { get; set; }
     public string DouyinStatus { get; set; } = "未检测";
+    public string KuaishouStatus { get; set; } = "未检测";
+    public string KuaishouConnection { get; set; } = "未连接";
+    public string KuaishouRoomId { get; set; } = "";
+    public string KuaishouRoomTitle { get; set; } = "-";
     public string KugouStatus { get; set; } = "未检测";
     public string KugouLoginStatus { get; set; } = "未检测";
     public string KugouVipLabel { get; set; } = "";

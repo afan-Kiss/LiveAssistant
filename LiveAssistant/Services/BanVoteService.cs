@@ -1,6 +1,7 @@
 using LiveAssistant.Config;
 using LiveAssistant.Database;
 using LiveAssistant.Models;
+using LiveAssistant.Utils;
 
 namespace LiveAssistant.Services;
 
@@ -57,9 +58,18 @@ public sealed class BanVoteService : IDisposable
             return true;
         }
 
-        var target = _users.FindByNickname(targetName);
+        var isKuaishouRoom = KuaishouService.IsKuaishouRoom(webRid);
+        var platform = isKuaishouRoom ? "kuaishou" : "douyin";
+        var target = _users.FindByNickname(targetName, platform);
         if (target == null)
         {
+            // 快手房间无法走抖音查用户 API，仅支持已互动过的本地用户
+            if (isKuaishouRoom)
+            {
+                _system.Add($"禁言投票: 未找到用户 {targetName}（快手仅支持本场已互动用户）");
+                return true;
+            }
+
             var lookup = await _douyin.LookupUserAsync(webRid, targetName, ct);
             if (lookup == null || string.IsNullOrWhiteSpace(lookup.UserId))
             {
@@ -78,6 +88,15 @@ public sealed class BanVoteService : IDisposable
         if (item.UserId == target.UserId)
         {
             _system.Add($"禁言投票: {item.Nickname} 不能投票禁言自己");
+            return true;
+        }
+
+        // 禁止跨平台投票：抖音观众不能给快手用户投票，反之亦然
+        var voterIsKs = item.UserId.StartsWith("ks:", StringComparison.OrdinalIgnoreCase);
+        var targetIsKs = target.UserId.StartsWith("ks:", StringComparison.OrdinalIgnoreCase);
+        if (voterIsKs != targetIsKs)
+        {
+            _system.Add($"禁言投票: 不能跨平台投票（{item.Nickname} → {target.Nickname}）");
             return true;
         }
 
@@ -128,8 +147,12 @@ public sealed class BanVoteService : IDisposable
 
     private async Task ExecuteBanAsync(UserProfile target, string webRid, BanVoteSession session)
     {
-        var ok = await _douyin.ModSilenceAsync(webRid, target.UserId, "silence", _lifetimeCts.Token);
         var duration = _config.Settings.BanVote.BanDurationSeconds;
+        var isKuaishou = KuaishouService.IsKuaishouRoom(webRid);
+
+        // 快手无平台禁言 API：仅本地禁言（点歌权限），并 @ 通知
+        var ok = isKuaishou || await _douyin.ModSilenceAsync(
+            webRid, PlatformUserIds.RawForApi(target.UserId), "silence", _lifetimeCts.Token);
 
         if (!ok)
         {
@@ -141,7 +164,9 @@ public sealed class BanVoteService : IDisposable
         }
 
         _users.SetStatus(target.UserId, UserStatus.Muted);
-        var msg = $"禁言投票通过，已禁言 {target.Nickname} {duration}秒 (发起人 {session.InitiatorNickname})";
+        var msg = isKuaishou
+            ? $"禁言投票通过，已本地禁言 {target.Nickname} {duration}秒（快手无平台禁言，仅限制点歌等） (发起人 {session.InitiatorNickname})"
+            : $"禁言投票通过，已禁言 {target.Nickname} {duration}秒 (发起人 {session.InitiatorNickname})";
         _system.Add(msg);
         _log.BanInfo(msg);
         _votes.CompleteSession(session.Id, "banned");
@@ -154,7 +179,12 @@ public sealed class BanVoteService : IDisposable
                 try
                 {
                     await Task.Delay(TimeSpan.FromSeconds(duration), lifetime);
-                    await _douyin.ModSilenceAsync(webRid, target.UserId, "unsilence", lifetime);
+                    if (!isKuaishou)
+                    {
+                        await _douyin.ModSilenceAsync(
+                            webRid, PlatformUserIds.RawForApi(target.UserId), "unsilence", lifetime);
+                    }
+
                     _users.SetStatus(target.UserId, UserStatus.Active);
                     _log.BanInfo($"自动解除禁言 target={target.Nickname} duration={duration}s");
                 }
@@ -178,7 +208,7 @@ public sealed class BanVoteService : IDisposable
             reply = "已被投票禁言";
         }
 
-        _replyQueue.EnqueueMention(webRid, target.UserId, reply);
+        _replyQueue.EnqueueMention(webRid, target.UserId, reply, nickname: target.Nickname);
     }
 
     private void SendVoteProgressReply(
@@ -205,7 +235,7 @@ public sealed class BanVoteService : IDisposable
             msg = $"已投票禁言 {target.Nickname}，当前 {count}/{session.RequiredVotes} 票";
         }
 
-        _replyQueue.EnqueueMention(webRid, voter.UserId, msg);
+        _replyQueue.EnqueueMention(webRid, voter.UserId, msg, nickname: voter.Nickname);
     }
 
     public void Dispose()

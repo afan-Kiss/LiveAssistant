@@ -53,7 +53,7 @@ public sealed class WelcomeService
             msg = $"欢迎 {item.Nickname} 进入直播间";
         }
 
-        _replyQueue.EnqueueMention(webRid, item.UserId, msg);
+        _replyQueue.EnqueueMention(webRid, item.UserId, msg, nickname: item.Nickname);
         _cooldown.RecordWelcome(item.UserId);
         _system.Add($"欢迎: {item.Nickname}");
     }

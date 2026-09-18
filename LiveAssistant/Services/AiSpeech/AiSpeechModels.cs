@@ -78,6 +78,11 @@ public sealed class AiSpeechTask
     public DateTime EnqueuedAt { get; init; } = DateTime.UtcNow;
     public DateTime ReceivedAt { get; init; } = DateTime.Now;
 
+    /// <summary>来源平台：douyin / kuaishou；决定口播走哪路输出设备。</summary>
+    public string Platform { get; init; } = "douyin";
+    /// <summary>房间键：抖音 web_rid 或快手 ks:{roomId}。</summary>
+    public string RoomKey { get; init; } = "";
+
     public AiSpeechEventKind Kind { get; init; } = AiSpeechEventKind.Danmaku;
     public AiSpeechPriority Priority { get; init; } = AiSpeechPriority.DanmakuImportant;
     public string EmotionRequested { get; init; } = "auto";

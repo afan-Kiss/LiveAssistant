@@ -50,8 +50,22 @@ def main() -> int:
         )
 
         if OUT.exists():
+            # 禁止整目录删除用户 data/：否则会先清空再被 sync-sidecars 用旧 cookies 填回。
+            preserve_data = OUT / "data"
+            preserved_tmp = None
+            if preserve_data.exists():
+                preserved_tmp = OUT.parent / f".LiveAssistant-one-data-preserve"
+                if preserved_tmp.exists():
+                    shutil.rmtree(preserved_tmp, ignore_errors=True)
+                shutil.move(str(preserve_data), str(preserved_tmp))
+                print(f"preserved user data -> {preserved_tmp}")
             shutil.rmtree(OUT, ignore_errors=True)
-        OUT.mkdir(parents=True, exist_ok=True)
+            OUT.mkdir(parents=True, exist_ok=True)
+            if preserved_tmp is not None and preserved_tmp.exists():
+                shutil.move(str(preserved_tmp), str(OUT / "data"))
+                print(f"restored user data -> {OUT / 'data'}")
+        else:
+            OUT.mkdir(parents=True, exist_ok=True)
 
         cmd = [
             "dotnet",

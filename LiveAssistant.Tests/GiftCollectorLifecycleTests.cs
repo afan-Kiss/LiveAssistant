@@ -99,6 +99,52 @@ public sealed class GiftCollectorLifecycleTests : IDisposable
     }
 
     [Fact]
+    public async Task Lifecycle_LiveSessionRoomIdChange_ResetsCursor()
+    {
+        using var ctx = new GiftTestContext(_tempDir);
+        var dataDir = Path.Combine(_tempDir, "room-change");
+        Directory.CreateDirectory(dataDir);
+        var store = new GiftCursorStore(dataDir);
+        store.Save("r1", "OLD_ROOM", "cursor-old", "ext-old");
+
+        var cookies = new FakeCookieProvider("sessionid=ok");
+        var rooms = new FakeRoomResolver();
+        rooms.Map["r1"] = "NEW_ROOM";
+
+        string? firstFetchedRoomId = null;
+        string? firstFetchedCursor = null;
+        var fetchCount = 0;
+        var im = new GiftImFetchClient(new HttpClient(new ScriptedHandler(req =>
+        {
+            var n = Interlocked.Increment(ref fetchCount);
+            var query = req.RequestUri?.Query ?? "";
+            if (n == 1)
+            {
+                firstFetchedRoomId = ReadQuery(query, "room_id");
+                firstFetchedCursor = ReadQuery(query, "cursor");
+            }
+
+            return OkEmpty();
+        })));
+
+        using var collector = new GiftCollectorService(
+            ctx.Config, ctx.Douyin, ctx.Gifts, ctx.Log, im, cookies, rooms, new GiftEventDeduplicator(),
+            store);
+        collector.StartGiftCollector("r1");
+        await Task.Delay(250);
+        collector.StopGiftCollector();
+
+        Assert.True(fetchCount >= 1);
+        Assert.Equal("NEW_ROOM", firstFetchedRoomId);
+        Assert.NotEqual("cursor-old", firstFetchedCursor);
+        Assert.True(string.IsNullOrEmpty(firstFetchedCursor), $"first fetch should use empty cursor, got '{firstFetchedCursor}'");
+        var saved = store.Load("r1");
+        Assert.NotNull(saved);
+        Assert.Equal("NEW_ROOM", saved!.RoomId);
+        Assert.NotEqual("cursor-old", saved.Cursor);
+    }
+
+    [Fact]
     public async Task Lifecycle_Reconnect_AfterFetchError_ContinuesRunning()
     {
         using var ctx = new GiftTestContext(_tempDir);
@@ -168,6 +214,29 @@ public sealed class GiftCollectorLifecycleTests : IDisposable
 
         Assert.Equal(1, ctx.Users.GetUser("7")?.Points);
         Assert.True(deduper.Contains("4242"));
+    }
+
+    private static string? ReadQuery(string query, string key)
+    {
+        if (query.StartsWith('?'))
+        {
+            query = query[1..];
+        }
+
+        foreach (var part in query.Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var idx = part.IndexOf('=');
+            var name = idx < 0 ? part : part[..idx];
+            if (!name.Equals(key, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var value = idx < 0 ? "" : part[(idx + 1)..];
+            return Uri.UnescapeDataString(value);
+        }
+
+        return null;
     }
 
     private static async Task<bool> WaitUntil(Func<bool> cond, TimeSpan timeout)

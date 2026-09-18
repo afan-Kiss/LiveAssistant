@@ -1,4 +1,4 @@
-using LiveAssistant.Config;
+﻿using LiveAssistant.Config;
 using LiveAssistant.Database;
 using LiveAssistant.Models;
 using LiveAssistant.Utils;
@@ -88,7 +88,7 @@ public sealed class SkipSongService
                     msg = $"切歌需要 {cost} 积分，你当前只有 {user.Points} 积分";
                 }
 
-                _replyQueue.EnqueueMention(webRid, item.UserId, msg);
+                _replyQueue.EnqueueMention(webRid, item.UserId, msg, nickname: item.Nickname);
                 _system.Add($"{item.Nickname} 切歌失败：积分不足（需要 {cost}）");
                 return true;
             }
@@ -104,7 +104,7 @@ public sealed class SkipSongService
                     out _))
             {
                 _replyQueue.EnqueueMention(webRid, item.UserId,
-                    $"切歌需要 {cost} 积分，请送礼物获取积分后再试");
+                    $"切歌需要 {cost} 积分，请送礼物获取积分后再试", nickname: item.Nickname);
                 _system.Add($"{item.Nickname} 切歌失败：扣积分失败");
                 return true;
             }
@@ -142,7 +142,7 @@ public sealed class SkipSongService
             success = cost > 0 ? $"已切歌，消耗{cost}积分" : "已切歌";
         }
 
-        _replyQueue.EnqueueMention(webRid, item.UserId, success);
+        _replyQueue.EnqueueMention(webRid, item.UserId, success, nickname: item.Nickname);
         _system.Add(cost > 0
             ? $"{item.Nickname} 切歌成功（-{cost} 积分）"
             : $"{item.Nickname} 切歌成功");
@@ -182,7 +182,7 @@ public sealed class SkipSongService
         var msg = _reply.Render(templateKey, variables);
         if (!string.IsNullOrWhiteSpace(msg))
         {
-            _replyQueue.EnqueueMention(webRid, userId, msg);
+            _replyQueue.EnqueueMention(webRid, userId, msg, nickname: nickname);
         }
     }
 }

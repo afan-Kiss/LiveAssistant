@@ -84,6 +84,12 @@ public sealed class GiftService : IDisposable
                 gift.Time.ToString("O"));
         }
 
+        // 双通道：抖音采集常未填 RoomKey，回退当前绑定房间，供致谢/@ 与 AI 口播路由
+        if (string.IsNullOrWhiteSpace(gift.RoomKey) && !string.IsNullOrWhiteSpace(_webRid))
+        {
+            gift.RoomKey = _webRid;
+        }
+
         if (!TryValidateAmounts(gift, out var guardReason))
         {
             _log.GiftWarn($"[guard] 拒绝异常金额 eventId={gift.EventId} reason={guardReason} " +
@@ -164,7 +170,8 @@ public sealed class GiftService : IDisposable
 
     private void TrySendGiftThanks(GiftEvent gift)
     {
-        if (_replyQueue == null || _reply == null || string.IsNullOrWhiteSpace(_webRid))
+        var room = !string.IsNullOrWhiteSpace(gift.RoomKey) ? gift.RoomKey : _webRid;
+        if (_replyQueue == null || _reply == null || string.IsNullOrWhiteSpace(room))
         {
             return;
         }
@@ -192,16 +199,22 @@ public sealed class GiftService : IDisposable
             msg = $"感谢送出 {gift.GiftName}×{gift.Count}";
         }
 
-        _replyQueue.EnqueueMention(_webRid, gift.UserId, msg);
+        _replyQueue.EnqueueMention(room, gift.UserId, msg, nickname: gift.Nickname);
     }
 
     private bool ShouldThrottleGiftThanks(GiftEvent gift)
     {
-        var key = $"{gift.UserId}|{gift.GiftName}";
+        var key = $"{gift.RoomKey}|{gift.UserId}|{gift.GiftName}";
         var now = DateTime.UtcNow;
         lock (_thanksLock)
         {
             PurgeThanksWindowsLocked(now);
+            if (_thanksWindows.Count > 2000)
+            {
+                // 长播防字典膨胀：清空窗口后重新计数
+                _thanksWindows.Clear();
+            }
+
             if (!_thanksWindows.TryGetValue(key, out var window)
                 || now - window.StartedUtc > GiftThanksWindowDuration)
             {

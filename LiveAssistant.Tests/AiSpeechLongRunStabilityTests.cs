@@ -126,7 +126,7 @@ public class AiSpeechLongRunStabilityTests
                 Assert.True(users.TrackedUserCount <= MaxTrackedUsers,
                     $"tracked users exceeded at event {i + 1}: {users.TrackedUserCount}");
                 Assert.True(scheduler.Count <= scheduler.MaxSize);
-                Assert.True(room.Count <= 40);
+                Assert.True(room.Count() <= 40);
             }
         }
 

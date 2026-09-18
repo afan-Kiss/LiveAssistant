@@ -1,15 +1,15 @@
 namespace LiveAssistant.Services.AiSpeech;
 
 /// <summary>
-/// 点赞累计：按间隔刷新（最短 20 秒）。
+/// 点赞累计：按平台分轨，按间隔刷新（最短 20 秒）。
 /// </summary>
 public sealed class LikeAccumulateBuffer : IDisposable
 {
-    public readonly record struct LikeBatch(int Count, DateTime FlushedAtUtc);
+    public readonly record struct LikeBatch(int Count, DateTime FlushedAtUtc, string Platform);
 
     private readonly object _gate = new();
-    private int _count;
-    private DateTime _windowStartUtc = DateTime.UtcNow;
+    private readonly Dictionary<string, (int Count, DateTime WindowStartUtc)> _byPlatform =
+        new(StringComparer.Ordinal);
     private System.Threading.Timer? _timer;
     private int _intervalSeconds = 60;
     private int _disposed;
@@ -22,21 +22,25 @@ public sealed class LikeAccumulateBuffer : IDisposable
         set => _intervalSeconds = Math.Max(20, Math.Clamp(value, 20, 600));
     }
 
-    public void Add(int count = 1)
+    public void Add(int count = 1, string platform = "douyin")
     {
         if (count <= 0)
         {
             return;
         }
 
+        platform = NormalizePlatform(platform);
         lock (_gate)
         {
-            if (_count == 0)
+            if (!_byPlatform.TryGetValue(platform, out var state) || state.Count == 0)
             {
-                _windowStartUtc = DateTime.UtcNow;
+                _byPlatform[platform] = (count, DateTime.UtcNow);
+            }
+            else
+            {
+                _byPlatform[platform] = (state.Count + count, state.WindowStartUtc);
             }
 
-            _count += count;
             EnsureTimer_NoLock();
         }
     }
@@ -45,29 +49,37 @@ public sealed class LikeAccumulateBuffer : IDisposable
     {
         lock (_gate)
         {
-            if (_count <= 0)
+            var now = DateTime.UtcNow;
+            var interval = TimeSpan.FromSeconds(_intervalSeconds);
+            foreach (var kv in _byPlatform.ToList())
             {
-                return null;
+                if (kv.Value.Count <= 0)
+                {
+                    continue;
+                }
+
+                if (now - kv.Value.WindowStartUtc < interval)
+                {
+                    continue;
+                }
+
+                _byPlatform.Remove(kv.Key);
+                return new LikeBatch(kv.Value.Count, now, kv.Key);
             }
 
-            if (DateTime.UtcNow - _windowStartUtc < TimeSpan.FromSeconds(_intervalSeconds))
-            {
-                return null;
-            }
-
-            return Take_NoLock();
+            return null;
         }
     }
 
     public void FlushNow()
     {
-        LikeBatch? batch;
+        List<LikeBatch> batches;
         lock (_gate)
         {
-            batch = _count <= 0 ? null : Take_NoLock();
+            batches = TakeAll_NoLock();
         }
 
-        if (batch is { } b)
+        foreach (var b in batches)
         {
             try { Flushed?.Invoke(b); } catch { /* ignore */ }
         }
@@ -80,27 +92,57 @@ public sealed class LikeAccumulateBuffer : IDisposable
 
     private void Tick()
     {
-        LikeBatch? batch = null;
+        List<LikeBatch> batches;
         lock (_gate)
         {
-            if (_count > 0 && DateTime.UtcNow - _windowStartUtc >= TimeSpan.FromSeconds(_intervalSeconds))
-            {
-                batch = Take_NoLock();
-            }
+            batches = TakeReady_NoLock();
         }
 
-        if (batch is { } b)
+        foreach (var b in batches)
         {
             try { Flushed?.Invoke(b); } catch { /* ignore */ }
         }
     }
 
-    private LikeBatch Take_NoLock()
+    private List<LikeBatch> TakeReady_NoLock()
     {
-        var n = _count;
-        _count = 0;
-        _windowStartUtc = DateTime.UtcNow;
-        return new LikeBatch(n, DateTime.UtcNow);
+        var now = DateTime.UtcNow;
+        var interval = TimeSpan.FromSeconds(_intervalSeconds);
+        var done = new List<LikeBatch>();
+        foreach (var kv in _byPlatform.ToList())
+        {
+            if (kv.Value.Count <= 0)
+            {
+                continue;
+            }
+
+            if (now - kv.Value.WindowStartUtc < interval)
+            {
+                continue;
+            }
+
+            done.Add(new LikeBatch(kv.Value.Count, now, kv.Key));
+            _byPlatform.Remove(kv.Key);
+        }
+
+        return done;
+    }
+
+    private List<LikeBatch> TakeAll_NoLock()
+    {
+        var now = DateTime.UtcNow;
+        var done = _byPlatform
+            .Where(kv => kv.Value.Count > 0)
+            .Select(kv => new LikeBatch(kv.Value.Count, now, kv.Key))
+            .ToList();
+        _byPlatform.Clear();
+        return done;
+    }
+
+    private static string NormalizePlatform(string? platform)
+    {
+        var p = (platform ?? "").Trim().ToLowerInvariant();
+        return p is "kuaishou" or "ks" ? "kuaishou" : "douyin";
     }
 
     public void Dispose()

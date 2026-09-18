@@ -5,6 +5,8 @@ namespace LiveAssistant.Utils;
 /// </summary>
 public static class SongEditionHelper
 {
+    private const int MinContainedTitleLength = 2;
+
     private static readonly string[] DerivativeMarkers =
     [
         "dj",
@@ -29,6 +31,35 @@ public static class SongEditionHelper
     public static bool LooksLikeDerivativeEdition(string? songName, string? artist)
     {
         return ContainsDerivativeMarker(songName) || ContainsDerivativeMarker(artist);
+    }
+
+    /// <summary>
+    /// 点歌搜索结果是否与关键词歌名相关，避免酷狗模糊召回把无关英文歌排在前面。
+    /// </summary>
+    public static bool IsRelevantSearchTitle(string keyword, string? songName)
+    {
+        keyword = keyword?.Trim() ?? "";
+        songName = songName?.Trim() ?? "";
+        if (keyword.Length == 0 || songName.Length == 0)
+        {
+            return false;
+        }
+
+        if (TitlesOverlap(keyword, songName))
+        {
+            return true;
+        }
+
+        // 「Punk Girl (最浪漫的罪名)」这类英文主标题 + 括号中文名
+        foreach (var segment in ExtractParentheticalSegments(songName))
+        {
+            if (TitlesOverlap(keyword, segment))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public static bool IsCompatibleAlternate(
@@ -76,6 +107,81 @@ public static class SongEditionHelper
         var normalizedCandidate = NormalizeTitle(candidateName);
         return normalizedRequest.Length > 0
                && normalizedRequest.Equals(normalizedCandidate, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool TitlesOverlap(string left, string right)
+    {
+        if (left.Equals(right, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (right.Contains(left, StringComparison.OrdinalIgnoreCase)
+            || left.Contains(right, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var normalizedLeft = NormalizeTitle(left);
+        var normalizedRight = NormalizeTitle(right);
+        if (normalizedLeft.Length == 0 || normalizedRight.Length == 0)
+        {
+            return false;
+        }
+
+        if (normalizedLeft.Equals(normalizedRight, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (normalizedRight.Contains(normalizedLeft, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        // 关键词比官方歌名长（带歌手）：允许歌名被包含，但拒绝过短误伤
+        return normalizedLeft.Contains(normalizedRight, StringComparison.OrdinalIgnoreCase)
+               && normalizedRight.Length >= MinContainedTitleLength;
+    }
+
+    private static IEnumerable<string> ExtractParentheticalSegments(string title)
+    {
+        var depth = 0;
+        var start = -1;
+        for (var i = 0; i < title.Length; i++)
+        {
+            var ch = title[i];
+            if (ch is '(' or '（' or '[' or '【')
+            {
+                if (depth == 0)
+                {
+                    start = i + 1;
+                }
+
+                depth++;
+                continue;
+            }
+
+            if (ch is ')' or '）' or ']' or '】')
+            {
+                if (depth == 0)
+                {
+                    continue;
+                }
+
+                depth--;
+                if (depth == 0 && start >= 0 && start < i)
+                {
+                    var segment = title[start..i].Trim();
+                    if (segment.Length > 0)
+                    {
+                        yield return segment;
+                    }
+
+                    start = -1;
+                }
+            }
+        }
     }
 
     /// <summary>

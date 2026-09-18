@@ -82,9 +82,11 @@ public class ModelSkipAndJsonContentTests
         Assert.Equal("SKIP", ModelOutputSanitizer.Sanitize("[SKIP]").RejectReason);
         Assert.Equal("SKIP", ModelOutputSanitizer.Sanitize("SKIP").RejectReason);
         Assert.True(ModelOutputSanitizer.IsModelSkip("[SKIP]"));
-        Assert.False(ModelOutputSanitizer.IsModelSkip("[SKIP] 因为无意义"));
+        Assert.True(ModelOutputSanitizer.IsModelSkip("[SKIP] 因为无意义"));
+        Assert.True(ModelOutputSanitizer.IsModelSkip("SKIP：无意义"));
         var explained = ModelOutputSanitizer.Sanitize("[SKIP] 因为无意义");
-        Assert.NotEqual("SKIP", explained.RejectReason);
+        Assert.Equal("SKIP", explained.RejectReason);
+        Assert.False(explained.Ok);
     }
 
     [Fact]

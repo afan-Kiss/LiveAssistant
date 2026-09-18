@@ -1,7 +1,7 @@
 namespace LiveAssistant.Services.AiSpeech;
 
 /// <summary>
-/// 同用户同礼物在窗口内合并件数。
+/// 同平台同用户同礼物在窗口内合并件数。
 /// </summary>
 public sealed class GiftMergeBuffer : IDisposable
 {
@@ -11,7 +11,9 @@ public sealed class GiftMergeBuffer : IDisposable
         string GiftName,
         int Count,
         DateTime FirstAtUtc,
-        DateTime LastAtUtc);
+        DateTime LastAtUtc,
+        string Platform,
+        string RoomKey);
 
     private readonly object _gate = new();
     private readonly Dictionary<string, GiftMergeItem> _pending = new(StringComparer.Ordinal);
@@ -28,14 +30,18 @@ public sealed class GiftMergeBuffer : IDisposable
         set => _mergeSeconds = Math.Clamp(value, 1, 30);
     }
 
-    public void Add(string userId, string nickname, string giftName, int count = 1)
-        => TryAdd(userId, nickname, giftName, count, out _);
+    public void Add(string userId, string nickname, string giftName, int count = 1,
+        string platform = "douyin", string roomKey = "")
+        => TryAdd(userId, nickname, giftName, count, platform, roomKey, out _);
 
     /// <summary>返回 false 时 skipReason 说明原因（empty_user / empty_gift）。</summary>
-    public bool TryAdd(string userId, string nickname, string giftName, int count, out string skipReason)
+    public bool TryAdd(string userId, string nickname, string giftName, int count,
+        string platform, string roomKey, out string skipReason)
     {
         userId = (userId ?? "").Trim();
         giftName = (giftName ?? "").Trim();
+        platform = NormalizePlatform(platform, roomKey);
+        roomKey ??= "";
         if (userId.Length == 0)
         {
             skipReason = "empty_user";
@@ -49,7 +55,7 @@ public sealed class GiftMergeBuffer : IDisposable
         }
 
         count = Math.Max(1, count);
-        var key = $"{userId}|{giftName}";
+        var key = $"{platform}|{userId}|{giftName}";
         var now = DateTime.UtcNow;
         lock (_gate)
         {
@@ -59,12 +65,14 @@ public sealed class GiftMergeBuffer : IDisposable
                 {
                     Nickname = string.IsNullOrWhiteSpace(nickname) ? existing.Nickname : nickname,
                     Count = existing.Count + count,
-                    LastAtUtc = now
+                    LastAtUtc = now,
+                    RoomKey = string.IsNullOrWhiteSpace(roomKey) ? existing.RoomKey : roomKey
                 };
             }
             else
             {
-                _pending[key] = new GiftMergeItem(userId, nickname ?? "", giftName, count, now, now);
+                _pending[key] = new GiftMergeItem(
+                    userId, nickname ?? "", giftName, count, now, now, platform, roomKey);
             }
 
             EnsureTimer_NoLock();
@@ -73,6 +81,10 @@ public sealed class GiftMergeBuffer : IDisposable
         skipReason = "";
         return true;
     }
+
+    /// <summary>兼容旧签名。</summary>
+    public bool TryAdd(string userId, string nickname, string giftName, int count, out string skipReason)
+        => TryAdd(userId, nickname, giftName, count, "douyin", "", out skipReason);
 
     public IReadOnlyList<GiftMergeItem> DrainReady()
     {
@@ -140,6 +152,28 @@ public sealed class GiftMergeBuffer : IDisposable
         }
 
         return done;
+    }
+
+    private static string NormalizePlatform(string? platform, string? roomKey)
+    {
+        var p = (platform ?? "").Trim().ToLowerInvariant();
+        if (p is "kuaishou" or "ks")
+        {
+            return "kuaishou";
+        }
+
+        if (p is "douyin" or "dy")
+        {
+            return "douyin";
+        }
+
+        if (!string.IsNullOrWhiteSpace(roomKey)
+            && roomKey.StartsWith("ks:", StringComparison.OrdinalIgnoreCase))
+        {
+            return "kuaishou";
+        }
+
+        return "douyin";
     }
 
     public void Dispose()

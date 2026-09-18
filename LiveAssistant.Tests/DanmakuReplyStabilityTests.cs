@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using LiveAssistant.Config;
+using LiveAssistant.Models;
 using LiveAssistant.Services;
 using LiveAssistant.Utils;
 using Xunit;
@@ -85,10 +86,10 @@ public sealed class DanmakuReplyStabilityTests : IDisposable
             log,
             settings,
             idem,
-            (_, _, _, _) =>
+            (_, _, _, _, _) =>
             {
                 Interlocked.Increment(ref sends);
-                return Task.FromResult(true);
+                return Task.FromResult(new MentionSendResult { Ok = true });
             });
 
         const string replyId = "fixed-reply-id-001";
@@ -122,11 +123,11 @@ public sealed class DanmakuReplyStabilityTests : IDisposable
             log,
             settings,
             idem,
-            (_, _, _, _) =>
+            (_, _, _, _, _) =>
             {
                 var n = Interlocked.Increment(ref attempts);
                 // 第一次失败，第二次成功 —— 验证重试用同一条链路且成功后只记一次
-                return Task.FromResult(n >= 2);
+                return Task.FromResult(new MentionSendResult { Ok = n >= 2 });
             });
 
         queue.EnqueueMention("rid", "user-x", "内容");

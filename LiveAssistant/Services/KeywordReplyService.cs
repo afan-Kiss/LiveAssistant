@@ -79,7 +79,7 @@ public sealed class KeywordReplyService
                 continue;
             }
 
-            replyQueue.EnqueueMention(webRid, item.UserId, msg);
+            replyQueue.EnqueueMention(webRid, item.UserId, msg, nickname: item.Nickname);
             _log?.DouyinInfo(
                 $"KEYWORD_MATCH ruleId={rule.Id} keyword={keyword} userId={item.UserId} matched=true replyQueued=true");
             return Task.FromResult(true);

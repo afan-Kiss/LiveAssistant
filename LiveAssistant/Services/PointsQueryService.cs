@@ -44,7 +44,7 @@ public sealed class PointsQueryService
             msg = $"@{item.Nickname} 你当前有 {user.Points} 积分，等级 Lv{user.Level}。最近：{details}";
         }
 
-        replyQueue.EnqueueMention(webRid, item.UserId, msg);
+        replyQueue.EnqueueMention(webRid, item.UserId, msg, nickname: item.Nickname);
         return true;
     }
 }

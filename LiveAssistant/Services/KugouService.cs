@@ -33,6 +33,9 @@ public sealed class KugouService
     private int _fallbackProbeIndex;
     private int _searchFallbackKeywordIndex;
     private readonly Dictionary<string, (KugouUrlData Data, DateTime ExpiresAt)> _urlCache = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>侧车 HTTP 全局串行；嵌套 SafeAsync（如推荐→搜索）靠 AsyncLocal 可重入。</summary>
+    private readonly SemaphoreSlim _apiGate = new(1, 1);
+    private readonly AsyncLocal<bool> _holdingApiGate = new();
     private static readonly TimeSpan UrlCacheTtl = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan FullPlaybackCacheTtl = TimeSpan.FromSeconds(90);
     private static readonly string[] SearchFallbackKeywords =
@@ -1251,15 +1254,15 @@ public sealed class KugouService
         _urlCache[BuildUrlCacheKey(ctx)] = (data, DateTime.UtcNow.Add(UrlCacheTtl));
     }
 
-    /// <summary>搜索候选，按歌手去重，最多返回 displayLimit 个。</summary>
+    /// <summary>搜索候选：跳过衍生版/无关歌名后取前几首，不做歌手去重。</summary>
     public async Task<List<SongSearchCandidate>> SearchCandidatesAsync(
         string keyword,
-        int displayLimit = 3,
+        int displayLimit = 1,
         CancellationToken ct = default)
     {
         var songs = await SearchAsync(keyword, 1, 30, ct);
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var list = new List<SongSearchCandidate>();
+        var skippedIrrelevant = 0;
         var keywordLooksDerivative = SongEditionHelper.LooksLikeDerivativeEdition(keyword, null);
         foreach (var song in songs)
         {
@@ -1274,15 +1277,17 @@ public sealed class KugouService
                 candidate.Artist = "未知歌手";
             }
 
-            // 点歌关键词未带 DJ/Remix 时，跳过衍生版，避免自动选用第一条就是 DJ
+            // 点歌关键词未带 DJ/Remix 时，跳过衍生版，避免第一条就是 DJ
             if (!keywordLooksDerivative
                 && SongEditionHelper.LooksLikeDerivativeEdition(candidate.SongName, candidate.Artist))
             {
                 continue;
             }
 
-            if (!seen.Add(candidate.Artist))
+            // 酷狗模糊召回常把无关英文歌排前面；歌名与关键词无关则跳过
+            if (!SongEditionHelper.IsRelevantSearchTitle(keyword, candidate.SongName))
             {
+                skippedIrrelevant++;
                 continue;
             }
 
@@ -1291,6 +1296,12 @@ public sealed class KugouService
             {
                 break;
             }
+        }
+
+        if (skippedIrrelevant > 0)
+        {
+            _log.KugouInfo(
+                $"点歌搜索过滤无关歌名: keyword={keyword} skipped={skippedIrrelevant} kept={list.Count}");
         }
 
         return list;
@@ -1785,7 +1796,7 @@ public sealed class KugouService
             return status;
         }
 
-        try
+        return await SafeAsync("full_playback_probe", async () =>
         {
             string? lastReason = null;
             foreach (var hash in FullPlaybackProbeHashes)
@@ -1825,14 +1836,7 @@ public sealed class KugouService
             status.Reason = string.IsNullOrWhiteSpace(lastReason) ? "完整版不可用" : lastReason;
             CacheFullPlaybackStatus(status);
             return status;
-        }
-        catch (Exception ex)
-        {
-            status.FullPlaybackAvailable = false;
-            status.Reason = ex.Message;
-            CacheFullPlaybackStatus(status);
-            return status;
-        }
+        }, status);
     }
 
     private void CacheFullPlaybackStatus(KugouFullPlaybackStatus status)
@@ -1849,15 +1853,36 @@ public sealed class KugouService
 
     private async Task<T> SafeAsync<T>(string operation, Func<Task<T>> action, T fallback)
     {
+        var acquired = false;
         try
         {
-            return await action();
+            if (!_holdingApiGate.Value)
+            {
+                if (!await _apiGate.WaitAsync(0).ConfigureAwait(false))
+                {
+                    _log.KugouInfo($"{operation} 排队等待侧车");
+                    await _apiGate.WaitAsync().ConfigureAwait(false);
+                }
+
+                acquired = true;
+                _holdingApiGate.Value = true;
+            }
+
+            return await action().ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             _log.KugouWarn($"{operation} 失败: {ex.Message}");
             _log.Error("kugou", operation, ex);
             return fallback;
+        }
+        finally
+        {
+            if (acquired)
+            {
+                _holdingApiGate.Value = false;
+                _apiGate.Release();
+            }
         }
     }
 }

@@ -17,11 +17,13 @@ public class AiSpeechFilterTests
     [InlineData("查我", true)]
     [InlineData("切歌", true)]
     [InlineData("哈哈", true)]
-    [InlineData("天气不错", false)] // 阈值0：短闲聊也可回复
-    [InlineData("你好", false)]
+    [InlineData("天气不错", false)] // 长度≥4 有加分，可回复
+    [InlineData("你好", true)] // 过短无意义，硬过滤
     [InlineData("主播这个软件是自己写的吗", false)]
     [InlineData("今天天气怎么样呀", false)]
     [InlineData("主播你好", false)]
+    [InlineData("来了", true)]
+    [InlineData("沙发", true)]
     public void ShouldSkip_MatchesRules(string content, bool expectSkip)
     {
         var item = new DanmakuItem { Content = content, MsgType = "chat", Nickname = "观众A", UserId = "u1" };
@@ -154,6 +156,23 @@ public class SpeechTextCleanerTests
         var cleaned = SpeechTextCleaner.Clean(raw, 20);
         Assert.True(SpeechTextCleaner.CountSpeechChars(cleaned) <= 25);
         Assert.DoesNotContain("第三句", cleaned);
+        Assert.EndsWith("。", cleaned);
+    }
+
+    [Fact]
+    public void FormatForTts_SplitsSentencesWithNewlines()
+    {
+        var tts = SpeechTextCleaner.FormatForTts("你好呀。今天怎么样？再来一句！");
+        Assert.Contains("\n", tts);
+        Assert.Equal(3, tts.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length);
+    }
+
+    [Fact]
+    public void Clean_AppendsPeriodWhenHardCutIncomplete()
+    {
+        var raw = "这是一句没有句号但会被硬切的很长很长很长很长很长很长的口语";
+        var cleaned = SpeechTextCleaner.Clean(raw, 18);
+        Assert.True(SpeechTextCleaner.CountSpeechChars(cleaned) <= 19);
         Assert.EndsWith("。", cleaned);
     }
 }

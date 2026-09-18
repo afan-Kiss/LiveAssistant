@@ -116,15 +116,22 @@ public sealed class GiftCollectorService : IDisposable
         var idleMs = Math.Max(1000,
             settings.IdleImFetchIntervalMs > 0 ? settings.IdleImFetchIntervalMs : settings.ImFetchIntervalMs);
         var activeMs = Math.Max(200, settings.ActiveImFetchIntervalMs);
+        var roomRecheckEvery = TimeSpan.FromMinutes(2);
+        var lastRoomCheckUtc = DateTime.MinValue;
+
+        // 启动即校验 room_id：直播重开后旧 id 仍可能推进 cursor，但收不到礼物
+        await EnsureFreshRoomIdAsync(webRid, ct).ConfigureAwait(false);
+        lastRoomCheckUtc = DateTime.UtcNow;
 
         while (!ct.IsCancellationRequested)
         {
             try
             {
-                if (string.IsNullOrWhiteSpace(_roomId))
+                if (string.IsNullOrWhiteSpace(_roomId)
+                    || DateTime.UtcNow - lastRoomCheckUtc >= roomRecheckEvery)
                 {
-                    _roomId = await _rooms.ResolveRoomIdAsync(webRid, ct);
-                    _log.GiftInfo($"[room] web_rid={webRid} room_id={_roomId}");
+                    await EnsureFreshRoomIdAsync(webRid, ct).ConfigureAwait(false);
+                    lastRoomCheckUtc = DateTime.UtcNow;
                 }
 
                 var cookie = await _cookies.GetActiveCookieAsync(ct);
@@ -232,6 +239,36 @@ public sealed class GiftCollectorService : IDisposable
         PersistCursor(webRid);
         pipeline.Reset();
         _log.GiftInfo($"GiftCollector 已停止 web_rid={webRid}");
+    }
+
+    private async Task EnsureFreshRoomIdAsync(string webRid, CancellationToken ct)
+    {
+        var resolved = await _rooms.ResolveRoomIdAsync(webRid, ct).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(resolved))
+        {
+            throw new InvalidOperationException("无法从 Sidecar 解析 room_id");
+        }
+
+        if (string.Equals(_roomId, resolved, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(_roomId))
+        {
+            _log.GiftInfo(
+                $"[room] changed web_rid={webRid} from={_roomId} to={resolved} 重置 cursor（直播场次已切换）");
+            _cursor = "";
+            _internalExt = "";
+            _deduper.ClearMemory();
+        }
+        else
+        {
+            _log.GiftInfo($"[room] web_rid={webRid} room_id={resolved}");
+        }
+
+        _roomId = resolved;
+        PersistCursor(webRid);
     }
 
     private bool Emit(GiftEvent ev)

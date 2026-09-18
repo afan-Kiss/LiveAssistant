@@ -42,10 +42,10 @@ public sealed class StabilityBugFixTests : IDisposable
             new DouyinService(config.Settings.Douyin, log),
             log,
             new ReplySettings { MaxPerSecond = 50, MaxRetries = 0 },
-            sendMention: (_, _, content, _) =>
+            sendMention: (_, _, content, _, _) =>
             {
                 sent.Add(content);
-                return Task.FromResult(true);
+                return Task.FromResult(new MentionSendResult { Ok = true });
             });
 
         var song = CreateSongRequest(db, config, log, replyQueue, users);
@@ -80,7 +80,7 @@ public sealed class StabilityBugFixTests : IDisposable
             new DouyinService(config.Settings.Douyin, log),
             log,
             new ReplySettings { MaxPerSecond = 50, MaxRetries = 0, SongRequestBatchWindowMs = 50 },
-            sendMention: (_, _, _, _) => Task.FromResult(true));
+            sendMention: (_, _, _, _, _) => Task.FromResult(new MentionSendResult { Ok = true }));
         var (song, queue) = CreateSongRequestWithQueue(db, config, log, replyQueue, users);
 
         Assert.True(await song.HandleDanmakuAsync(
@@ -126,10 +126,10 @@ public sealed class StabilityBugFixTests : IDisposable
             new DouyinService(config.Settings.Douyin, log),
             log,
             new ReplySettings { MaxPerSecond = 50 },
-            sendMention: (_, _, content, _) =>
+            sendMention: (_, _, content, _, _) =>
             {
                 sent.Add(content);
-                return Task.FromResult(true);
+                return Task.FromResult(new MentionSendResult { Ok = true });
             });
 
         Assert.False(await keyword.TryHandleAsync(
@@ -166,10 +166,10 @@ public sealed class StabilityBugFixTests : IDisposable
             new DouyinService(new DouyinSettings(), log),
             log,
             settings,
-            sendMention: (_, _, content, _) =>
+            sendMention: (_, _, content, _, _) =>
             {
                 sends.Add((DateTime.UtcNow, content));
-                return Task.FromResult(true);
+                return Task.FromResult(new MentionSendResult { Ok = true });
             });
 
         var started = DateTime.UtcNow;
@@ -198,7 +198,7 @@ public sealed class StabilityBugFixTests : IDisposable
             log,
             settings,
             outboundTracker: tracker,
-            sendMention: (_, _, _, _) => Task.FromResult(false));
+            sendMention: (_, _, _, _, _) => Task.FromResult(new MentionSendResult { Ok = false }));
 
         queue.EnqueueMention("rid", "bot", "点歌成功《泡沫》前面还有0首");
         await Task.Delay(500);
@@ -218,13 +218,15 @@ public sealed class StabilityBugFixTests : IDisposable
             log,
             new ReplySettings { MaxPerSecond = 50, MaxRetries = 0 },
             outboundTracker: tracker,
-            sendMention: (_, _, _, _) => Task.FromResult(true));
+            sendMention: (_, _, _, _, _) => Task.FromResult(new MentionSendResult { Ok = true }));
 
         queue.EnqueueMention("rid", "bot", "已切歌，消耗20积分");
         Assert.True(await WaitUntil(
-            () => tracker.HasRecentOutboundContent("已切歌，消耗20积分"),
+            () => tracker.HasRecentOutboundContent("已切歌，消耗20积分", "rid"),
             TimeSpan.FromSeconds(2)));
-        // 仅正文不能命中 IsRecentOutbound；需 msg_id
+        // 跨房间不应命中；仅正文不能命中 IsRecentOutbound；需 msg_id
+        Assert.False(tracker.HasRecentOutboundContent("已切歌，消耗20积分"));
+        Assert.False(tracker.HasRecentOutboundContent("已切歌，消耗20积分", "other-room"));
         Assert.False(tracker.IsRecentOutbound(null, "已切歌，消耗20积分"));
     }
 
@@ -461,7 +463,7 @@ public sealed class StabilityBugFixTests : IDisposable
         });
         using var replyQueue = new ReplyQueue(
             douyin, log, new ReplySettings { MaxPerSecond = 50 },
-            sendMention: (_, _, _, _) => Task.FromResult(true));
+            sendMention: (_, _, _, _, _) => Task.FromResult(new MentionSendResult { Ok = true }));
         using var ban = new BanVoteService(
             config,
             new BanVoteRepository(db),
@@ -520,10 +522,10 @@ public sealed class StabilityBugFixTests : IDisposable
             new DouyinService(config.Settings.Douyin, log),
             log,
             config.Settings.Reply,
-            sendMention: (_, _, content, _) =>
+            sendMention: (_, _, content, _, _) =>
             {
                 sent.Add(content);
-                return Task.FromResult(true);
+                return Task.FromResult(new MentionSendResult { Ok = true });
             });
         var svc = new SkipSongService(
             config, users, playback, queue, engine, new ReplyService(config), replyQueue, system, log);

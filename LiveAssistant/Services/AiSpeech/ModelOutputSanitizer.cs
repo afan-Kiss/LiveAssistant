@@ -127,8 +127,7 @@ public static partial class ModelOutputSanitizer
     }
 
     /// <summary>
-    /// 仅当整段输出为 SKIP / [SKIP]（可带空白）时判定为主动沉默。
-    /// 不允许「[SKIP] 因为……」这类带解释的输出进入 TTS。
+    /// 模型主动沉默：整段为 SKIP/[SKIP]，或以 SKIP/[SKIP] 开头（含解释）均不进入 TTS。
     /// </summary>
     public static bool IsModelSkip(string? text)
     {
@@ -137,17 +136,34 @@ public static partial class ModelOutputSanitizer
             return false;
         }
 
-        var t = text.Trim();
+        var t = MultiSpace().Replace(text.Replace('\r', ' ').Replace('\n', ' ').Trim(), " ").Trim();
         if (t.Equals("SKIP", StringComparison.OrdinalIgnoreCase)
             || t.Equals("[SKIP]", StringComparison.OrdinalIgnoreCase))
         {
             return true;
         }
 
-        // 去掉常见括号/空白后再比一次
-        t = MultiSpace().Replace(t.Replace('\r', ' ').Replace('\n', ' '), " ").Trim();
-        return t.Equals("SKIP", StringComparison.OrdinalIgnoreCase)
-               || t.Equals("[SKIP]", StringComparison.OrdinalIgnoreCase);
+        // 「[SKIP] 因为……」「SKIP：无意义」等带解释的输出也必须静默，避免读出废话
+        if (t.StartsWith("[SKIP]", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (t.StartsWith("SKIP", StringComparison.OrdinalIgnoreCase))
+        {
+            var rest = t.Length <= 4 ? "" : t[4..].TrimStart();
+            return rest.Length == 0
+                   || rest.StartsWith(']')
+                   || rest.StartsWith('：')
+                   || rest.StartsWith(':')
+                   || rest.StartsWith('，')
+                   || rest.StartsWith(',')
+                   || rest.StartsWith(' ')
+                   || rest.StartsWith('（')
+                   || rest.StartsWith('(');
+        }
+
+        return false;
     }
 
     /// <summary>

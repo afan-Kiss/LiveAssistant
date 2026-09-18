@@ -64,6 +64,7 @@ public sealed class MainForm : Form
     private readonly CheckBox _chkAiAnnounceSong = new();
     private readonly ComboBox _cmbAiModel = new();
     private readonly ComboBox _cmbAiDevice = new();
+    private readonly ComboBox _cmbAiKsDevice = new();
     private readonly NumericUpDown _numAiInterval = new();
     private readonly NumericUpDown _numAiQueue = new();
     private readonly NumericUpDown _numAiMaxChars = new();
@@ -593,6 +594,7 @@ public sealed class MainForm : Form
 
         _cmbAiModel.DropDownStyle = ComboBoxStyle.DropDownList;
         _cmbAiDevice.DropDownStyle = ComboBoxStyle.DropDownList;
+        _cmbAiKsDevice.DropDownStyle = ComboBoxStyle.DropDownList;
 
         _lblAiVoice.Text = string.IsNullOrWhiteSpace(s.Voice) ? "my_voice" : s.Voice;
         _lblAiVoice.TextAlign = ContentAlignment.MiddleLeft;
@@ -607,8 +609,8 @@ public sealed class MainForm : Form
         _numAiQueue.Maximum = 20;
         _numAiQueue.Value = Math.Clamp(s.MaxQueueSize, 1, 20);
         _numAiMaxChars.Minimum = 10;
-        _numAiMaxChars.Maximum = 120;
-        _numAiMaxChars.Value = Math.Clamp(s.MaxReplyLength, 10, 120);
+        _numAiMaxChars.Maximum = 160;
+        _numAiMaxChars.Value = Math.Clamp(s.MaxReplyLength, 10, 160);
 
         _numAiGiftMerge.Minimum = 1;
         _numAiGiftMerge.Maximum = 30;
@@ -625,7 +627,7 @@ public sealed class MainForm : Form
         _numAiVolume.Minimum = 50;
         _numAiVolume.Maximum = 200;
         _numAiVolume.Increment = 10;
-        _numAiVolume.Value = Math.Clamp(s.VolumePercent <= 0 ? 180 : s.VolumePercent, 50, 200);
+        _numAiVolume.Value = Math.Clamp(s.VolumePercent <= 0 ? 120 : s.VolumePercent, 50, 200);
 
         FillAiNamedCombo(_cmbAiContext, new[]
         {
@@ -777,7 +779,8 @@ public sealed class MainForm : Form
         AddRow("", _lblAiVoiceStatus, 22);
         AddRow("模型状态", _lblAiModelStatus, 22);
         AddRow("AI语音状态", _lblAiHealthSummary, 54);
-        AddRow("输出设备", _cmbAiDevice, 32);
+        AddRow("抖音输出设备", _cmbAiDevice, 32);
+        AddRow("快手输出设备", _cmbAiKsDevice, 32);
         AddRow("AI语音音量%", _numAiVolume, 30);
         AddRow("回复间隔", _numAiInterval, 30);
         AddRow("最大排队", _numAiQueue, 30);
@@ -1180,6 +1183,27 @@ public sealed class MainForm : Form
             });
         };
 
+        _cmbAiKsDevice.SelectedIndexChanged += (_, _) =>
+        {
+            if (_aiUiLoading || _cmbAiKsDevice.SelectedItem is not AudioOutputDeviceInfo device)
+            {
+                return;
+            }
+
+            _host.AiSpeech.SaveSettingsFromUi(s =>
+            {
+                // 与抖音当前设备相同且此前未单独配置 → 保持跟随，不固化
+                var dyNum = AudioOutputDevices.ResolveDeviceNumber(s.OutputDeviceName, s.OutputDeviceNumber);
+                if (!s.HasSeparateKuaishouOutput && device.DeviceNumber == dyNum)
+                {
+                    return;
+                }
+
+                s.KuaishouOutputDeviceNumber = device.DeviceNumber;
+                s.KuaishouOutputDeviceName = device.DeviceNumber < 0 ? "" : device.Name;
+            });
+        };
+
         void SaveAiFeatureFlags()
         {
             if (_aiUiLoading)
@@ -1420,7 +1444,7 @@ public sealed class MainForm : Form
         _numAiWelcomeInterval.Value = Math.Clamp(s.WelcomeIntervalSeconds, (int)_numAiWelcomeInterval.Minimum, (int)_numAiWelcomeInterval.Maximum);
         _numAiLikeInterval.Value = Math.Clamp(Math.Max(20, s.LikeIntervalSeconds), (int)_numAiLikeInterval.Minimum, (int)_numAiLikeInterval.Maximum);
         _numAiSummaryInterval.Value = Math.Clamp(s.SummaryIntervalSeconds, (int)_numAiSummaryInterval.Minimum, (int)_numAiSummaryInterval.Maximum);
-        _numAiVolume.Value = Math.Clamp(s.VolumePercent <= 0 ? 180 : s.VolumePercent, (int)_numAiVolume.Minimum, (int)_numAiVolume.Maximum);
+        _numAiVolume.Value = Math.Clamp(s.VolumePercent <= 0 ? 120 : s.VolumePercent, (int)_numAiVolume.Minimum, (int)_numAiVolume.Maximum);
 
         SelectAiNamedCombo(_cmbAiContext, s.ContextMode);
         SelectAiNamedCombo(_cmbAiEmotion, string.IsNullOrWhiteSpace(s.Emotion) ? "auto" : s.Emotion, preferLastDuplicate: true);
@@ -1432,25 +1456,34 @@ public sealed class MainForm : Form
     {
         var devices = AudioOutputDevices.ListDevices();
         _cmbAiDevice.Items.Clear();
+        _cmbAiKsDevice.Items.Clear();
         foreach (var d in devices)
         {
             _cmbAiDevice.Items.Add(d);
+            _cmbAiKsDevice.Items.Add(d);
         }
 
         var s = _host.Config.Settings.AiSpeech;
-        var selectedNumber = AudioOutputDevices.ResolveDeviceNumber(s.OutputDeviceName, s.OutputDeviceNumber);
-        for (var i = 0; i < _cmbAiDevice.Items.Count; i++)
+        SelectAiDeviceCombo(_cmbAiDevice, s.OutputDeviceName, s.OutputDeviceNumber);
+        var (ksName, ksNum) = s.ResolveOutputDevice("kuaishou");
+        SelectAiDeviceCombo(_cmbAiKsDevice, ksName, ksNum);
+    }
+
+    private static void SelectAiDeviceCombo(ComboBox combo, string? deviceName, int deviceNumber)
+    {
+        var selectedNumber = AudioOutputDevices.ResolveDeviceNumber(deviceName, deviceNumber);
+        for (var i = 0; i < combo.Items.Count; i++)
         {
-            if (_cmbAiDevice.Items[i] is AudioOutputDeviceInfo info && info.DeviceNumber == selectedNumber)
+            if (combo.Items[i] is AudioOutputDeviceInfo info && info.DeviceNumber == selectedNumber)
             {
-                _cmbAiDevice.SelectedIndex = i;
+                combo.SelectedIndex = i;
                 return;
             }
         }
 
-        if (_cmbAiDevice.Items.Count > 0)
+        if (combo.Items.Count > 0)
         {
-            _cmbAiDevice.SelectedIndex = 0;
+            combo.SelectedIndex = 0;
         }
     }
 
@@ -1555,6 +1588,8 @@ public sealed class MainForm : Form
                 s.OutputDeviceNumber = device.DeviceNumber;
                 s.OutputDeviceName = device.DeviceNumber < 0 ? "" : device.Name;
             }
+
+            // 快手输出仅在下拉变更时写入（SelectedIndexChanged），避免「跟随抖音」被其它设置保存固化
         });
     }
 

@@ -322,7 +322,7 @@ public sealed class SongRequestConfirmFlowTests : IDisposable
             new DouyinService(config.Settings.Douyin, log),
             log,
             config.Settings.Reply,
-            sendMention: (_, _, content, _) => Task.FromResult(onMention?.Invoke(content) ?? true));
+            sendMention: (_, _, content, _, _) => Task.FromResult(new MentionSendResult { Ok = onMention?.Invoke(content) ?? true }));
 
         var songRequest = new SongRequestService(
             config, kugou, queue, permission, new ReplyService(config),

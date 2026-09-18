@@ -32,37 +32,156 @@ public sealed class ProcessWatchdogService
     public async Task EnsureSidecarsAsync(
         Func<Task<bool>> douyinHealth,
         Func<Task<bool>> kugouHealth,
+        Func<Task<bool>>? kuaishouHealth = null,
         CancellationToken ct = default)
     {
         try
         {
             if (GetMissingRequiredFiles().Count > 0)
             {
-                return;
+                // 抖音/酷狗缺文件时仍可尝试拉起快手 jar
+            }
+            else
+            {
+                if (!await douyinHealth())
+                {
+                    await TryStartProcessAsync(
+                        _config.Settings.Douyin.DouyinExePath,
+                        global::LiveAssistant.SidecarLocator.DouyinStartArgs(_config.Settings.Douyin.DouyinExePath),
+                        "抖音API",
+                        ct);
+                }
+
+                if (!await kugouHealth())
+                {
+                    await TryStartProcessAsync(_config.Settings.Kugou.KugouExePath, "", "酷狗", ct);
+                }
+
+                if (await kugouHealth())
+                {
+                    await EnsureKgapiJsAsync(ct);
+                }
             }
 
-            if (!await douyinHealth())
+            if (kuaishouHealth != null
+                && _config.Settings.Kuaishou.Enabled
+                && !await kuaishouHealth())
             {
-                await TryStartProcessAsync(
-                    _config.Settings.Douyin.DouyinExePath,
-                    global::LiveAssistant.SidecarLocator.DouyinStartArgs(_config.Settings.Douyin.DouyinExePath),
-                    "抖音API",
-                    ct);
-            }
-
-            if (!await kugouHealth())
-            {
-                await TryStartProcessAsync(_config.Settings.Kugou.KugouExePath, "", "酷狗", ct);
-            }
-
-            if (await kugouHealth())
-            {
-                await EnsureKgapiJsAsync(ct);
+                await TryStartKuaishouAsync(ct);
             }
         }
         catch (Exception ex)
         {
             _log.Error("app", "Sidecar 守护检查异常", ex);
+        }
+    }
+
+    private async Task TryStartKuaishouAsync(CancellationToken ct)
+    {
+        var jar = Path.Combine(AppPaths.ExeDirectory, "sidecars", "kuaishou", "ks-ui-server.jar");
+        if (!File.Exists(jar))
+        {
+            return;
+        }
+
+        var port = ParsePortFromBaseUrl(_config.Settings.Kuaishou.BaseUrl, 18900);
+        if (await IsLocalPortOpenAsync(port, ct))
+        {
+            _log.KuaishouInfo($"快手侧车端口 :{port} 已占用，跳过启动");
+            return;
+        }
+
+        var java = ResolveJavaExe();
+        if (string.IsNullOrWhiteSpace(java))
+        {
+            _log.KuaishouWarn("未找到 Java，无法自动启动 ks-ui-server.jar（请安装 JDK17 或配置 JAVA_HOME）");
+            return;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = java,
+                Arguments = $"-jar \"{jar}\"",
+                WorkingDirectory = Path.GetDirectoryName(jar) ?? AppPaths.ExeDirectory,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            });
+            _system.Add("已启动快手侧车 ks-ui-server");
+            _log.KuaishouInfo($"启动快手侧车: {java} -jar {jar}");
+            await Task.Delay(2500, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Error("app", "启动快手侧车失败", ex);
+        }
+    }
+
+    internal static string? ResolveJavaExePublic() => ResolveJavaExe();
+
+    private static string? ResolveJavaExe()
+    {
+        var home = Environment.GetEnvironmentVariable("JAVA_HOME");
+        if (!string.IsNullOrWhiteSpace(home))
+        {
+            var candidate = Path.Combine(home.Trim(), "bin", OperatingSystem.IsWindows() ? "java.exe" : "java");
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        var portable = Path.Combine(AppPaths.ExeDirectory, "sidecars", "kuaishou", "jre", "bin",
+            OperatingSystem.IsWindows() ? "java.exe" : "java");
+        if (File.Exists(portable))
+        {
+            return portable;
+        }
+
+        return OperatingSystem.IsWindows() ? "java.exe" : "java";
+    }
+
+    private static int ParsePortFromBaseUrl(string? baseUrl, int fallback)
+    {
+        try
+        {
+            if (Uri.TryCreate(string.IsNullOrWhiteSpace(baseUrl) ? "" : baseUrl.Trim(), UriKind.Absolute, out var uri)
+                && uri.Port > 0)
+            {
+                return uri.Port;
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+
+        return fallback;
+    }
+
+    private static async Task<bool> IsLocalPortOpenAsync(int port, CancellationToken ct)
+    {
+        try
+        {
+            using var tcp = new System.Net.Sockets.TcpClient();
+            var connect = tcp.ConnectAsync("127.0.0.1", port);
+            var completed = await Task.WhenAny(connect, Task.Delay(800, ct));
+            if (completed != connect)
+            {
+                return false;
+            }
+
+            await connect;
+            return tcp.Connected;
+        }
+        catch
+        {
+            return false;
         }
     }
 
@@ -203,7 +322,8 @@ public sealed class ProcessWatchdogService
                 FileName = exePath,
                 Arguments = args,
                 WorkingDirectory = Path.GetDirectoryName(exePath) ?? "",
-                UseShellExecute = true
+                UseShellExecute = false,
+                CreateNoWindow = true
             });
             _system.Add($"已启动{name}服务");
             _log.Info($"启动 {name}: {exePath} {args}");

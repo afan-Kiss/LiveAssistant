@@ -24,6 +24,9 @@ public sealed class LogService
     public void DouyinInfo(string message) => Write("douyin", "INFO", message);
     public void DouyinWarn(string message) => Write("douyin", "WARN", message);
 
+    public void KuaishouInfo(string message) => Write("kuaishou", "INFO", message);
+    public void KuaishouWarn(string message) => Write("kuaishou", "WARN", message);
+
     public void KugouInfo(string message) => Write("kugou", "INFO", message);
     public void KugouWarn(string message) => Write("kugou", "WARN", message);
 

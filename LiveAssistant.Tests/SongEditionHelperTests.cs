@@ -30,4 +30,21 @@ public sealed class SongEditionHelperTests
         Assert.True(SongEditionHelper.LooksLikeDerivativeEdition("泡沫", "G.E.M.邓紫棋、DJ Wave"));
         Assert.False(SongEditionHelper.LooksLikeDerivativeEdition("泡沫", "G.E.M.邓紫棋"));
     }
+
+    [Theory]
+    [InlineData("最浪漫的罪名", "Punk Girl", false)]
+    [InlineData("最不浪漫的罪名", "MOONSTAR", false)]
+    [InlineData("最浪漫的罪名", "最浪漫的罪名", true)]
+    [InlineData("最浪漫的罪名", "最浪漫的罪名 (电影原声)", true)]
+    [InlineData("泡沫", "泡沫", true)]
+    [InlineData("泡沫 邓紫棋", "泡沫", true)]
+    [InlineData("Punk Girl", "Punk Girl", true)]
+    [InlineData("最浪漫的罪名", "Punk Girl (最浪漫的罪名)", true)]
+    public void IsRelevantSearchTitle_RejectsUnrelatedEnglishHits(
+        string keyword,
+        string songName,
+        bool expected)
+    {
+        Assert.Equal(expected, SongEditionHelper.IsRelevantSearchTitle(keyword, songName));
+    }
 }
