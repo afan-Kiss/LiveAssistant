@@ -104,6 +104,19 @@ public sealed class DataCleanupService : IDisposable
             cmd.Parameters.AddWithValue("$cutoff", queueCutoff);
             cmd.ExecuteNonQuery();
         }
+
+        var streamDays = Math.Max(7, settings.MovieInteractionStreamRetentionDays);
+        var streamCutoff = now.AddDays(-streamDays);
+        try
+        {
+            var streamRepo = new MovieInteractionRepository(_db);
+            var n = streamRepo.CleanupOldStream(streamCutoff);
+            if (n > 0) _log.AdminInfo($"清理电影互动事件流 {n} 条（保留≥{streamDays}天）");
+        }
+        catch (Exception ex)
+        {
+            _log.Error("cleanup", "电影互动事件流清理失败", ex);
+        }
     }
 
     public void Dispose() => Stop();

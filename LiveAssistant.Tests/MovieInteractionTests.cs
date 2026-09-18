@@ -55,8 +55,10 @@ public sealed class MovieInteractionTests : IDisposable
     {
         var t0 = new DateTime(2026, 9, 18, 12, 0, 0);
         var t1 = t0.AddMinutes(1);
-        Assert.True(_svc.OnGiftReceived(Gift("a", "u1", 1, t0)));
-        Assert.True(_svc.OnGiftReceived(Gift("b", "u1", 10, t1)));
+        _svc.NowProvider = () => t0;
+        Assert.True(_svc.OnGiftReceived(Gift("a", "u1", 1, t0.AddMinutes(-10))));
+        _svc.NowProvider = () => t1;
+        Assert.True(_svc.OnGiftReceived(Gift("b", "u1", 10, t1.AddMinutes(-10))));
 
         var credits = _svc.Repository.GetCreditsByUser("u1");
         Assert.Equal(2, credits.Count);
@@ -77,7 +79,8 @@ public sealed class MovieInteractionTests : IDisposable
     public void CreditExpiresAfterThreeMinutes_AndIsNotDeleted()
     {
         var created = new DateTime(2026, 9, 18, 12, 0, 0);
-        Assert.True(_svc.OnGiftReceived(Gift("exp", "u1", 1, created)));
+        _svc.NowProvider = () => created;
+        Assert.True(_svc.OnGiftReceived(Gift("exp", "u1", 1, created.AddMinutes(-5))));
         var credit = _svc.Repository.GetCreditByGiftEventId("exp")!;
         Assert.Equal(created.AddMinutes(3), credit.ExpiresAt);
 
@@ -86,9 +89,48 @@ public sealed class MovieInteractionTests : IDisposable
         Assert.Equal("expired", expired.Status);
         Assert.Equal(0, _svc.Repository.GetTotalScore("1462628"));
 
-        Assert.True(_svc.OnGiftReceived(Gift("live", "u2", 1, created)));
+        _svc.NowProvider = () => created;
+        Assert.True(_svc.OnGiftReceived(Gift("live", "u2", 1, created.AddMinutes(-5))));
         Assert.True(Apply("u2", "哪吒好评", created.AddMinutes(3).AddSeconds(-1), "m-live"));
         Assert.Equal(10, _svc.Repository.GetTotalScore("1462628"));
+    }
+
+    [Fact]
+    public void OldPlatformGiftTime_StillGetsFullExpireWindow()
+    {
+        var receivedAt = new DateTime(2026, 9, 18, 15, 0, 0);
+        var platformTime = receivedAt.AddMinutes(-2);
+        _svc.NowProvider = () => receivedAt;
+        Assert.True(_svc.OnGiftReceived(Gift("late", "u1", 1, platformTime)));
+        var credit = _svc.Repository.GetCreditByGiftEventId("late")!;
+        var remaining = (credit.ExpiresAt - receivedAt).TotalSeconds;
+        Assert.InRange(remaining, 179, 181);
+        Assert.Equal(receivedAt.AddSeconds(180), credit.ExpiresAt);
+        // 若误用平台时间，只剩约 60 秒
+        Assert.NotEqual(platformTime.AddSeconds(180), credit.ExpiresAt);
+    }
+
+    [Fact]
+    public void GetEvents_WhenClientCursorAhead_ReturnsReset()
+    {
+        _svc.OnDanmaku(Chat("u1", "普通弹幕", "dm-1"));
+        _svc.OnDanmaku(Chat("u1", "又一条", "dm-2"));
+        var max = _svc.Repository.GetStreamMaxSeq();
+        Assert.True(max >= 2);
+
+        var json = System.Text.Json.JsonSerializer.Serialize(_svc.GetEvents(50000));
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        Assert.True(doc.RootElement.GetProperty("reset").GetBoolean());
+        Assert.Equal(0, doc.RootElement.GetProperty("cursor").GetInt64());
+        Assert.True(doc.RootElement.GetProperty("serverMaxSeq").GetInt64() <= max);
+        Assert.False(string.IsNullOrWhiteSpace(doc.RootElement.GetProperty("streamEpoch").GetString()));
+
+        var epoch1 = doc.RootElement.GetProperty("streamEpoch").GetString();
+        var again = System.Text.Json.JsonSerializer.Serialize(_svc.GetEvents(0));
+        using var doc2 = System.Text.Json.JsonDocument.Parse(again);
+        Assert.False(doc2.RootElement.GetProperty("reset").GetBoolean());
+        Assert.Equal(epoch1, doc2.RootElement.GetProperty("streamEpoch").GetString());
+        Assert.True(doc2.RootElement.GetProperty("events").GetArrayLength() >= 2);
     }
 
     [Fact]

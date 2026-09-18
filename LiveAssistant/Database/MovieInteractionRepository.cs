@@ -312,13 +312,41 @@ public sealed class MovieInteractionRepository
             list.Add(new MovieInteractionStreamItem
             {
                 Seq = reader.GetInt64(0),
-                Type = reader.GetString(1),
+                Type = reader.IsDBNull(1) ? "" : reader.GetString(1),
                 PayloadJson = reader.IsDBNull(2) ? "{}" : reader.GetString(2),
                 CreatedAt = DateTime.TryParse(reader.GetString(3), out var dt) ? dt : DateTime.Now
             });
         }
 
         return list;
+    }
+
+    public long GetStreamMaxSeq() => _db.GetStreamMaxSeq();
+
+    public string GetStreamEpoch() => _db.GetOrCreateStreamEpoch();
+
+    /// <summary>
+    /// 清理足够旧的 stream 行；不碰评分账本。仅删除 seq 远小于当前 max 的旧行，避免破坏 cursor。
+    /// </summary>
+    public int CleanupOldStream(DateTime cutoff, long keepRecentSeqCount = 1000)
+    {
+        using var conn = _db.Open();
+        long maxSeq;
+        using (var maxCmd = conn.CreateCommand())
+        {
+            maxCmd.CommandText = "SELECT IFNULL(MAX(seq), 0) FROM movie_interaction_stream";
+            maxSeq = Convert.ToInt64(maxCmd.ExecuteScalar() ?? 0L);
+        }
+
+        var protectBelow = Math.Max(0, maxSeq - Math.Max(0, keepRecentSeqCount));
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            DELETE FROM movie_interaction_stream
+            WHERE created_at < $cutoff AND seq < $protect
+            """;
+        cmd.Parameters.AddWithValue("$cutoff", cutoff.ToString("O"));
+        cmd.Parameters.AddWithValue("$protect", protectBelow);
+        return cmd.ExecuteNonQuery();
     }
 
     public void ReplaceCatalog(IReadOnlyList<MovieCatalogEntry> movies)

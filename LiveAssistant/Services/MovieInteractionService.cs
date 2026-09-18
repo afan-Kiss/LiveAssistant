@@ -23,12 +23,17 @@ public sealed class MovieInteractionService : IDisposable
     private CancellationTokenSource? _cleanupCts;
     private int _disposed;
 
+    /// <summary>测试可注入时钟；生产默认 DateTime.Now。</summary>
+    internal Func<DateTime>? NowProvider { get; set; }
+
     public MovieInteractionService(ConfigManager config, AppDatabase db, LogService log)
     {
         _config = config;
         _repo = new MovieInteractionRepository(db);
         _log = log;
     }
+
+    private DateTime Now() => NowProvider?.Invoke() ?? DateTime.Now;
 
     public MovieInteractionRepository Repository => _repo;
 
@@ -86,7 +91,8 @@ public sealed class MovieInteractionService : IDisposable
         }
 
         var expireSeconds = Math.Max(30, _config.Settings.MovieInteraction.CreditExpireSeconds);
-        var created = gift.Time == default ? DateTime.Now : gift.Time;
+        // 3 分钟有效期从本机成功登记 credit 起算，不用平台 gift.Time 当过期起点
+        var receivedAt = Now();
         var credit = new MovieScoreCredit
         {
             GiftEventId = gift.EventId,
@@ -96,8 +102,8 @@ public sealed class MovieInteractionService : IDisposable
             DiamondCount = gift.DiamondCount,
             Value = gift.Value,
             Points = points,
-            CreatedAt = created,
-            ExpiresAt = created.AddSeconds(expireSeconds),
+            CreatedAt = receivedAt,
+            ExpiresAt = receivedAt.AddSeconds(expireSeconds),
             Status = "pending"
         };
 
@@ -320,6 +326,26 @@ public sealed class MovieInteractionService : IDisposable
 
     public object GetEvents(long after, int limit = 200)
     {
+        var serverMaxSeq = _repo.GetStreamMaxSeq();
+        var streamEpoch = _repo.GetStreamEpoch();
+        var reset = after > serverMaxSeq;
+        if (reset)
+        {
+            _log.Info(
+                $"[MOVIE_EVENT_CURSOR_RESET] clientAfter={after} serverMaxSeq={serverMaxSeq} " +
+                $"streamEpoch={streamEpoch} → cursor=0");
+            return new
+            {
+                ok = true,
+                after,
+                cursor = 0L,
+                serverMaxSeq,
+                streamEpoch,
+                reset = true,
+                events = Array.Empty<object>()
+            };
+        }
+
         var items = _repo.GetStreamAfter(after, limit);
         var events = new List<object>();
         long maxSeq = after;
@@ -351,7 +377,16 @@ public sealed class MovieInteractionService : IDisposable
             }
         }
 
-        return new { ok = true, after, cursor = maxSeq, events };
+        return new
+        {
+            ok = true,
+            after,
+            cursor = maxSeq,
+            serverMaxSeq,
+            streamEpoch,
+            reset = false,
+            events
+        };
     }
 
     public (MovieCatalogEntry? Entry, bool Ambiguous, int MatchCount) ResolveMovie(string query)

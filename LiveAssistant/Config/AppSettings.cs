@@ -411,6 +411,8 @@ public sealed class CleanupSettings
     public int IntervalHours { get; set; } = 24;
     public int QueueRetentionDays { get; set; } = 7;
     public int GiftRetentionDays { get; set; } = 30;
+    /// <summary>电影互动事件流保留天数（不影响评分账本）。</summary>
+    public int MovieInteractionStreamRetentionDays { get; set; } = 7;
 }
 
 public sealed class ConfigManager

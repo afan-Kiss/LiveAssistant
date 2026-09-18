@@ -236,6 +236,26 @@ public sealed class AppDatabase : IDisposable
                 payload_json TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS song_request_charges (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                queue_item_id INTEGER NOT NULL UNIQUE,
+                user_id TEXT NOT NULL,
+                nickname TEXT,
+                charge_type TEXT NOT NULL,
+                points_deducted INTEGER NOT NULL DEFAULT 0,
+                credit_consumed INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'charged',
+                refund_reason TEXT,
+                created_at TEXT NOT NULL,
+                fulfilled_at TEXT,
+                refunded_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS app_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             """;
         cmd.ExecuteNonQuery();
     }
@@ -264,6 +284,31 @@ public sealed class AppDatabase : IDisposable
         EnsureColumn(conn, "users", "song_permission_unlimited", "INTEGER DEFAULT 0");
         EnsureColumn(conn, "points_ledger", "operator_name", "TEXT");
 
+        using (var tableCmd = conn.CreateCommand())
+        {
+            tableCmd.CommandText = """
+                CREATE TABLE IF NOT EXISTS song_request_charges (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    queue_item_id INTEGER NOT NULL UNIQUE,
+                    user_id TEXT NOT NULL,
+                    nickname TEXT,
+                    charge_type TEXT NOT NULL,
+                    points_deducted INTEGER NOT NULL DEFAULT 0,
+                    credit_consumed INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'charged',
+                    refund_reason TEXT,
+                    created_at TEXT NOT NULL,
+                    fulfilled_at TEXT,
+                    refunded_at TEXT
+                );
+                CREATE TABLE IF NOT EXISTS app_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                """;
+            tableCmd.ExecuteNonQuery();
+        }
+
         using (var idxCmd = conn.CreateCommand())
         {
             idxCmd.CommandText = """
@@ -277,9 +322,17 @@ public sealed class AppDatabase : IDisposable
                 ON movie_score_events(upload_status, next_retry_at);
                 CREATE INDEX IF NOT EXISTS idx_movie_interaction_stream_seq
                 ON movie_interaction_stream(seq);
+                CREATE INDEX IF NOT EXISTS idx_movie_score_events_movie_action_user
+                ON movie_score_events(movie_id, action, user_id);
+                CREATE INDEX IF NOT EXISTS idx_song_request_charges_status
+                ON song_request_charges(status);
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_song_request_charges_queue_item
+                ON song_request_charges(queue_item_id);
                 """;
             idxCmd.ExecuteNonQuery();
         }
+
+        EnsureStreamEpoch(conn);
 
         using var roleCmd = conn.CreateCommand();
         roleCmd.CommandText = """
@@ -300,6 +353,7 @@ public sealed class AppDatabase : IDisposable
 
     /// <summary>
     /// 启动时放弃未播放的点歌队列，避免重启后从头重播历史点歌。
+    /// 调用方应先对 charged 未 fulfilled 的点歌执行统一退款，再调用本方法。
     /// </summary>
     public int AbandonPendingQueueOnStartup()
     {
@@ -312,6 +366,67 @@ public sealed class AppDatabase : IDisposable
             """;
         cmd.Parameters.AddWithValue("$updated", DateTime.Now.ToString("O"));
         return cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// 列出启动时将被遗弃的 waiting/playing 队列项（非随机）。
+    /// </summary>
+    public List<(long Id, string UserId, bool IsRandom)> ListPendingQueueItemsForAbandon()
+    {
+        var list = new List<(long, string, bool)>();
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT id, IFNULL(user_id, ''), IFNULL(is_random, 0)
+            FROM queue_items
+            WHERE status IN ('waiting', 'playing')
+            """;
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            list.Add((reader.GetInt64(0), reader.GetString(1), reader.GetInt64(2) != 0));
+        }
+
+        return list;
+    }
+
+    public string GetOrCreateStreamEpoch()
+    {
+        using var conn = Open();
+        return EnsureStreamEpoch(conn);
+    }
+
+    public long GetStreamMaxSeq()
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT IFNULL(MAX(seq), 0) FROM movie_interaction_stream";
+        return Convert.ToInt64(cmd.ExecuteScalar() ?? 0L);
+    }
+
+    private static string EnsureStreamEpoch(SqliteConnection conn)
+    {
+        using (var read = conn.CreateCommand())
+        {
+            read.CommandText = "SELECT value FROM app_meta WHERE key = 'movie_stream_epoch'";
+            var existing = read.ExecuteScalar()?.ToString();
+            if (!string.IsNullOrWhiteSpace(existing))
+            {
+                return existing;
+            }
+        }
+
+        var epoch = Guid.NewGuid().ToString("N");
+        using var insert = conn.CreateCommand();
+        insert.CommandText = """
+            INSERT OR IGNORE INTO app_meta (key, value) VALUES ('movie_stream_epoch', $v)
+            """;
+        insert.Parameters.AddWithValue("$v", epoch);
+        insert.ExecuteNonQuery();
+
+        using var read2 = conn.CreateCommand();
+        read2.CommandText = "SELECT value FROM app_meta WHERE key = 'movie_stream_epoch'";
+        return read2.ExecuteScalar()?.ToString() ?? epoch;
     }
 
     private static void EnsureColumn(SqliteConnection conn, string table, string column, string definition)

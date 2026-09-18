@@ -44,6 +44,9 @@ public sealed class PlaybackCommandQueue : IDisposable
     private Task<TrackInfo?>? _prefetchTask;
     private TrackInfo? _prefetchedRandom;
 
+    /// <summary>点歌扣费生命周期（fulfill / 播放前失败退款）。</summary>
+    public SongRequestPermissionService? SongCharges { get; set; }
+
     public PlaybackCommandQueue(
         ConfigManager config,
         QueueService queue,
@@ -468,6 +471,7 @@ public sealed class PlaybackCommandQueue : IDisposable
 
         if (!IsPlayableTrack(track, item.SongName, source, item.Nickname) || track == null)
         {
+            RefundIfUnfulfilled(item, "resolve_fresh_failed");
             await FailCurrentAndContinueAsync(item.SongName, ct);
             return;
         }
@@ -484,9 +488,12 @@ public sealed class PlaybackCommandQueue : IDisposable
         if (!ok)
         {
             _log.LogPlaybackError(track.SongName, item.Nickname, source, track.PlayUrl, "播放器启动失败");
+            RefundIfUnfulfilled(item, "player_start_failed");
             await FailCurrentAndContinueAsync(track.SongName, ct);
             return;
         }
+
+        MarkFulfilledIfNeeded(item);
 
         // 当前点歌曲在播时，若队列将空则预取下一首随机，缩短「下一首」空白。
         ScheduleRandomPrefetchIfNeeded();
@@ -499,6 +506,40 @@ public sealed class PlaybackCommandQueue : IDisposable
         if (!string.IsNullOrWhiteSpace(msg))
         {
             _system.Add(msg);
+        }
+    }
+
+    private void MarkFulfilledIfNeeded(QueueItem item)
+    {
+        if (item.IsRandom || item.Id <= 0 || SongCharges == null)
+        {
+            return;
+        }
+
+        try
+        {
+            SongCharges.MarkSongRequestFulfilled(item.Id);
+        }
+        catch (Exception ex)
+        {
+            _log.Error("playback", $"MarkSongRequestFulfilled 失败 queueItemId={item.Id}", ex);
+        }
+    }
+
+    private void RefundIfUnfulfilled(QueueItem item, string reason)
+    {
+        if (item.IsRandom || item.Id <= 0 || SongCharges == null)
+        {
+            return;
+        }
+
+        try
+        {
+            SongCharges.RefundSongRequestCharge(item.Id, reason);
+        }
+        catch (Exception ex)
+        {
+            _log.Error("playback", $"RefundSongRequestCharge 失败 queueItemId={item.Id} reason={reason}", ex);
         }
     }
 

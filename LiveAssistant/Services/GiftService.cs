@@ -123,8 +123,9 @@ public sealed class GiftService : IDisposable
             return false;
         }
 
-        var pointsAfter = before + points;
-        var newLevel = points > 0 ? _levels.CalculateLevel(pointsAfter) : (_users.GetUser(gift.UserId)?.Level ?? 0);
+        // pointsAfter/level 仅作占位；真实余额在 GiftRepository 事务内计算
+        var pointsAfterHint = before + points;
+        var newLevelHint = points > 0 ? _levels.CalculateLevel(pointsAfterHint) : (_users.GetUser(gift.UserId)?.Level ?? 0);
         var songPermissionUnlimited = false;
         var songPermissionCredits = 0;
         if (rule != null)
@@ -143,12 +144,13 @@ public sealed class GiftService : IDisposable
         if (!_gifts.TryRecordGift(
                 gift,
                 points,
-                pointsAfter,
-                newLevel,
+                pointsAfterHint,
+                newLevelHint,
                 applyPointsAndLevel: points > 0,
                 setSongPermissionUnlimited: songPermissionUnlimited,
                 songPermissionCreditsDelta: songPermissionCredits,
-                out var id))
+                out var id,
+                calculateLevel: pts => _levels.CalculateLevel(pts)))
         {
             _log.LogGiftDuplicate(gift.Nickname, gift.GiftName, gift.EventId, "插入冲突或事务回滚");
             return false;
@@ -156,7 +158,7 @@ public sealed class GiftService : IDisposable
 
         gift.Id = id;
 
-        var after = _users.GetUser(gift.UserId)?.Points ?? pointsAfter;
+        var after = _users.GetUser(gift.UserId)?.Points ?? pointsAfterHint;
         _log.GiftInfo(
             $"[points] eventId={gift.EventId} user={gift.UserId}/{gift.Nickname} " +
             $"gift={gift.GiftName} count={gift.Count} value={gift.Value} " +

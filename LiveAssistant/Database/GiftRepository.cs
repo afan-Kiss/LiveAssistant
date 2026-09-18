@@ -75,6 +75,7 @@ public sealed class GiftRepository
 
     /// <summary>
     /// 原子写入礼物记录并更新用户积分/等级/点歌权限；失败自动回滚。
+    /// pointsAfter / newLevel 在事务内按真实余额计算，不依赖调用方预估值。
     /// </summary>
     public bool TryRecordGift(
         GiftEvent gift,
@@ -84,7 +85,8 @@ public sealed class GiftRepository
         bool applyPointsAndLevel,
         bool setSongPermissionUnlimited,
         int songPermissionCreditsDelta,
-        out long id)
+        out long id,
+        Func<int, int>? calculateLevel = null)
     {
         id = 0;
         if (string.IsNullOrWhiteSpace(gift.EventId) || string.IsNullOrWhiteSpace(gift.UserId))
@@ -94,6 +96,9 @@ public sealed class GiftRepository
 
         var giftTime = gift.Time.ToString("O");
         var now = DateTime.Now.ToString("O");
+        // 保留参数兼容旧调用；真实值在事务内重算
+        _ = pointsAfter;
+        _ = newLevel;
 
         using var conn = _db.Open();
         using var tx = conn.BeginTransaction();
@@ -112,6 +117,68 @@ public sealed class GiftRepository
                 ensureCmd.ExecuteNonQuery();
             }
 
+            // 先原子加积分，再读真实余额
+            int realPointsAfter;
+            int realLevel;
+            using (var userCmd = conn.CreateCommand())
+            {
+                userCmd.Transaction = tx;
+                userCmd.CommandText = """
+                    UPDATE users SET
+                        nickname = CASE WHEN length($nick) > 0 THEN $nick ELSE nickname END,
+                        points = points + $pts,
+                        song_permission_unlimited = CASE WHEN $unlimited = 1 THEN 1 ELSE song_permission_unlimited END,
+                        song_permission_credits = song_permission_credits + $permCredits,
+                        updated_at = $now
+                    WHERE user_id = $uid
+                    """;
+                userCmd.Parameters.AddWithValue("$uid", gift.UserId);
+                userCmd.Parameters.AddWithValue("$nick", gift.Nickname);
+                userCmd.Parameters.AddWithValue("$pts", applyPointsAndLevel ? pointsDelta : 0);
+                userCmd.Parameters.AddWithValue("$unlimited", setSongPermissionUnlimited ? 1 : 0);
+                userCmd.Parameters.AddWithValue("$permCredits", Math.Max(0, songPermissionCreditsDelta));
+                userCmd.Parameters.AddWithValue("$now", now);
+                userCmd.ExecuteNonQuery();
+            }
+
+            using (var readCmd = conn.CreateCommand())
+            {
+                readCmd.Transaction = tx;
+                readCmd.CommandText = "SELECT points, level FROM users WHERE user_id = $uid";
+                readCmd.Parameters.AddWithValue("$uid", gift.UserId);
+                using var reader = readCmd.ExecuteReader();
+                if (!reader.Read())
+                {
+                    tx.Rollback();
+                    return false;
+                }
+
+                realPointsAfter = reader.GetInt32(0);
+                realLevel = reader.GetInt32(1);
+            }
+
+            if (applyPointsAndLevel && calculateLevel != null)
+            {
+                realLevel = calculateLevel(realPointsAfter);
+                using var lvlCmd = conn.CreateCommand();
+                lvlCmd.Transaction = tx;
+                lvlCmd.CommandText = "UPDATE users SET level = $level WHERE user_id = $uid";
+                lvlCmd.Parameters.AddWithValue("$uid", gift.UserId);
+                lvlCmd.Parameters.AddWithValue("$level", realLevel);
+                lvlCmd.ExecuteNonQuery();
+            }
+            else if (applyPointsAndLevel)
+            {
+                // 无 level 计算器时保留调用方传入的 newLevel（兼容）
+                using var lvlCmd = conn.CreateCommand();
+                lvlCmd.Transaction = tx;
+                lvlCmd.CommandText = "UPDATE users SET level = $level WHERE user_id = $uid";
+                lvlCmd.Parameters.AddWithValue("$uid", gift.UserId);
+                lvlCmd.Parameters.AddWithValue("$level", newLevel);
+                lvlCmd.ExecuteNonQuery();
+                realLevel = newLevel;
+            }
+
             using (var insertCmd = conn.CreateCommand())
             {
                 insertCmd.Transaction = tx;
@@ -127,7 +194,7 @@ public sealed class GiftRepository
                 insertCmd.Parameters.AddWithValue("$cnt", gift.Count);
                 insertCmd.Parameters.AddWithValue("$val", gift.Value);
                 insertCmd.Parameters.AddWithValue("$pd", pointsDelta);
-                insertCmd.Parameters.AddWithValue("$pa", pointsAfter);
+                insertCmd.Parameters.AddWithValue("$pa", realPointsAfter);
                 insertCmd.Parameters.AddWithValue("$giftTime", giftTime);
                 insertCmd.ExecuteNonQuery();
             }
@@ -139,30 +206,6 @@ public sealed class GiftRepository
                 id = (long)(idCmd.ExecuteScalar() ?? 0L);
             }
 
-            using (var userCmd = conn.CreateCommand())
-            {
-                userCmd.Transaction = tx;
-                userCmd.CommandText = """
-                    UPDATE users SET
-                        nickname = CASE WHEN length($nick) > 0 THEN $nick ELSE nickname END,
-                        points = points + $pts,
-                        level = CASE WHEN $applyLevel = 1 THEN $level ELSE level END,
-                        song_permission_unlimited = CASE WHEN $unlimited = 1 THEN 1 ELSE song_permission_unlimited END,
-                        song_permission_credits = song_permission_credits + $permCredits,
-                        updated_at = $now
-                    WHERE user_id = $uid
-                    """;
-                userCmd.Parameters.AddWithValue("$uid", gift.UserId);
-                userCmd.Parameters.AddWithValue("$nick", gift.Nickname);
-                userCmd.Parameters.AddWithValue("$pts", applyPointsAndLevel ? pointsDelta : 0);
-                userCmd.Parameters.AddWithValue("$applyLevel", applyPointsAndLevel ? 1 : 0);
-                userCmd.Parameters.AddWithValue("$level", newLevel);
-                userCmd.Parameters.AddWithValue("$unlimited", setSongPermissionUnlimited ? 1 : 0);
-                userCmd.Parameters.AddWithValue("$permCredits", Math.Max(0, songPermissionCreditsDelta));
-                userCmd.Parameters.AddWithValue("$now", now);
-                userCmd.ExecuteNonQuery();
-            }
-
             if (applyPointsAndLevel && pointsDelta > 0)
             {
                 _ledger.Insert(
@@ -170,7 +213,7 @@ public sealed class GiftRepository
                     tx,
                     gift.UserId,
                     pointsDelta,
-                    pointsAfter,
+                    realPointsAfter,
                     PointsTransactionType.Gift,
                     $"礼物 {gift.GiftName}×{gift.Count}",
                     gift.EventId,

@@ -15,6 +15,7 @@ public sealed class SongRequestPermissionService
     private readonly GiftRepository? _gifts;
     private readonly SongRequestControlService? _control;
     private readonly LogService? _log;
+    private readonly SongRequestChargeRepository _charges;
 
     public SongRequestPermissionService(
         ConfigManager config,
@@ -25,7 +26,8 @@ public sealed class SongRequestPermissionService
         UserLevelService levels,
         GiftRepository? gifts = null,
         SongRequestControlService? control = null,
-        LogService? log = null)
+        LogService? log = null,
+        SongRequestChargeRepository? charges = null)
     {
         _config = config;
         _users = users;
@@ -36,6 +38,7 @@ public sealed class SongRequestPermissionService
         _gifts = gifts;
         _control = control;
         _log = log;
+        _charges = charges ?? new SongRequestChargeRepository(users.Database);
     }
 
     /// <summary>测试：强制退款失败。</summary>
@@ -46,6 +49,8 @@ public sealed class SongRequestPermissionService
 
     /// <summary>测试：扣费事务成功后、等级刷新前抛异常（派生失败，不应回滚核心事务）。</summary>
     internal Action? TestAfterCommitBeforeLevelRefresh { get; set; }
+
+    internal SongRequestChargeRepository Charges => _charges;
 
     public SongRequestPermissionResult Evaluate(DanmakuItem item)
     {
@@ -190,7 +195,7 @@ public sealed class SongRequestPermissionService
         => TryCommitSuccessfulRequest(item, queueItemId).Success;
 
     /// <summary>
-    /// 核心事务：扣积分/次卡 + request_count 同一 SQLite 提交。
+    /// 核心事务：扣积分/次卡 + request_count + charge 记录同一 SQLite 提交。
     /// RefreshUserLevel 为派生刷新，失败不回滚核心事务。
     /// </summary>
     public SongRequestChargeResult TryCommitSuccessfulRequest(DanmakuItem item, long? queueItemId = null)
@@ -203,13 +208,14 @@ public sealed class SongRequestPermissionService
             // 特权：只记请求次数（cost=0）
             if (!_users.TryCommitSongRequestCharge(
                     item.UserId, item.Nickname, 0, false, queueItemId?.ToString(),
-                    out pointsBefore, out var afterPriv, out _, out var failPriv))
+                    out pointsBefore, out var afterPriv, out _, out var failPriv, out var ctypePriv))
             {
                 return SongRequestChargeResult.Fail(pointsBefore, pointsBefore, 0, false, failPriv ?? "record_failed");
             }
 
             TryRefreshLevelBestEffort(item.UserId);
-            return SongRequestChargeResult.Ok(pointsBefore, afterPriv, 0, false);
+            LogCharge(queueItemId, item.UserId, ctypePriv, 0, 0, SongRequestChargeStatus.Charged);
+            return SongRequestChargeResult.Ok(pointsBefore, afterPriv, 0, false, ctypePriv);
         }
 
         var consumeCredit = user is { SongPermissionUnlimited: false, SongPermissionCredits: > 0 };
@@ -229,14 +235,111 @@ public sealed class SongRequestPermissionService
                 out pointsBefore,
                 out var pointsAfter,
                 out var creditConsumed,
-                out var failureReason))
+                out var failureReason,
+                out var chargeType))
         {
             return SongRequestChargeResult.Fail(
                 pointsBefore, pointsBefore, 0, false, failureReason ?? "charge_failed");
         }
 
         TryRefreshLevelBestEffort(item.UserId);
-        return SongRequestChargeResult.Ok(pointsBefore, pointsAfter, cost, creditConsumed);
+        LogCharge(
+            queueItemId,
+            item.UserId,
+            chargeType,
+            cost,
+            creditConsumed ? 1 : 0,
+            SongRequestChargeStatus.Charged);
+        return SongRequestChargeResult.Ok(pointsBefore, pointsAfter, cost, creditConsumed, chargeType);
+    }
+
+    /// <summary>
+    /// 真正开始播放成功后标记 fulfilled；之后切歌/播完不退款。
+    /// </summary>
+    public bool MarkSongRequestFulfilled(long queueItemId)
+    {
+        if (queueItemId <= 0)
+        {
+            return false;
+        }
+
+        var ok = _charges.TryMarkFulfilled(queueItemId);
+        if (ok)
+        {
+            var charge = _charges.GetByQueueItemId(queueItemId);
+            if (charge != null)
+            {
+                LogCharge(
+                    queueItemId,
+                    charge.UserId,
+                    charge.ChargeType,
+                    charge.PointsDeducted,
+                    charge.CreditConsumed,
+                    SongRequestChargeStatus.Fulfilled);
+            }
+        }
+
+        return ok;
+    }
+
+    /// <summary>
+    /// 统一幂等退款：仅 charged 且从未真正开始播放成功的点歌可退。
+    /// </summary>
+    public SongRequestRefundResult RefundSongRequestCharge(long queueItemId, string reason)
+    {
+        if (queueItemId <= 0)
+        {
+            return SongRequestRefundResult.Fail("invalid_queue_item");
+        }
+
+        if (TestForceRefundFailure?.Invoke() == true)
+        {
+            _log?.Error("song_request",
+                $"SONG_REQUEST_REFUND queueItemId={queueItemId} reason={reason} " +
+                $"pointsRestored=0 creditRestored=0 result=failed");
+            return SongRequestRefundResult.Fail("refund_forced_fail");
+        }
+
+        try
+        {
+            var result = _charges.RefundSongRequestCharge(queueItemId, reason);
+            _log?.Info(
+                $"SONG_REQUEST_REFUND queueItemId={queueItemId} reason={reason} " +
+                $"pointsRestored={result.PointsRestored} creditRestored={result.CreditRestored} " +
+                $"result={result.Result}");
+            return result;
+        }
+        catch (Exception ex)
+        {
+            _log?.Error("song_request",
+                $"SONG_REQUEST_REFUND queueItemId={queueItemId} reason={reason} " +
+                $"pointsRestored=0 creditRestored=0 result=failed", ex);
+            return SongRequestRefundResult.Fail(ex.Message);
+        }
+    }
+
+    public void RefundQueueItemIfNeeded(long queueItemId, string reason, bool isRandom = false)
+    {
+        if (queueItemId <= 0 || isRandom)
+        {
+            return;
+        }
+
+        RefundSongRequestCharge(queueItemId, reason);
+    }
+
+    private void LogCharge(
+        long? queueItemId,
+        string userId,
+        string chargeType,
+        int pointsDeducted,
+        int creditConsumed,
+        string status)
+    {
+        _log?.Info(
+            $"SONG_REQUEST_CHARGE queueItemId={queueItemId ?? 0} userId={userId} " +
+            $"chargeType={chargeType} pointsDeducted={pointsDeducted} " +
+            $"creditConsumed={creditConsumed} status={status}");
     }
 
     private void TryRefreshLevelBestEffort(string userId)

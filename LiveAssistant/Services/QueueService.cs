@@ -17,6 +17,12 @@ public sealed class QueueService
     /// <summary>测试钩子：Remove 事务内 UpdateStatus 前调用，可抛异常模拟失败。</summary>
     internal Action? TestBeforeRemoveStatusUpdate;
 
+    /// <summary>
+    /// 等待队列项被删除/清空时回调（queueItemId, reason）。
+    /// 用于统一点歌退款；playing 项由播放链路单独处理。
+    /// </summary>
+    public Action<long, string>? OnWaitingItemRemoved { get; set; }
+
     public event Action? QueueChanged;
 
     public QueueService(AppDatabase db)
@@ -247,6 +253,8 @@ public sealed class QueueService
 
                 _nowPlaying = null;
                 NotifyChanged();
+                // playing 删除：若尚未 fulfilled，由调用方/回调退款
+                try { OnWaitingItemRemoved?.Invoke(id, "admin_delete_playing"); } catch { /* isolate */ }
                 return true;
             }
 
@@ -256,6 +264,7 @@ public sealed class QueueService
                 return false;
             }
 
+            var removedItem = _waiting[idx];
             var working = new List<QueueItem>(_waiting);
             working.RemoveAt(idx);
 
@@ -279,6 +288,11 @@ public sealed class QueueService
             _waiting.Clear();
             _waiting.AddRange(working);
             NotifyChanged();
+            if (!removedItem.IsRandom)
+            {
+                try { OnWaitingItemRemoved?.Invoke(id, "admin_delete_waiting"); } catch { /* isolate */ }
+            }
+
             return true;
         }
     }
@@ -287,6 +301,7 @@ public sealed class QueueService
     {
         lock (_lock)
         {
+            var toRefund = _waiting.Where(x => !x.IsRandom).Select(x => x.Id).ToList();
             if (_waiting.Count > 0)
             {
                 using var conn = _db.Open();
@@ -309,6 +324,10 @@ public sealed class QueueService
 
             _waiting.Clear();
             NotifyChanged();
+            foreach (var id in toRefund)
+            {
+                try { OnWaitingItemRemoved?.Invoke(id, "admin_clear_queue"); } catch { /* isolate */ }
+            }
         }
     }
 

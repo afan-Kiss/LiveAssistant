@@ -11,6 +11,8 @@ public sealed class UserRepository
     /// <summary>测试钩子：在事务内扣费完成后、更新 request_count 之前触发。</summary>
     internal Action? TestAfterPointsDeductedBeforeRequestCount;
 
+    public AppDatabase Database => _db;
+
     public UserRepository(AppDatabase db, PointsLedgerRepository? ledger = null)
     {
         _db = db;
@@ -245,7 +247,7 @@ public sealed class UserRepository
     }
 
     /// <summary>
-    /// 在同一 SQLite 事务中完成点歌扣费（次卡或积分）并写入请求统计。
+    /// 在同一 SQLite 事务中完成点歌扣费（次卡或积分）、写入请求统计，并持久化 charge 记录。
     /// </summary>
     public bool TryCommitSongRequestCharge(
         string userId,
@@ -256,12 +258,14 @@ public sealed class UserRepository
         out int pointsBefore,
         out int pointsAfter,
         out bool creditConsumed,
-        out string? failureReason)
+        out string? failureReason,
+        out string chargeType)
     {
         pointsBefore = 0;
         pointsAfter = 0;
         creditConsumed = false;
         failureReason = null;
+        chargeType = SongRequestChargeType.Free;
 
         if (string.IsNullOrWhiteSpace(userId))
         {
@@ -271,6 +275,11 @@ public sealed class UserRepository
 
         EnsureUser(userId, nickname);
         var now = DateTime.Now.ToString("O");
+        long? queueItemId = null;
+        if (!string.IsNullOrWhiteSpace(refId) && long.TryParse(refId, out var parsedId) && parsedId > 0)
+        {
+            queueItemId = parsedId;
+        }
 
         using var conn = _db.Open();
         using var tx = conn.BeginTransaction();
@@ -310,6 +319,7 @@ public sealed class UserRepository
                 }
 
                 creditConsumed = true;
+                chargeType = SongRequestChargeType.Credit;
             }
             else if (pointsCost > 0)
             {
@@ -353,6 +363,11 @@ public sealed class UserRepository
                     PointsTransactionType.SongRequest,
                     "点歌扣积分",
                     refId);
+                chargeType = SongRequestChargeType.Points;
+            }
+            else
+            {
+                chargeType = SongRequestChargeType.Free;
             }
 
             TestAfterPointsDeductedBeforeRequestCount?.Invoke();
@@ -372,6 +387,37 @@ public sealed class UserRepository
                 cmd.Parameters.AddWithValue("$nick", nickname);
                 cmd.Parameters.AddWithValue("$now", now);
                 cmd.ExecuteNonQuery();
+            }
+
+            if (queueItemId.HasValue)
+            {
+                using var chargeCmd = conn.CreateCommand();
+                chargeCmd.Transaction = tx;
+                chargeCmd.CommandText = """
+                    INSERT INTO song_request_charges (
+                        queue_item_id, user_id, nickname, charge_type,
+                        points_deducted, credit_consumed, status, created_at)
+                    VALUES (
+                        $qid, $uid, $nick, $ctype,
+                        $pts, $credit, 'charged', $now)
+                    """;
+                chargeCmd.Parameters.AddWithValue("$qid", queueItemId.Value);
+                chargeCmd.Parameters.AddWithValue("$uid", userId);
+                chargeCmd.Parameters.AddWithValue("$nick", nickname ?? "");
+                chargeCmd.Parameters.AddWithValue("$ctype", chargeType);
+                chargeCmd.Parameters.AddWithValue("$pts", pointsCost > 0 && !consumeCredit ? pointsCost : 0);
+                chargeCmd.Parameters.AddWithValue("$credit", creditConsumed ? 1 : 0);
+                chargeCmd.Parameters.AddWithValue("$now", now);
+                try
+                {
+                    chargeCmd.ExecuteNonQuery();
+                }
+                catch (SqliteException)
+                {
+                    failureReason = "duplicate_charge";
+                    tx.Rollback();
+                    return false;
+                }
             }
 
             tx.Commit();

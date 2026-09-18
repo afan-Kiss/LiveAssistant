@@ -91,15 +91,45 @@ public sealed class LiveAppHost : IDisposable
         _system = new SystemMessageService(_config.Settings.Ui.MaxSystemMessageLines);
         _db = new AppDatabase(_config.DataDirectory);
 
+        var pointsLedgerRepo = new PointsLedgerRepository(_db);
+        _users = new UserRepository(_db, pointsLedgerRepo);
+        var songCharges = new SongRequestChargeRepository(_db, pointsLedgerRepo);
+
+        // 启动遗弃前先退还 charged 且未 fulfilled 的点歌
+        var pendingAbandon = _db.ListPendingQueueItemsForAbandon();
+        var refundedOnStartup = 0;
+        foreach (var pending in pendingAbandon)
+        {
+            if (pending.IsRandom)
+            {
+                continue;
+            }
+
+            var refund = songCharges.RefundSongRequestCharge(pending.Id, "startup_abandon");
+            if (refund.Result is "success")
+            {
+                refundedOnStartup++;
+                _log.Info(
+                    $"SONG_REQUEST_REFUND queueItemId={pending.Id} reason=startup_abandon " +
+                    $"pointsRestored={refund.PointsRestored} creditRestored={refund.CreditRestored} " +
+                    $"result={refund.Result}");
+            }
+            else if (refund.Result is not "no_charge" and not "already_fulfilled" and not "already_refunded")
+            {
+                _log.Info(
+                    $"SONG_REQUEST_REFUND queueItemId={pending.Id} reason=startup_abandon " +
+                    $"pointsRestored={refund.PointsRestored} creditRestored={refund.CreditRestored} " +
+                    $"result={refund.Result}");
+            }
+        }
+
         var abandoned = _db.AbandonPendingQueueOnStartup();
         if (abandoned > 0)
         {
-            _log.Info($"启动清空未播放队列: {abandoned} 条");
+            _log.Info($"启动清空未播放队列: {abandoned} 条（退款 {refundedOnStartup} 条）");
             _system.Add($"启动已清空 {abandoned} 条未播放点歌，等待新点歌");
         }
 
-        var pointsLedgerRepo = new PointsLedgerRepository(_db);
-        _users = new UserRepository(_db, pointsLedgerRepo);
         _giftRepo = new GiftRepository(_db, pointsLedgerRepo);
         _giftRuleRepo = new GiftRuleRepository(_db);
         _banVoteRepo = new BanVoteRepository(_db);
@@ -151,7 +181,8 @@ public sealed class LiveAppHost : IDisposable
         _userDetail = new UserDetailService(_users, _giftRepo, pointsLedgerRepo);
         _templatePreview = new ReplyTemplatePreviewService(_config, _replyTemplateRepo, _reply);
         _permission = new SongRequestPermissionService(
-            _config, _users, _queue, songBlacklist, _levelPermRepo, _userLevel, _giftRepo, _songRequestControl);
+            _config, _users, _queue, songBlacklist, _levelPermRepo, _userLevel, _giftRepo, _songRequestControl, _log, songCharges);
+        _playbackCommands.SongCharges = _permission;
         _songRequest = new SongRequestService(_config, _kugou, _queue, _permission, _reply, _replyQueue, _system, _log);
         _gift = new GiftService(_config, _douyin, _giftRepo, _users, _userLevel, _giftRuleRepo, _log, _system, _reply, _replyQueue);
         _ksDanmaku = new KuaishouDanmakuService(_kuaishou, _config, _log, _system, _gift, _outboundTracker);
@@ -167,6 +198,9 @@ public sealed class LiveAppHost : IDisposable
             _config, _commandQueue, _settingsStore, _playbackCommands, _engine, _queue, _reply, _log);
         _dataCleanup = new DataCleanupService(_config, _db, _log);
         _watchdog = new ProcessWatchdogService(_config, _log, _system);
+
+        _queue.OnWaitingItemRemoved = (id, reason) =>
+            _permission.RefundQueueItemIfNeeded(id, reason);
 
         _adminTunnel = new AdminTunnelService(_config, _log, _system);
         _aiSpeech = new AiSpeechCoordinator(_config, _log, _outboundTracker);
