@@ -25,8 +25,9 @@ internal static class Program
             _baseDir = Path.GetDirectoryName(cfgPath) ?? AppContext.BaseDirectory;
 
             CheckEnvironment(cfg);
+            ResolveAndPersistAbsolutePaths(cfg, cfgPath);
 
-            if (!EnsureComponent("cdp", cfg.DouyinCdp, StartDouyinCdpAsync, waitLogin: cfg.DouyinCdp.WaitLogin).GetAwaiter().GetResult())
+            if (!EnsureCdpComponent(cfg.DouyinCdp).GetAwaiter().GetResult())
             {
                 return 2;
             }
@@ -57,6 +58,640 @@ internal static class Program
         }
     }
 
+    private static async Task<bool> EnsureCdpComponent(ComponentConfig component)
+    {
+        if (!component.Enabled)
+        {
+            Boot("skip cdp (disabled)");
+            return true;
+        }
+
+        Boot("checking cdp");
+        var preferred = PreferCdpExe(component);
+        Boot($"cdp preferred exe={preferred}");
+
+        EnsureCdpBuiltIfStale(preferred);
+
+        var (healthy, body) = await TryGetAsync(component.HealthUrl).ConfigureAwait(false);
+        var version = ExtractJsonString(body, "version") ?? "";
+        var canSend = ExtractJsonBool(body, "can_send");
+        var loginOk = ExtractJsonBool(body, "login_ok");
+        Boot($"cdp health healthy={healthy} version={version} login_ok={loginOk?.ToString() ?? "-"} can_send={canSend?.ToString() ?? "-"}");
+
+        var minVersion = string.IsNullOrWhiteSpace(component.MinVersion) ? "1.2.1" : component.MinVersion.Trim();
+        var versionOk = healthy && IsVersionAtLeast(version, minVersion);
+        var fieldsOk = canSend.HasValue; // 旧 1.1.0 没有 can_send
+        var processOk = IsProcessRunning(component.ProcessNames);
+
+        if (healthy && versionOk && fieldsOk && processOk)
+        {
+            // 确认监听端口上的 exe 就是 preferred（或同目录最新）
+            var listener = GetListenerExe(component.Port);
+            if (!string.IsNullOrWhiteSpace(listener)
+                && !string.IsNullOrWhiteSpace(preferred)
+                && File.Exists(preferred)
+                && !SameExePath(listener, preferred)
+                && File.GetLastWriteTimeUtc(preferred) > File.GetLastWriteTimeUtc(listener).AddSeconds(2))
+            {
+                Boot($"cdp listener is stale path={listener}; replacing with {preferred}");
+                StopKnownCdpOnPort(component);
+            }
+            else
+            {
+                Boot($"cdp already running version={version} listener={listener ?? "-"}");
+                if (component.WaitLogin)
+                {
+                    await WaitForLoginAsync(component).ConfigureAwait(false);
+                }
+                return true;
+            }
+        }
+
+        if (healthy && (!versionOk || !fieldsOk))
+        {
+            Boot($"cdp outdated or missing capability fields version={version}; replacing");
+            StopKnownCdpOnPort(component);
+            await Task.Delay(800).ConfigureAwait(false);
+            if (IsPortOpen(component.Port))
+            {
+                BootFail("cdp", $"port {component.Port} still occupied after stop", preferred, -1);
+                return false;
+            }
+        }
+        else if (IsPortOpen(component.Port) && !healthy)
+        {
+            Boot($"cdp port {component.Port} occupied but unhealthy; trying known-process stop");
+            StopKnownCdpOnPort(component);
+            await Task.Delay(800).ConfigureAwait(false);
+            if (IsPortOpen(component.Port))
+            {
+                BootFail("cdp", $"port {component.Port} occupied by unknown process", "", -1);
+                return false;
+            }
+        }
+
+        Boot("starting cdp");
+        var (ok, path, exitCode) = await StartDouyinCdpAsync(component, "cdp").ConfigureAwait(false);
+        if (!ok)
+        {
+            BootFail("cdp", "start failed", path, exitCode);
+            return false;
+        }
+
+        Boot($"started cdp path={path}");
+        if (!await WaitUntilCdpReadyAsync(component, component.WaitReadySeconds, minVersion).ConfigureAwait(false))
+        {
+            BootFail("cdp", $"health/version check failed within {component.WaitReadySeconds}s (need >={minVersion} with can_send)", path, -1);
+            return false;
+        }
+
+        Boot("cdp health ok");
+        if (component.WaitLogin)
+        {
+            await WaitForLoginAsync(component).ConfigureAwait(false);
+        }
+
+        return true;
+    }
+
+    private static async Task<bool> WaitUntilCdpReadyAsync(ComponentConfig c, int seconds, string minVersion)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(Math.Max(5, seconds));
+        while (DateTime.UtcNow < deadline)
+        {
+            var (ok, body) = await TryGetAsync(c.HealthUrl).ConfigureAwait(false);
+            var version = ExtractJsonString(body, "version") ?? "";
+            var canSend = ExtractJsonBool(body, "can_send");
+            if (ok && IsVersionAtLeast(version, minVersion) && canSend.HasValue)
+            {
+                Boot($"cdp ready version={version} can_send={canSend}");
+                return true;
+            }
+
+            await Task.Delay(1000).ConfigureAwait(false);
+        }
+
+        return false;
+    }
+
+    private static string PreferCdpExe(ComponentConfig c)
+    {
+        var sourceBin = Path.Combine(ResolveSourceRoot(), "抖音cdp弹幕", "bin", "cdp-danmaku.exe");
+        if (File.Exists(sourceBin))
+        {
+            return Path.GetFullPath(sourceBin);
+        }
+
+        var resolved = ResolveExe(c);
+        return string.IsNullOrWhiteSpace(resolved) ? sourceBin : Path.GetFullPath(resolved);
+    }
+
+    private static void EnsureCdpBuiltIfStale(string exePath)
+    {
+        var sourceDir = Path.Combine(ResolveSourceRoot(), "抖音cdp弹幕");
+        if (!Directory.Exists(sourceDir) || !File.Exists(Path.Combine(sourceDir, "go.mod")))
+        {
+            Boot("cdp source missing; skip auto-build");
+            return;
+        }
+
+        var newestSource = Directory.EnumerateFiles(sourceDir, "*.go", SearchOption.AllDirectories)
+            .Where(p => !p.Contains($"{Path.DirectorySeparatorChar}.git{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase))
+            .Select(File.GetLastWriteTimeUtc)
+            .DefaultIfEmpty(DateTime.MinValue)
+            .Max();
+
+        var needBuild = !File.Exists(exePath) || File.GetLastWriteTimeUtc(exePath) < newestSource.AddSeconds(-2);
+        if (!needBuild)
+        {
+            Boot($"cdp exe up-to-date path={exePath}");
+            return;
+        }
+
+        var go = ResolveGoExe();
+        if (string.IsNullOrWhiteSpace(go))
+        {
+            Boot("go not found; cannot auto-build cdp");
+            return;
+        }
+
+        Directory.CreateDirectory(Path.GetDirectoryName(exePath)!);
+        Boot($"building cdp source={sourceDir} out={exePath}");
+        var psi = new ProcessStartInfo
+        {
+            FileName = go,
+            Arguments = $"build -o \"{exePath}\" ./cmd/native",
+            WorkingDirectory = sourceDir,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+        using var p = Process.Start(psi);
+        if (p == null)
+        {
+            Boot("cdp build process failed to start");
+            return;
+        }
+
+        var stdout = p.StandardOutput.ReadToEnd();
+        var stderr = p.StandardError.ReadToEnd();
+        p.WaitForExit(180_000);
+        if (p.ExitCode != 0)
+        {
+            Boot($"cdp build failed exit={p.ExitCode} err={Truncate(stderr, 300)}");
+            return;
+        }
+
+        Boot($"cdp build ok size={(File.Exists(exePath) ? new FileInfo(exePath).Length : 0)} out={stdout.Trim()}");
+        TryMirrorCdpToSidecars(exePath);
+    }
+
+    private static void TryMirrorCdpToSidecars(string exePath)
+    {
+        try
+        {
+            var targets = new[]
+            {
+                Path.Combine(_baseDir, "sidecars", "douyin-cdp", "cdp-danmaku.exe"),
+                Path.Combine(_baseDir, "sidecars", "cdp-danmaku.exe"),
+                Path.Combine(_baseDir, "publish", "LiveAssistant-one", "cdp-danmaku.exe")
+            };
+            foreach (var t in targets)
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(t)!);
+                File.Copy(exePath, t, overwrite: true);
+            }
+
+            Boot("cdp mirrored to sidecars/publish");
+        }
+        catch (Exception ex)
+        {
+            Boot($"cdp mirror skipped: {ex.Message}");
+        }
+    }
+
+    private static void StopKnownCdpOnPort(ComponentConfig c)
+    {
+        var port = c.Port > 0 ? c.Port : 17891;
+        try
+        {
+            foreach (var p in Process.GetProcesses())
+            {
+                try
+                {
+                    var name = p.ProcessName;
+                    var known = c.ProcessNames.Any(n =>
+                        string.Equals(name, n, StringComparison.OrdinalIgnoreCase)
+                        || name.Contains(n, StringComparison.OrdinalIgnoreCase));
+                    if (!known)
+                    {
+                        continue;
+                    }
+
+                    string? exe = null;
+                    try { exe = p.MainModule?.FileName; } catch { /* ignore */ }
+                    Boot($"stopping known cdp pid={p.Id} name={name} exe={exe ?? "-"}");
+                    p.Kill(entireProcessTree: true);
+                }
+                catch
+                {
+                    // ignore
+                }
+                finally
+                {
+                    p.Dispose();
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Boot($"stop cdp error: {ex.Message}");
+        }
+
+        // 二次确认：仅当 listener 名称仍属白名单才杀
+        var listener = GetListenerExe(port);
+        if (!string.IsNullOrWhiteSpace(listener))
+        {
+            var file = Path.GetFileNameWithoutExtension(listener);
+            var known = c.ProcessNames.Any(n =>
+                string.Equals(file, n, StringComparison.OrdinalIgnoreCase)
+                || file.Contains(n, StringComparison.OrdinalIgnoreCase));
+            if (known)
+            {
+                try
+                {
+                    foreach (var p in Process.GetProcessesByName(file))
+                    {
+                        try { p.Kill(entireProcessTree: true); } catch { /* ignore */ }
+                        finally { p.Dispose(); }
+                    }
+                }
+                catch { /* ignore */ }
+            }
+            else
+            {
+                Boot($"refuse kill unknown listener exe={listener}");
+            }
+        }
+    }
+
+    private static string? GetListenerExe(int port)
+    {
+        if (port <= 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                Arguments = "/c netstat -ano -p tcp",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+            using var p = Process.Start(psi);
+            if (p == null)
+            {
+                return null;
+            }
+
+            var output = p.StandardOutput.ReadToEnd();
+            p.WaitForExit(8000);
+            var needle = $":{port} ";
+            foreach (var raw in output.Split('\n'))
+            {
+                var line = raw.Trim();
+                if (!line.Contains(needle, StringComparison.Ordinal)
+                    || !line.Contains("LISTENING", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length == 0 || !int.TryParse(parts[^1], out var pid) || pid <= 0)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    using var proc = Process.GetProcessById(pid);
+                    try
+                    {
+                        return proc.MainModule?.FileName;
+                    }
+                    catch
+                    {
+                        // MainModule may be denied; fall through
+                    }
+                }
+                catch
+                {
+                    // ignore
+                }
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+
+        return null;
+    }
+
+    private static bool SameExePath(string? a, string? b)
+    {
+        if (string.IsNullOrWhiteSpace(a) || string.IsNullOrWhiteSpace(b))
+        {
+            return false;
+        }
+
+        try
+        {
+            var fa = new FileInfo(a);
+            var fb = new FileInfo(b);
+            if (!fa.Exists || !fb.Exists)
+            {
+                return false;
+            }
+
+            if (string.Equals(fa.FullName, fb.FullName, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            // 编码/短路径导致字符串不一致时，用大小+mtime 近似判断同一产物
+            return fa.Length == fb.Length
+                   && Math.Abs((fa.LastWriteTimeUtc - fb.LastWriteTimeUtc).TotalSeconds) < 3;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string? ResolveGoExe()
+    {
+        if (CommandExists("go"))
+        {
+            return "go";
+        }
+
+        var candidates = new[]
+        {
+            @"C:\Go\bin\go.exe",
+            @"C:\Program Files\Go\bin\go.exe"
+        };
+        return candidates.FirstOrDefault(File.Exists);
+    }
+
+    private static bool IsVersionAtLeast(string actual, string minimum)
+    {
+        if (string.IsNullOrWhiteSpace(actual))
+        {
+            return false;
+        }
+
+        static int[] Parse(string v)
+        {
+            var parts = v.Split(['.', '-'], StringSplitOptions.RemoveEmptyEntries);
+            var nums = new int[3];
+            for (var i = 0; i < Math.Min(3, parts.Length); i++)
+            {
+                int.TryParse(new string(parts[i].TakeWhile(char.IsDigit).ToArray()), out nums[i]);
+            }
+
+            return nums;
+        }
+
+        var a = Parse(actual);
+        var m = Parse(minimum);
+        for (var i = 0; i < 3; i++)
+        {
+            if (a[i] != m[i])
+            {
+                return a[i] > m[i];
+            }
+        }
+
+        return true;
+    }
+
+    private static string? ExtractJsonString(string? json, string field)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (TryGetPropertyRecursive(doc.RootElement, field, out var el)
+                && el.ValueKind == JsonValueKind.String)
+            {
+                return el.GetString();
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+
+        return null;
+    }
+
+    private static bool? ExtractJsonBool(string? json, string field)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (TryGetPropertyRecursive(doc.RootElement, field, out var el)
+                && (el.ValueKind == JsonValueKind.True || el.ValueKind == JsonValueKind.False))
+            {
+                return el.GetBoolean();
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+
+        return null;
+    }
+
+    private static bool TryGetPropertyRecursive(JsonElement el, string name, out JsonElement found)
+    {
+        if (el.ValueKind == JsonValueKind.Object)
+        {
+            if (el.TryGetProperty(name, out found))
+            {
+                return true;
+            }
+
+            foreach (var prop in el.EnumerateObject())
+            {
+                if (TryGetPropertyRecursive(prop.Value, name, out found))
+                {
+                    return true;
+                }
+            }
+        }
+        else if (el.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in el.EnumerateArray())
+            {
+                if (TryGetPropertyRecursive(item, name, out found))
+                {
+                    return true;
+                }
+            }
+        }
+
+        found = default;
+        return false;
+    }
+
+    private static string Truncate(string? text, int max)
+    {
+        text ??= "";
+        return text.Length <= max ? text : text[..max] + "…";
+    }
+
+    private static void ResolveAndPersistAbsolutePaths(LauncherConfig cfg, string cfgPath)
+    {
+        var sourceRoot = ResolveSourceRoot();
+        cfg.SourceRoot = sourceRoot;
+
+        var cdpSource = Path.Combine(sourceRoot, "抖音cdp弹幕");
+        var cdpExe = PreferCdpExe(cfg.DouyinCdp);
+        cfg.DouyinCdp.SourceDir = cdpSource;
+        cfg.DouyinCdp.Exe = cdpExe;
+        cfg.DouyinCdp.MinVersion = string.IsNullOrWhiteSpace(cfg.DouyinCdp.MinVersion) ? "1.2.1" : cfg.DouyinCdp.MinVersion;
+        cfg.DouyinCdp.GitCommit = TryReadGitHead(cdpSource);
+        if (File.Exists(cdpExe))
+        {
+            cfg.DouyinCdp.BuildTime = File.GetLastWriteTime(cdpExe).ToString("o");
+        }
+
+        var kugouPreferred = Path.Combine(sourceRoot, "酷狗协议", "KgDesktop", "build", "bin", "酷狗api_v1.5.exe");
+        var kugouExe = "";
+        if (File.Exists(kugouPreferred)
+            && File.Exists(Path.Combine(Path.GetDirectoryName(kugouPreferred)!, "kgapijs", "app.js")))
+        {
+            kugouExe = kugouPreferred;
+        }
+        else
+        {
+            kugouExe = ResolveExe(cfg.KugouApi);
+        }
+
+        if (string.IsNullOrWhiteSpace(kugouExe))
+        {
+            var sidecarKg = Path.Combine(_baseDir, "sidecars", "酷狗api_v1.5.exe");
+            if (File.Exists(sidecarKg))
+            {
+                kugouExe = sidecarKg;
+            }
+        }
+
+        cfg.KugouApi.SourceDir = Path.Combine(sourceRoot, "酷狗协议");
+        cfg.KugouApi.Exe = string.IsNullOrWhiteSpace(kugouExe) ? cfg.KugouApi.Exe : Path.GetFullPath(kugouExe);
+        if (!string.IsNullOrWhiteSpace(cfg.KugouApi.Exe) && File.Exists(cfg.KugouApi.Exe))
+        {
+            cfg.KugouApi.BuildTime = File.GetLastWriteTime(cfg.KugouApi.Exe).ToString("o");
+        }
+
+        var maoyanExe = ResolveExe(cfg.Maoyan);
+        if (string.IsNullOrWhiteSpace(maoyanExe))
+        {
+            maoyanExe = ResolveNewestMaoyanOverlayExe() ?? "";
+        }
+
+        cfg.Maoyan.SourceDir = Path.Combine(sourceRoot, "抖音直播24小时无人直播");
+        cfg.Maoyan.Exe = string.IsNullOrWhiteSpace(maoyanExe) ? cfg.Maoyan.Exe : Path.GetFullPath(maoyanExe);
+        cfg.Maoyan.StartBat = Path.Combine(cfg.Maoyan.SourceDir, "start.bat");
+        cfg.Maoyan.DevWorkingDirectory = cfg.Maoyan.SourceDir;
+        if (!string.IsNullOrWhiteSpace(cfg.Maoyan.Exe) && File.Exists(cfg.Maoyan.Exe))
+        {
+            cfg.Maoyan.BuildTime = File.GetLastWriteTime(cfg.Maoyan.Exe).ToString("o");
+        }
+
+        var laExe = ResolveExe(cfg.LiveAssistant);
+        cfg.LiveAssistant.SourceDir = Path.Combine(sourceRoot, "抖音弹幕点歌系统");
+        cfg.LiveAssistant.Exe = string.IsNullOrWhiteSpace(laExe) ? cfg.LiveAssistant.Exe : Path.GetFullPath(laExe);
+        cfg.LiveAssistant.GitCommit = TryReadGitHead(cfg.LiveAssistant.SourceDir);
+        if (!string.IsNullOrWhiteSpace(cfg.LiveAssistant.Exe) && File.Exists(cfg.LiveAssistant.Exe))
+        {
+            cfg.LiveAssistant.BuildTime = File.GetLastWriteTime(cfg.LiveAssistant.Exe).ToString("o");
+        }
+
+        cfg.DouyinCdp.DevWorkingDirectory = cdpSource;
+        cfg.DouyinCdp.CandidateExes = new List<string>
+        {
+            cdpExe,
+            Path.Combine(_baseDir, "sidecars", "douyin-cdp", "cdp-danmaku.exe"),
+            Path.Combine(_baseDir, "sidecars", "cdp-danmaku.exe"),
+            Path.Combine(_baseDir, "publish", "LiveAssistant-one", "cdp-danmaku.exe")
+        };
+
+        try
+        {
+            var json = JsonSerializer.Serialize(cfg, new JsonSerializerOptions
+            {
+                WriteIndented = true,
+                PropertyNamingPolicy = null,
+                DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+            });
+            // 保持 DouyinCDP 字段名
+            json = json.Replace("\"DouyinCdp\"", "\"DouyinCDP\"", StringComparison.Ordinal);
+            File.WriteAllText(cfgPath, json);
+            Boot($"launcher.json updated: {cfgPath}");
+        }
+        catch (Exception ex)
+        {
+            Boot($"launcher.json write skipped: {ex.Message}");
+        }
+    }
+
+    private static string TryReadGitHead(string repoDir)
+    {
+        try
+        {
+            var head = Path.Combine(repoDir, ".git", "HEAD");
+            if (!File.Exists(head))
+            {
+                return "";
+            }
+
+            var text = File.ReadAllText(head).Trim();
+            if (text.StartsWith("ref:", StringComparison.Ordinal))
+            {
+                var refPath = Path.Combine(repoDir, ".git", text[5..].Trim().Replace('/', Path.DirectorySeparatorChar));
+                if (File.Exists(refPath))
+                {
+                    return File.ReadAllText(refPath).Trim();
+                }
+            }
+
+            return text;
+        }
+        catch
+        {
+            return "";
+        }
+    }
+
     private static async Task<bool> EnsureComponent(
         string label,
         ComponentConfig component,
@@ -71,7 +706,13 @@ internal static class Program
 
         Boot($"checking {label}");
 
-        if (await IsHealthyAsync(component).ConfigureAwait(false))
+        var requireProcess = component.ProcessNames is { Count: > 0 };
+        var processUp = requireProcess && IsProcessRunning(component.ProcessNames);
+        var healthy = await IsHealthyAsync(component).ConfigureAwait(false);
+
+        // 有明确进程名时（如 MaoyanOverlay），不能只凭端口健康就当成已启动，
+        // 避免误复用无关软件（例如单独的猫眼 API）。
+        if (healthy && (!requireProcess || processUp))
         {
             Boot($"{label} already running");
             if (waitLogin)
@@ -81,13 +722,7 @@ internal static class Program
             return true;
         }
 
-        if (component.Port > 0 && IsPortOpen(component.Port) && !await IsHealthyAsync(component).ConfigureAwait(false))
-        {
-            BootFail(label, $"port {component.Port} occupied but health check failed", "", -1);
-            return false;
-        }
-
-        if (IsProcessRunning(component.ProcessNames) && await WaitUntilHealthyAsync(component, Math.Min(15, component.WaitReadySeconds)).ConfigureAwait(false))
+        if (processUp && await WaitUntilHealthyAsync(component, Math.Min(30, component.WaitReadySeconds)).ConfigureAwait(false))
         {
             Boot($"{label} already running (process reuse)");
             if (waitLogin)
@@ -95,6 +730,20 @@ internal static class Program
                 await WaitForLoginAsync(component).ConfigureAwait(false);
             }
             return true;
+        }
+
+        if (component.Port > 0
+            && IsPortOpen(component.Port)
+            && !healthy
+            && !requireProcess)
+        {
+            BootFail(label, $"port {component.Port} occupied but health check failed", "", -1);
+            return false;
+        }
+
+        if (requireProcess && healthy && !processUp)
+        {
+            Boot($"{label} port/health occupied by other process; still starting {string.Join(',', component.ProcessNames)}");
         }
 
         Boot($"starting {label}");
@@ -106,9 +755,9 @@ internal static class Program
         }
 
         Boot($"started {label} path={path}");
-        if (!await WaitUntilHealthyAsync(component, component.WaitReadySeconds).ConfigureAwait(false))
+        if (!await WaitUntilReadyAsync(component, component.WaitReadySeconds).ConfigureAwait(false))
         {
-            BootFail(label, $"health check failed within {component.WaitReadySeconds}s", path, -1);
+            BootFail(label, $"health/process check failed within {component.WaitReadySeconds}s", path, -1);
             return false;
         }
 
@@ -202,36 +851,24 @@ internal static class Program
 
     private static Task<(bool ok, string path, int exitCode)> StartDouyinCdpAsync(ComponentConfig c, string label)
     {
-        var mode = ResolveMode();
-        var exe = ResolveExe(c);
-        if (mode != "dev" && !string.IsNullOrWhiteSpace(exe) && File.Exists(exe))
+        var exe = PreferCdpExe(c);
+        EnsureCdpBuiltIfStale(exe);
+        if (!string.IsNullOrWhiteSpace(exe) && File.Exists(exe))
         {
+            TryMirrorCdpToSidecars(exe);
             return Task.FromResult(StartDetached(exe, "", Path.GetDirectoryName(exe)!));
         }
 
         var workDir = FirstExistingDir(c.DevWorkingDirectory, Path.Combine(ResolveSourceRoot(), "抖音cdp弹幕"));
-        if (mode == "dev" || string.IsNullOrWhiteSpace(exe) || !File.Exists(exe))
+        var go = ResolveGoExe();
+        if (!string.IsNullOrWhiteSpace(go) && Directory.Exists(workDir))
         {
-            if (!CommandExists("go") && !File.Exists(@"C:\go\bin\go.exe"))
-            {
-                return Task.FromResult((false, workDir ?? "", -1));
-            }
-
-            if (Directory.Exists(workDir))
-            {
-                Boot("using development mode for cdp (go run)");
-                var go = CommandExists("go") ? "go" : @"C:\go\bin\go.exe";
-                return Task.FromResult(StartDetached(go, string.IsNullOrWhiteSpace(c.DevArgs) ? "run ./cmd/server" : c.DevArgs!, workDir));
-            }
+            Boot("cdp exe missing after build attempt; falling back to go run ./cmd/native");
+            return Task.FromResult(StartDetached(go, "run ./cmd/native", workDir));
         }
 
-        if (!string.IsNullOrWhiteSpace(exe) && File.Exists(exe))
-        {
-            return Task.FromResult(StartDetached(exe, "", Path.GetDirectoryName(exe)!));
-        }
-
-        BootFail(label, "cdp-danmaku.exe not found; place under ./sidecars/ or build 抖音cdp弹幕", "", -1);
-        return Task.FromResult((false, "", -1));
+        BootFail(label, "cdp-danmaku.exe not found and cannot build", exe, -1);
+        return Task.FromResult((false, exe, -1));
     }
 
     private static async Task<(bool ok, string path, int exitCode)> StartKugouAsync(ComponentConfig c, string label)
@@ -260,47 +897,73 @@ internal static class Program
     private static async Task<(bool ok, string path, int exitCode)> StartMaoyanAsync(ComponentConfig c, string label)
     {
         await Task.CompletedTask.ConfigureAwait(false);
-        if (!CommandExists("node"))
-        {
-            BootFail(label, "Node.js missing", "", -1);
-            return (false, "", -1);
-        }
 
-        var entryJs = ResolveFirstExisting(null, c.CandidateEntryJs);
-        if (!string.IsNullOrWhiteSpace(entryJs) && File.Exists(entryJs))
-        {
-            var dir = Path.GetDirectoryName(entryJs)!;
-            if (!Directory.Exists(Path.Combine(dir, "node_modules")))
-            {
-                BootFail(label, "node_modules missing", dir, -1);
-                return (false, dir, -1);
-            }
-
-            return StartDetached("node", "index.js", dir);
-        }
-
-        var bat = ResolveFirstExisting(c.StartBat, c.CandidateBats);
-        if (!string.IsNullOrWhiteSpace(bat) && File.Exists(bat))
-        {
-            return StartDetached("cmd.exe", $"/c \"\"{bat}\"\"", Path.GetDirectoryName(bat)!);
-        }
-
+        // 正式版：抖音直播24小时无人直播 / MaoyanOverlay（含词云球的 Electron Overlay）
         var mode = ResolveMode();
-        var workDir = FirstExistingDir(c.DevWorkingDirectory, Path.Combine(ResolveSourceRoot(), "猫眼票房助手"));
-        if ((mode == "dev" || mode == "auto") && Directory.Exists(workDir) && File.Exists(Path.Combine(workDir, "index.js")))
+        var exe = ResolveExe(c);
+        if (string.IsNullOrWhiteSpace(exe))
         {
-            if (!Directory.Exists(Path.Combine(workDir, "node_modules")))
-            {
-                BootFail(label, "node_modules missing", workDir, -1);
-                return (false, workDir, -1);
-            }
-
-            Boot("using development/source mode for maoyan");
-            return StartDetached("node", "index.js", workDir);
+            exe = ResolveNewestMaoyanOverlayExe() ?? "";
         }
 
-        BootFail(label, "maoyan start entry not found (expected 猫眼票房助手)", "", -1);
+        if (mode != "dev" && !string.IsNullOrWhiteSpace(exe) && File.Exists(exe))
+        {
+            return StartDetached(exe, "", Path.GetDirectoryName(exe)!);
+        }
+
+        var workDir = FirstExistingDir(
+            c.DevWorkingDirectory,
+            Path.Combine(ResolveSourceRoot(), "抖音直播24小时无人直播"));
+
+        if (mode == "dev" || string.IsNullOrWhiteSpace(exe) || !File.Exists(exe))
+        {
+            if (!CommandExists("node"))
+            {
+                BootFail(label, "Node.js missing (needed for MaoyanOverlay npm start)", workDir ?? "", -1);
+                return (false, workDir ?? "", -1);
+            }
+
+            var bat = ResolveFirstExisting(c.StartBat, c.CandidateBats);
+            if (!string.IsNullOrWhiteSpace(bat) && File.Exists(bat))
+            {
+                Boot("using start.bat for MaoyanOverlay");
+                return StartDetached("cmd.exe", $"/c \"\"{bat}\"\"", Path.GetDirectoryName(bat)!);
+            }
+
+            if (Directory.Exists(workDir) && File.Exists(Path.Combine(workDir, "package.json")))
+            {
+                Boot("using development mode for MaoyanOverlay (npm start)");
+                return StartDetached("npm", string.IsNullOrWhiteSpace(c.DevArgs) ? "start" : c.DevArgs!, workDir);
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(exe) && File.Exists(exe))
+        {
+            return StartDetached(exe, "", Path.GetDirectoryName(exe)!);
+        }
+
+        BootFail(label, "MaoyanOverlay.exe not found under 抖音直播24小时无人直播\\dist", "", -1);
         return (false, "", -1);
+    }
+
+    private static string? ResolveNewestMaoyanOverlayExe()
+    {
+        var dist = Path.Combine(ResolveSourceRoot(), "抖音直播24小时无人直播", "dist");
+        if (!Directory.Exists(dist))
+        {
+            return null;
+        }
+
+        try
+        {
+            return Directory.EnumerateFiles(dist, "MaoyanOverlay*.exe")
+                .OrderByDescending(File.GetLastWriteTimeUtc)
+                .FirstOrDefault();
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static (bool ok, string path, int exitCode) StartDetached(string fileName, string args, string workDir)
@@ -400,20 +1063,36 @@ internal static class Program
         return false;
     }
 
-    private static async Task<bool> WaitUntilHealthyAsync(ComponentConfig c, int seconds)
+    private static async Task<bool> WaitUntilReadyAsync(ComponentConfig c, int seconds)
     {
         var until = DateTime.UtcNow.AddSeconds(Math.Max(1, seconds));
+        var requireProcess = c.ProcessNames is { Count: > 0 };
         while (DateTime.UtcNow < until)
         {
-            if (await IsHealthyAsync(c).ConfigureAwait(false))
+            var processOk = !requireProcess || IsProcessRunning(c.ProcessNames);
+            var healthOk = await IsHealthyAsync(c).ConfigureAwait(false);
+            if (processOk && healthOk)
             {
                 return true;
+            }
+
+            // Overlay 窗口已起来、内置票房 API 稍慢时也算阶段性成功，继续等到 health
+            if (processOk && requireProcess && string.Equals(
+                    c.ProcessNames[0], "MaoyanOverlay", StringComparison.OrdinalIgnoreCase))
+            {
+                Boot("maoyan overlay window process up; waiting ticket api health");
             }
 
             await Task.Delay(1000).ConfigureAwait(false);
         }
 
-        return await IsHealthyAsync(c).ConfigureAwait(false);
+        var finalProcess = !requireProcess || IsProcessRunning(c.ProcessNames);
+        return finalProcess && await IsHealthyAsync(c).ConfigureAwait(false);
+    }
+
+    private static async Task<bool> WaitUntilHealthyAsync(ComponentConfig c, int seconds)
+    {
+        return await WaitUntilReadyAsync(c, seconds).ConfigureAwait(false);
     }
 
     private static async Task<bool> IsHealthyAsync(ComponentConfig c)
@@ -639,7 +1318,7 @@ internal static class Program
             Path.Combine(sourceRoot, "抖音弹幕点歌系统"),
             Path.Combine(sourceRoot, "抖音cdp弹幕"),
             Path.Combine(sourceRoot, "酷狗协议"),
-            Path.Combine(sourceRoot, "猫眼票房助手"),
+            Path.Combine(sourceRoot, "抖音直播24小时无人直播"),
             Path.Combine(sourceRoot, "LiveAssistant")
         };
 
@@ -870,7 +1549,7 @@ internal static class Program
             ? Path.Combine(ResolveSourceRoot(), "抖音cdp弹幕")
             : cfg.DouyinCdp.DevWorkingDirectory;
         cfg.Maoyan.DevWorkingDirectory = string.IsNullOrWhiteSpace(cfg.Maoyan.DevWorkingDirectory)
-            ? Path.Combine(ResolveSourceRoot(), "猫眼票房助手")
+            ? Path.Combine(ResolveSourceRoot(), "抖音直播24小时无人直播")
             : cfg.Maoyan.DevWorkingDirectory;
         cfg.LiveAssistant.DevWorkingDirectory = string.IsNullOrWhiteSpace(cfg.LiveAssistant.DevWorkingDirectory)
             ? _baseDir
@@ -904,6 +1583,10 @@ internal sealed class ComponentConfig
 {
     public bool Enabled { get; set; } = true;
     public string Exe { get; set; } = "";
+    public string SourceDir { get; set; } = "";
+    public string GitCommit { get; set; } = "";
+    public string BuildTime { get; set; } = "";
+    public string MinVersion { get; set; } = "";
     public string DevCommand { get; set; } = "";
     public string DevArgs { get; set; } = "";
     public string DevWorkingDirectory { get; set; } = "";

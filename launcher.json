@@ -1,95 +1,153 @@
 {
-  "mode": "auto",
-  "sourceRoot": "E:\\我的源码目录",
-  "bootLogPrefix": "LIVE_BOOT",
+  "Mode": "auto",
+  "SourceRoot": "E:\\\u6211\u7684\u6E90\u7801\u76EE\u5F55",
+  "BootLogPrefix": "LIVE_BOOT",
   "DouyinCDP": {
-    "enabled": true,
-    "exe": "",
-    "devCommand": "go",
-    "devArgs": "run ./cmd/server",
-    "devWorkingDirectory": "",
-    "healthUrl": "http://127.0.0.1:17891/api/health",
-    "port": 17891,
-    "processNames": [ "cdp-danmaku", "cdp-server", "抖音直播弹幕v1.3" ],
-    "waitReadySeconds": 60,
-    "waitLogin": true,
-    "loginOkField": "login_ok",
-    "candidateExes": [
-      "./sidecars/douyin-cdp/cdp-danmaku.exe",
-      "./sidecars/cdp-danmaku.exe",
-      "./publish/LiveAssistant-one/cdp-danmaku.exe",
-      "../抖音cdp弹幕/bin/cdp-danmaku.exe",
-      "../抖音cdp弹幕/抖音直播弹幕v1.3.exe"
+    "Enabled": true,
+    "Exe": "E:\\\u6211\u7684\u6E90\u7801\u76EE\u5F55\\\u6296\u97F3cdp\u5F39\u5E55\\bin\\cdp-danmaku.exe",
+    "SourceDir": "E:\\\u6211\u7684\u6E90\u7801\u76EE\u5F55\\\u6296\u97F3cdp\u5F39\u5E55",
+    "GitCommit": "d60f33880e0ae3f8ef3d2615fd68a53bf4a37519",
+    "BuildTime": "2026-09-19T00:38:00.6486465\u002B08:00",
+    "MinVersion": "1.2.1",
+    "DevCommand": "go",
+    "DevArgs": "run ./cmd/server",
+    "DevWorkingDirectory": "E:\\\u6211\u7684\u6E90\u7801\u76EE\u5F55\\\u6296\u97F3cdp\u5F39\u5E55",
+    "HealthUrl": "http://127.0.0.1:17891/api/health",
+    "Port": 17891,
+    "ProcessNames": [
+      "cdp-danmaku",
+      "cdp-server",
+      "\u6296\u97F3\u76F4\u64AD\u5F39\u5E55v1.3"
     ],
-    "scanNames": [ "cdp-danmaku.exe", "抖音直播弹幕v1.3.exe" ]
+    "WaitReadySeconds": 60,
+    "WaitLogin": true,
+    "LoginOkField": "login_ok",
+    "CandidateExes": [
+      "E:\\\u6211\u7684\u6E90\u7801\u76EE\u5F55\\\u6296\u97F3cdp\u5F39\u5E55\\bin\\cdp-danmaku.exe",
+      "E:\\\u6211\u7684\u6E90\u7801\u76EE\u5F55\\\u6296\u97F3\u5F39\u5E55\u70B9\u6B4C\u7CFB\u7EDF\\sidecars\\douyin-cdp\\cdp-danmaku.exe",
+      "E:\\\u6211\u7684\u6E90\u7801\u76EE\u5F55\\\u6296\u97F3\u5F39\u5E55\u70B9\u6B4C\u7CFB\u7EDF\\sidecars\\cdp-danmaku.exe",
+      "E:\\\u6211\u7684\u6E90\u7801\u76EE\u5F55\\\u6296\u97F3\u5F39\u5E55\u70B9\u6B4C\u7CFB\u7EDF\\publish\\LiveAssistant-one\\cdp-danmaku.exe"
+    ],
+    "CandidateBats": [],
+    "CandidateEntryJs": [],
+    "ScanNames": [
+      "cdp-danmaku.exe",
+      "\u6296\u97F3\u76F4\u64AD\u5F39\u5E55v1.3.exe"
+    ],
+    "RequireSibling": "",
+    "StartBat": ""
   },
   "KugouApi": {
-    "enabled": true,
-    "exe": "",
-    "devCommand": "",
-    "devArgs": "",
-    "devWorkingDirectory": "",
-    "healthUrl": "http://127.0.0.1:17888/health",
-    "port": 17888,
-    "processNames": [ "酷狗api_v1.5", "酷狗api", "kgapiserver", "KugouAPI" ],
-    "waitReadySeconds": 45,
-    "candidateExes": [
-      "./sidecars/酷狗api_v1.5.exe",
-      "./publish/LiveAssistant-one/酷狗api_v1.5.exe",
-      "../酷狗协议/KgDesktop/build/bin/酷狗api_v1.5.exe",
-      "../酷狗协议/KgApiServer/release/kgapiserver.exe",
-      "../酷狗协议/KgApiServer/kgapiserver.exe"
+    "Enabled": true,
+    "Exe": "E:\\\u6211\u7684\u6E90\u7801\u76EE\u5F55\\\u9177\u72D7\u534F\u8BAE\\KgDesktop\\build\\bin\\\u9177\u72D7api_v1.5.exe",
+    "SourceDir": "E:\\\u6211\u7684\u6E90\u7801\u76EE\u5F55\\\u9177\u72D7\u534F\u8BAE",
+    "GitCommit": "",
+    "BuildTime": "2026-09-15T16:58:16.7002056\u002B08:00",
+    "MinVersion": "",
+    "DevCommand": "",
+    "DevArgs": "",
+    "DevWorkingDirectory": "",
+    "HealthUrl": "http://127.0.0.1:17888/health",
+    "Port": 17888,
+    "ProcessNames": [
+      "\u9177\u72D7api_v1.5",
+      "\u9177\u72D7api",
+      "kgapiserver",
+      "KugouAPI"
     ],
-    "scanNames": [ "酷狗api_v1.5.exe", "酷狗api.exe", "kgapiserver.exe", "KugouAPI.exe" ],
-    "requireSibling": "kgapijs"
+    "WaitReadySeconds": 45,
+    "WaitLogin": false,
+    "LoginOkField": "login_ok",
+    "CandidateExes": [
+      "./sidecars/\u9177\u72D7api_v1.5.exe",
+      "./publish/LiveAssistant-one/\u9177\u72D7api_v1.5.exe",
+      "../\u9177\u72D7\u534F\u8BAE/KgDesktop/build/bin/\u9177\u72D7api_v1.5.exe",
+      "../\u9177\u72D7\u534F\u8BAE/KgApiServer/release/kgapiserver.exe",
+      "../\u9177\u72D7\u534F\u8BAE/KgApiServer/kgapiserver.exe"
+    ],
+    "CandidateBats": [],
+    "CandidateEntryJs": [],
+    "ScanNames": [
+      "\u9177\u72D7api_v1.5.exe",
+      "\u9177\u72D7api.exe",
+      "kgapiserver.exe",
+      "KugouAPI.exe"
+    ],
+    "RequireSibling": "kgapijs",
+    "StartBat": ""
   },
   "Maoyan": {
-    "enabled": true,
-    "exe": "",
-    "devCommand": "npm",
-    "devArgs": "start",
-    "devWorkingDirectory": "",
-    "healthUrl": "http://127.0.0.1:8765/health",
-    "port": 8765,
-    "processNames": [],
-    "waitReadySeconds": 45,
-    "startBat": "",
-    "candidateBats": [
-      "../猫眼票房助手/dist/maoyan-box/start.bat",
-      "../猫眼票房助手/dist/猫眼票房助手/启动.bat",
-      "../猫眼票房助手/start.bat"
+    "Enabled": true,
+    "Exe": "E:\\\u6211\u7684\u6E90\u7801\u76EE\u5F55\\\u6296\u97F3\u76F4\u64AD24\u5C0F\u65F6\u65E0\u4EBA\u76F4\u64AD\\dist\\MaoyanOverlay-1.64.4.exe",
+    "SourceDir": "E:\\\u6211\u7684\u6E90\u7801\u76EE\u5F55\\\u6296\u97F3\u76F4\u64AD24\u5C0F\u65F6\u65E0\u4EBA\u76F4\u64AD",
+    "GitCommit": "",
+    "BuildTime": "2026-09-19T00:10:50.0466997\u002B08:00",
+    "MinVersion": "",
+    "DevCommand": "npm",
+    "DevArgs": "start",
+    "DevWorkingDirectory": "E:\\\u6211\u7684\u6E90\u7801\u76EE\u5F55\\\u6296\u97F3\u76F4\u64AD24\u5C0F\u65F6\u65E0\u4EBA\u76F4\u64AD",
+    "HealthUrl": "http://127.0.0.1:8765/health",
+    "Port": 8765,
+    "ProcessNames": [
+      "MaoyanOverlay"
     ],
-    "candidateEntryJs": [
-      "../猫眼票房助手/dist/maoyan-box/index.js",
-      "../猫眼票房助手/dist/猫眼票房助手/index.js",
-      "../猫眼票房助手/index.js"
+    "WaitReadySeconds": 90,
+    "WaitLogin": false,
+    "LoginOkField": "login_ok",
+    "CandidateExes": [
+      "../\u6296\u97F3\u76F4\u64AD24\u5C0F\u65F6\u65E0\u4EBA\u76F4\u64AD/dist/MaoyanOverlay-1.64.4.exe",
+      "../\u6296\u97F3\u76F4\u64AD24\u5C0F\u65F6\u65E0\u4EBA\u76F4\u64AD/dist/MaoyanOverlay.exe",
+      "../\u6296\u97F3\u76F4\u64AD24\u5C0F\u65F6\u65E0\u4EBA\u76F4\u64AD/dist/win-unpacked/MaoyanOverlay.exe"
     ],
-    "scanNames": [ "start.bat", "启动.bat" ]
+    "CandidateBats": [
+      "../\u6296\u97F3\u76F4\u64AD24\u5C0F\u65F6\u65E0\u4EBA\u76F4\u64AD/start.bat"
+    ],
+    "CandidateEntryJs": [],
+    "ScanNames": [
+      "MaoyanOverlay.exe",
+      "MaoyanOverlay-1.64.4.exe"
+    ],
+    "RequireSibling": "",
+    "StartBat": "E:\\\u6211\u7684\u6E90\u7801\u76EE\u5F55\\\u6296\u97F3\u76F4\u64AD24\u5C0F\u65F6\u65E0\u4EBA\u76F4\u64AD\\start.bat"
   },
   "LiveAssistant": {
-    "enabled": true,
-    "exe": "",
-    "devCommand": "dotnet",
-    "devArgs": "run --project LiveAssistant",
-    "devWorkingDirectory": "",
-    "healthUrl": "",
-    "port": 0,
-    "processNames": [ "LiveAssistant" ],
-    "waitReadySeconds": 15,
-    "candidateExes": [
+    "Enabled": true,
+    "Exe": "E:\\\u6211\u7684\u6E90\u7801\u76EE\u5F55\\\u6296\u97F3\u5F39\u5E55\u70B9\u6B4C\u7CFB\u7EDF\\publish\\LiveAssistant-one\\LiveAssistant.exe",
+    "SourceDir": "E:\\\u6211\u7684\u6E90\u7801\u76EE\u5F55\\\u6296\u97F3\u5F39\u5E55\u70B9\u6B4C\u7CFB\u7EDF",
+    "GitCommit": "3023a57519b0bfb3e7c84ab7fd0f83dde827a0a7",
+    "BuildTime": "2026-09-16T15:00:10.9263715\u002B08:00",
+    "MinVersion": "",
+    "DevCommand": "dotnet",
+    "DevArgs": "run --project LiveAssistant",
+    "DevWorkingDirectory": "E:\\\u6211\u7684\u6E90\u7801\u76EE\u5F55\\\u6296\u97F3\u5F39\u5E55\u70B9\u6B4C\u7CFB\u7EDF\\publish\\StartLiveSystem\\",
+    "HealthUrl": "",
+    "Port": 0,
+    "ProcessNames": [
+      "LiveAssistant"
+    ],
+    "WaitReadySeconds": 15,
+    "WaitLogin": false,
+    "LoginOkField": "login_ok",
+    "CandidateExes": [
       "./publish/LiveAssistant-one/LiveAssistant.exe",
       "./publish/LiveAssistant-build/LiveAssistant.exe",
       "./LiveAssistant/bin/Release/net8.0-windows/LiveAssistant.exe",
       "./LiveAssistant/bin/Debug/net8.0-windows/LiveAssistant.exe"
     ],
-    "scanNames": [ "LiveAssistant.exe" ]
+    "CandidateBats": [],
+    "CandidateEntryJs": [],
+    "ScanNames": [
+      "LiveAssistant.exe"
+    ],
+    "RequireSibling": "",
+    "StartBat": ""
   },
-  "environment": {
-    "requireDotnet": true,
-    "requireNode": true,
-    "requireChrome": true,
-    "requireGo": false,
-    "requirePython": false,
-    "chromeMinMajor": 120
+  "Environment": {
+    "RequireDotnet": true,
+    "RequireNode": true,
+    "RequireChrome": true,
+    "RequireGo": false,
+    "RequirePython": false,
+    "ChromeMinMajor": 120
   }
 }
