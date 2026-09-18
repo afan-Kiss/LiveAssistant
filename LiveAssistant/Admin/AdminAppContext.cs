@@ -26,4 +26,5 @@ public sealed class AdminAppContext
     public required UserDetailService UserDetail { get; init; }
     public required ReplyTemplatePreviewService TemplatePreview { get; init; }
     public required ReplyService Reply { get; init; }
+    public required MovieInteractionService MovieInteraction { get; init; }
 }

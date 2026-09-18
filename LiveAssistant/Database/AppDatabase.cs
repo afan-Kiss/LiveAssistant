@@ -178,6 +178,64 @@ public sealed class AppDatabase : IDisposable
                 ref_id TEXT,
                 created_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS movie_score_credits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                gift_event_id TEXT NOT NULL UNIQUE,
+                user_id TEXT NOT NULL,
+                nickname TEXT,
+                gift_name TEXT,
+                diamond_count INTEGER DEFAULT 0,
+                value INTEGER DEFAULT 0,
+                points INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                consumed_at TEXT,
+                score_event_id TEXT,
+                status TEXT NOT NULL DEFAULT 'pending'
+            );
+
+            CREATE TABLE IF NOT EXISTS movie_score_events (
+                event_id TEXT PRIMARY KEY,
+                platform TEXT,
+                room_id TEXT,
+                user_id TEXT NOT NULL,
+                nickname TEXT,
+                movie_id TEXT NOT NULL,
+                movie_name TEXT NOT NULL,
+                action TEXT NOT NULL,
+                score_delta INTEGER NOT NULL,
+                absolute_points INTEGER NOT NULL,
+                source_gift_event_ids TEXT,
+                created_at TEXT NOT NULL,
+                uploaded_at TEXT,
+                upload_status TEXT NOT NULL DEFAULT 'pending',
+                upload_attempts INTEGER DEFAULT 0,
+                next_retry_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS movie_score_totals (
+                movie_id TEXT PRIMARY KEY,
+                movie_name TEXT,
+                score INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS movie_catalog (
+                movie_id TEXT PRIMARY KEY,
+                movie_name TEXT NOT NULL,
+                aliases_json TEXT,
+                rank INTEGER DEFAULT 0,
+                updated_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS movie_interaction_stream (
+                seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                type TEXT NOT NULL,
+                ref_id TEXT,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
             """;
         cmd.ExecuteNonQuery();
     }
@@ -213,6 +271,12 @@ public sealed class AppDatabase : IDisposable
                 ON gift_events(event_id) WHERE event_id IS NOT NULL AND event_id != '';
                 CREATE INDEX IF NOT EXISTS idx_points_ledger_user_created
                 ON points_ledger(user_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_movie_score_credits_user_status
+                ON movie_score_credits(user_id, status, expires_at);
+                CREATE INDEX IF NOT EXISTS idx_movie_score_events_upload
+                ON movie_score_events(upload_status, next_retry_at);
+                CREATE INDEX IF NOT EXISTS idx_movie_interaction_stream_seq
+                ON movie_interaction_stream(seq);
                 """;
             idxCmd.ExecuteNonQuery();
         }

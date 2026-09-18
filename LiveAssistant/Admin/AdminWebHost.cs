@@ -621,7 +621,39 @@ public sealed class AdminWebHost : IDisposable
             return Results.Json(new { hash = bundle.Version, config = bundle.Settings });
         }));
 
+        // 电影互动：本机 MaoyanOverlay 调用；Admin 已绑定 127.0.0.1，回环可免登录
+        app.MapGet("/api/movie-interaction/health", (HttpContext http) => LoopbackOrAuth(http, () =>
+        {
+            _ctx.Log.Info("[MOVIE_SCORE_API] health");
+            return Results.Json(_ctx.MovieInteraction.GetHealth());
+        }));
+
+        app.MapPost("/api/movie-interaction/movies", (MovieCatalogUpdateRequest req, HttpContext http) =>
+            LoopbackOrAuth(http, () =>
+            {
+                var result = _ctx.MovieInteraction.UpdateCatalog(req ?? new MovieCatalogUpdateRequest());
+                return Results.Json(result);
+            }));
+
+        app.MapGet("/api/movie-interaction/scores", (HttpContext http) => LoopbackOrAuth(http, () =>
+            Results.Json(_ctx.MovieInteraction.GetScores())));
+
+        app.MapGet("/api/movie-interaction/events", (HttpContext http, long? after, int? limit) =>
+            LoopbackOrAuth(http, () =>
+                Results.Json(_ctx.MovieInteraction.GetEvents(after ?? 0, limit ?? 200))));
+
         app.MapGet("/", () => Results.Redirect($"{pathBase}/index.html"));
+    }
+
+    private IResult LoopbackOrAuth(HttpContext http, Func<IResult> action)
+    {
+        var remote = http.Connection.RemoteIpAddress;
+        if (remote != null && IPAddress.IsLoopback(remote))
+        {
+            return action();
+        }
+
+        return Auth(http, action);
     }
 
     private IResult Cmd(AdminCommandType type, string? payload = null)

@@ -59,6 +59,8 @@ public sealed class LiveAppHost : IDisposable
     private readonly ReplyTemplatePreviewService _templatePreview;
     private readonly AiSpeechCoordinator _aiSpeech;
     private readonly MachineSetupService _machineSetup;
+    private readonly MovieInteractionService _movieInteraction;
+    private readonly MovieScoreSyncService _movieScoreSync;
     private readonly DateTime _startedAt = DateTime.Now;
     private string _lastPlayedTrackKey = "";
     private CancellationTokenSource? _watchCts;
@@ -166,6 +168,13 @@ public sealed class LiveAppHost : IDisposable
         _dataCleanup = new DataCleanupService(_config, _db, _log);
         _watchdog = new ProcessWatchdogService(_config, _log, _system);
 
+        _adminTunnel = new AdminTunnelService(_config, _log, _system);
+        _aiSpeech = new AiSpeechCoordinator(_config, _log, _outboundTracker);
+        _aiSpeech.StatusChanged += () => NotifyStateChanged();
+        _machineSetup = new MachineSetupService(_config, _log, _playback, _aiSpeech);
+        _movieInteraction = new MovieInteractionService(_config, _db, _log);
+        _movieScoreSync = new MovieScoreSyncService(_config, _movieInteraction, _log);
+
         _adminWeb = new AdminWebHost(new AdminAppContext
         {
             Config = _config,
@@ -187,12 +196,9 @@ public sealed class LiveAppHost : IDisposable
             SongRequestControl = _songRequestControl,
             UserDetail = _userDetail,
             TemplatePreview = _templatePreview,
-            Reply = _reply
+            Reply = _reply,
+            MovieInteraction = _movieInteraction
         });
-        _adminTunnel = new AdminTunnelService(_config, _log, _system);
-        _aiSpeech = new AiSpeechCoordinator(_config, _log, _outboundTracker);
-        _aiSpeech.StatusChanged += () => NotifyStateChanged();
-        _machineSetup = new MachineSetupService(_config, _log, _playback, _aiSpeech);
 
         _danmaku.DanmakuReceived += OnDanmakuReceived;
         _ksDanmaku.DanmakuReceived += OnDanmakuReceived;
@@ -214,12 +220,16 @@ public sealed class LiveAppHost : IDisposable
             _health.RecordGift();
             try { _aiSpeech.TryEnqueueGift(g); }
             catch (Exception ex) { _log.Error("ai_speech", "礼物投递 AI 模块异常（已隔离）", ex); }
+            try { _movieInteraction.OnGiftReceived(g); }
+            catch (Exception ex) { _log.Error("movie_score", "礼物投递电影评分模块异常（已隔离）", ex); }
         };
 
         _adminWeb.Start();
         _adminTunnel.Start();
         _backendSync.Start();
         _dataCleanup.Start();
+        _movieInteraction.Start();
+        _movieScoreSync.Start();
 
         _log.Info($"{AppBranding.DisplayName} 已启动");
         if (_config.Settings.Admin.Enabled)
@@ -759,6 +769,9 @@ public sealed class LiveAppHost : IDisposable
 
     private void OnDanmakuReceived(DanmakuItem item)
     {
+        // 电影评分是旁路观察：不得 return、不得改 DanmakuItem、不得影响后续点歌/AI。
+        try { _movieInteraction.OnDanmaku(item); }
+        catch (Exception ex) { _log.Error("movie_score", "弹幕投递电影评分模块异常（已隔离）", ex); }
         _ = ProcessDanmakuSafeAsync(item);
     }
 
@@ -1135,6 +1148,8 @@ public sealed class LiveAppHost : IDisposable
         try { _ksDanmaku.DanmakuReceived -= OnDanmakuReceived; } catch { /* ignore */ }
         try { _banVote.Dispose(); } catch { /* ignore */ }
         try { _aiSpeech.Dispose(); } catch { /* ignore */ }
+        try { _movieScoreSync.Dispose(); } catch { /* ignore */ }
+        try { _movieInteraction.Dispose(); } catch { /* ignore */ }
         try { _dataCleanup.Dispose(); } catch { /* ignore */ }
         try { _backendSync.Dispose(); } catch { /* ignore */ }
         try { _adminTunnel.Dispose(); } catch { /* ignore */ }

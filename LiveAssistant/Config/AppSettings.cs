@@ -26,6 +26,26 @@ public sealed class AppSettings
     public SongRequestPolicySettings SongRequestPolicy { get; set; } = new();
     public CleanupSettings Cleanup { get; set; } = new();
     public AiSpeechSettings AiSpeech { get; set; } = new();
+    public MovieInteractionSettings MovieInteraction { get; set; } = new();
+}
+
+/// <summary>
+/// 电影互动评分：礼物→可评分积分→弹幕好评/差评→本地落库→可选同步服务器。
+/// 与现有用户积分 / 点歌权限完全独立。
+/// </summary>
+public sealed class MovieInteractionSettings
+{
+    public bool Enabled { get; set; } = true;
+    /// <summary>服务器根地址，勿写死域名；空则不同步。</summary>
+    public string ServerBaseUrl { get; set; } = "";
+    public string ApiToken { get; set; } = "";
+    public bool SyncEnabled { get; set; }
+    /// <summary>可评分积分有效期（秒），默认 3 分钟。</summary>
+    public int CreditExpireSeconds { get; set; } = 180;
+    /// <summary>过期状态清理间隔（秒）。</summary>
+    public int CleanupIntervalSeconds { get; set; } = 45;
+    /// <summary>1 钻对应多少电影评分积分。</summary>
+    public int PointsPerDiamond { get; set; } = 10;
 }
 
 public sealed class AiSpeechSettings
