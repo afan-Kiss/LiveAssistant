@@ -631,6 +631,7 @@ internal static class Program
         cfg.LiveAssistant.SourceDir = Path.Combine(sourceRoot, "抖音弹幕点歌系统");
         cfg.LiveAssistant.Exe = string.IsNullOrWhiteSpace(laExe) ? cfg.LiveAssistant.Exe : Path.GetFullPath(laExe);
         cfg.LiveAssistant.GitCommit = TryReadGitHead(cfg.LiveAssistant.SourceDir);
+        cfg.LiveAssistant.DevWorkingDirectory = cfg.LiveAssistant.SourceDir;
         if (!string.IsNullOrWhiteSpace(cfg.LiveAssistant.Exe) && File.Exists(cfg.LiveAssistant.Exe))
         {
             cfg.LiveAssistant.BuildTime = File.GetLastWriteTime(cfg.LiveAssistant.Exe).ToString("o");
