@@ -73,6 +73,7 @@ public sealed class LiveAppHost : IDisposable
     private volatile string _kugouFullPlaybackReason = "";
     private long _kugouStatusCheckedAtTicks;
     private volatile bool _kugouLoginWarned;
+    private volatile bool _cdpLoginWarned;
     private volatile string _adminAccountStatus = "未检测";
     private volatile string _adminNickname = "-";
     private volatile string _currentTask = "空闲";
@@ -1071,7 +1072,12 @@ public sealed class LiveAppHost : IDisposable
                 if (health != null)
                 {
                     _adminAccountStatus = health.LoginOk ? "已登录" : "未登录";
-                    _adminNickname = health.Nickname ?? "-";
+                    _adminNickname = string.IsNullOrWhiteSpace(health.Nickname) ? "-" : health.Nickname;
+                    if (!health.LoginOk && !_cdpLoginWarned)
+                    {
+                        _system.Add("抖音 CDP 未登录，请先完成扫码登录");
+                        _cdpLoginWarned = true;
+                    }
                 }
                 else
                 {

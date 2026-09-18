@@ -356,31 +356,13 @@ public sealed class ReplyQueue : IDisposable
         }
 
         job.RetryCount++;
-        if (job.RetryCount <= _settings.MaxRetries)
-        {
-            _log.DouyinWarn(
-                $"REPLY_QUEUE replyId={job.ReplyId} type={(job.IsSongRequestBatch ? "song_request_batch" : "mention")} " +
-                $"retry={job.RetryCount} success=false error={reason}");
-            if (!_sendMentionInjected)
+            if (job.RetryCount <= _settings.MaxRetries)
             {
-                if (DouyinService.IsProfileMismatch(reason))
-                {
-                    await _douyin.SyncCookieProfileAsync(ct);
-                    await _douyin.ReconnectAsync(job.WebRid, ct);
-                }
-                else if (DouyinService.IsBizAuthFailure(reason, detail.HttpStatus))
-                {
-                    await _douyin.SyncCookieProfileAsync(ct);
-                    await _douyin.VerifyWriteCredentialAsync(ct);
-                    await _douyin.ClearSendPauseAsync("403", ct);
-                }
-                else if (DouyinService.IsWriteCredentialPending(reason, detail.HttpStatus))
-                {
-                    await _douyin.EnsureWriteGateReadyAsync(ct);
-                }
-            }
+                _log.DouyinWarn(
+                    $"REPLY_QUEUE replyId={job.ReplyId} type={(job.IsSongRequestBatch ? "song_request_batch" : "mention")} " +
+                    $"retry={job.RetryCount} success=false error={reason}");
 
-            try
+                try
             {
                 var delayMs = DouyinService.IsWriteCredentialPending(reason, detail.HttpStatus)
                     ? Math.Max(_settings.RetryDelayMs, 3000)
@@ -413,7 +395,7 @@ public sealed class ReplyQueue : IDisposable
                 ? $"快手弹幕@回复失败：{reason}。请检查 ks 侧车、Cookie 与房间连接"
                 : DouyinService.IsBizAuthFailure(reason, detail.HttpStatus)
                   || DouyinService.IsWriteCredentialPending(reason, detail.HttpStatus)
-                    ? $"弹幕@回复失败：{reason}。请重新登录抖音助手后再试"
+                    ? $"弹幕@回复失败：{reason}。请在抖音 CDP 里完成扫码登录后再试"
                     : $"弹幕@回复失败：{reason}";
             _onSendFailed?.Invoke(tip);
         }

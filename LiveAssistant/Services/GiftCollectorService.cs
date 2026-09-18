@@ -49,6 +49,7 @@ public sealed class GiftCollectorService : IDisposable
     }
 
     public bool IsRunning => _cts is { IsCancellationRequested: false };
+    public string Status { get; private set; } = "";
     public string CurrentWebRid => _webRid;
     public GiftEventDeduplicator Deduplicator => _deduper;
     public string CurrentCursor => _cursor;
@@ -206,7 +207,8 @@ public sealed class GiftCollectorService : IDisposable
             }
             catch (CookieInvalidException ex)
             {
-                _log.GiftWarn($"Cookie 失效，等待重试: {ex.Message}");
+                Status = "gift_cookie_unavailable";
+                _log.GiftWarn($"DOUYIN_CDP_GIFT stage=cookie result=gift_cookie_unavailable errorCode={ex.Message}");
                 if (_cookies is FileCookieProvider fileCookies)
                 {
                     fileCookies.InvalidateCache();

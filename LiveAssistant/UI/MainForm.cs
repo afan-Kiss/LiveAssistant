@@ -899,7 +899,7 @@ public sealed class MainForm : Form
             TextAlign = ContentAlignment.MiddleLeft,
             ForeColor = Color.Gray,
             Margin = new Padding(2, 0, 0, 0),
-            Text = $"Sidecar: 抖音 http://127.0.0.1:4723 | 酷狗 http://127.0.0.1:17888 | 管理后台 {adminUrl}"
+            Text = $"抖音 CDP {_host.Config.Settings.Douyin.BaseUrl} | 酷狗 http://127.0.0.1:17888 | 管理后台 {adminUrl}"
         };
 
         var btnAdmin = new Button

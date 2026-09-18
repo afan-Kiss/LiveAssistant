@@ -150,6 +150,15 @@ public sealed class DouyinRoomRawData
     public string? Cookie { get; set; }
 }
 
+public sealed class DouyinCookieExportData
+{
+    [JsonPropertyName("cookie")]
+    public string? Cookie { get; set; }
+
+    [JsonPropertyName("login_ok")]
+    public bool LoginOk { get; set; }
+}
+
 public sealed class DouyinCookieStatusData
 {
     [JsonPropertyName("active")]

@@ -43,14 +43,15 @@ public sealed class ProcessWatchdogService
             }
             else
             {
-                if (!await douyinHealth())
-                {
-                    await TryStartProcessAsync(
-                        _config.Settings.Douyin.DouyinExePath,
-                        global::LiveAssistant.SidecarLocator.DouyinStartArgs(_config.Settings.Douyin.DouyinExePath),
-                        "抖音API",
-                        ct);
-                }
+            if (!await douyinHealth())
+            {
+                await EnsureDouyinCdpAsync(ct);
+            }
+            else
+            {
+                _log.Info(
+                    $"DOUYIN_CDP_WATCHDOG stage=reuse result=health_ok baseUrl={_config.Settings.Douyin.BaseUrl} pid=0");
+            }
 
                 if (!await kugouHealth())
                 {
@@ -263,12 +264,69 @@ public sealed class ProcessWatchdogService
     }
 
     public Task RestartDouyinAsync(CancellationToken ct = default)
-        => TryStartProcessAsync(
-            _config.Settings.Douyin.DouyinExePath,
-            global::LiveAssistant.SidecarLocator.DouyinStartArgs(_config.Settings.Douyin.DouyinExePath),
-            "抖音API",
-            ct,
-            force: true);
+        => EnsureDouyinCdpAsync(ct, force: true);
+
+    private async Task EnsureDouyinCdpAsync(CancellationToken ct, bool force = false)
+    {
+        var baseUrl = _config.Settings.Douyin.BaseUrl;
+        var configured = string.IsNullOrWhiteSpace(_config.Settings.Douyin.CdpExePath)
+            ? _config.Settings.Douyin.DouyinExePath
+            : _config.Settings.Douyin.CdpExePath;
+        var exe = SidecarLocator.ResolveDouyin(configured);
+        var port = ParsePortFromBaseUrl(baseUrl, 17891);
+        if (!force && await IsLocalPortOpenAsync(port, ct))
+        {
+            _log.Info($"DOUYIN_CDP_WATCHDOG stage=reuse result=port_open baseUrl={baseUrl} pid=0");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(exe) || !File.Exists(exe) || !SidecarLocator.IsDouyinApiExe(Path.GetFileName(exe)))
+        {
+            _log.Warn($"DOUYIN_CDP_WATCHDOG stage=reject result=missing_cdp_exe baseUrl={baseUrl} pid=0");
+            _system.Add("缺少抖音 CDP 程序 cdp-danmaku.exe");
+            return;
+        }
+
+        var processName = Path.GetFileNameWithoutExtension(exe);
+        var existing = Process.GetProcessesByName(processName);
+        try
+        {
+            if (existing.Length > 0 && !force)
+            {
+                var pid = existing[0].Id;
+                _log.Info($"DOUYIN_CDP_WATCHDOG stage=reuse result=process_exists baseUrl={baseUrl} pid={pid}");
+                return;
+            }
+
+            if (force)
+            {
+                foreach (var p in existing)
+                {
+                    try { p.Kill(true); } catch { /* ignore */ }
+                }
+            }
+
+            var started = Process.Start(new ProcessStartInfo
+            {
+                FileName = exe,
+                Arguments = SidecarLocator.DouyinStartArgs(exe),
+                WorkingDirectory = Path.GetDirectoryName(exe) ?? "",
+                UseShellExecute = false,
+                CreateNoWindow = true
+            });
+            var newPid = started?.Id ?? 0;
+            _log.Info($"DOUYIN_CDP_WATCHDOG stage=start result=ok baseUrl={baseUrl} pid={newPid}");
+            _system.Add("已启动抖音 CDP");
+            await Task.Delay(3000, ct);
+        }
+        finally
+        {
+            foreach (var p in existing)
+            {
+                p.Dispose();
+            }
+        }
+    }
 
     public Task RestartKugouAsync(CancellationToken ct = default)
         => TryStartProcessAsync(_config.Settings.Kugou.KugouExePath, "", "酷狗", ct, force: true);

@@ -153,92 +153,56 @@ public sealed class GiftCollectorTests : IDisposable
     }
 
     [Fact]
-    public async Task FileCookieProvider_FallsBackToRoomResolve_WhenCookiesJsonMissing()
+    public async Task FileCookieProvider_UsesCookieExport()
     {
-        var missingPath = Path.Combine(_tempDir, "missing-cookies.json");
         var handler = new ScriptedHandler(req =>
         {
             var path = req.RequestUri!.AbsolutePath;
-            if (path.EndsWith("/api/cookie", StringComparison.OrdinalIgnoreCase))
+            if (path.EndsWith("/api/cookie/export", StringComparison.OrdinalIgnoreCase))
             {
                 return JsonResponse("""
-                {"ok":true,"data":{"active":"默认账号","login_ok":true,"login_hint":"ok"}}
+                {"ok":true,"message":"ok","data":{"cookie":"sessionid=export123; ttwid=xyz","login_ok":true}}
                 """);
             }
 
-            if (path.EndsWith("/api/live/room/resolve", StringComparison.OrdinalIgnoreCase))
+            if (path.EndsWith("/api/cookie", StringComparison.OrdinalIgnoreCase)
+                || path.Contains("cookies.json", StringComparison.OrdinalIgnoreCase))
             {
-                return JsonResponse("""
-                {"ok":true,"data":{"web_rid":"49489141797","room_id":"123","raw":{"cookie":"sessionid=fallback123; ttwid=xyz"}}}
-                """);
+                throw new InvalidOperationException("must not read legacy cookie");
             }
 
             return new HttpResponseMessage(HttpStatusCode.NotFound);
         });
 
         var config = new ConfigManager();
-        config.Settings.Douyin.BaseUrl = "http://127.0.0.1:4723";
-        config.Settings.Douyin.CookieStorePath = missingPath;
-        config.Settings.Douyin.WebRid = "49489141797";
+        config.Settings.Douyin.BaseUrl = "http://127.0.0.1:17891";
+        config.Settings.Douyin.CookieStorePath = Path.Combine(_tempDir, "missing-cookies.json");
         var log = new LogService(_tempDir);
         var douyin = new DouyinService(config.Settings.Douyin, log, new HttpClient(handler)
         {
-            BaseAddress = new Uri("http://127.0.0.1:4723/")
+            BaseAddress = new Uri("http://127.0.0.1:17891/")
         });
         var provider = new FileCookieProvider(config, douyin);
-
         var cookie = await provider.GetActiveCookieAsync();
-
-        Assert.Contains("sessionid=fallback123", cookie);
+        Assert.Contains("sessionid=export123", cookie);
     }
 
     [Fact]
-    public async Task FileCookieProvider_ReusesResolverCookie_WithoutSecondResolve()
+    public async Task FileCookieProvider_ExportWithoutSession_ThrowsUnavailable()
     {
-        var missingPath = Path.Combine(_tempDir, "missing-cookies-2.json");
-        var resolveCalls = 0;
-        var handler = new ScriptedHandler(req =>
-        {
-            var path = req.RequestUri!.AbsolutePath;
-            if (path.EndsWith("/api/cookie", StringComparison.OrdinalIgnoreCase))
-            {
-                return JsonResponse("""
-                {"ok":true,"data":{"active":"默认账号","login_ok":true,"login_hint":"ok"}}
-                """);
-            }
-
-            if (path.EndsWith("/api/live/room/resolve", StringComparison.OrdinalIgnoreCase))
-            {
-                Interlocked.Increment(ref resolveCalls);
-                return JsonResponse("""
-                {"ok":true,"data":{"web_rid":"49489141797","room_id":"123","raw":{"cookie":"sessionid=resolver123; ttwid=xyz"}}}
-                """);
-            }
-
-            return new HttpResponseMessage(HttpStatusCode.NotFound);
-        });
-
+        var handler = new ScriptedHandler(_ => JsonResponse("""
+            {"ok":false,"message":"not_logged_in","data":{"cookie":"","login_ok":false}}
+            """));
         var config = new ConfigManager();
-        config.Settings.Douyin.BaseUrl = "http://127.0.0.1:4723";
-        config.Settings.Douyin.CookieStorePath = missingPath;
-        config.Settings.Douyin.WebRid = "49489141797";
+        config.Settings.Douyin.BaseUrl = "http://127.0.0.1:17891";
         var log = new LogService(_tempDir);
         var douyin = new DouyinService(config.Settings.Douyin, log, new HttpClient(handler)
         {
-            BaseAddress = new Uri("http://127.0.0.1:4723/")
+            BaseAddress = new Uri("http://127.0.0.1:17891/")
         });
-        var rooms = new SidecarGiftRoomResolver(douyin);
-        await rooms.ResolveRoomIdAsync("49489141797");
-        var resolveCallsAfterWarmup = Volatile.Read(ref resolveCalls);
-        var provider = new FileCookieProvider(config, douyin, rooms);
-        provider.BindWebRid("49489141797");
-
-        var first = await provider.GetActiveCookieAsync();
-        var second = await provider.GetActiveCookieAsync();
-
-        Assert.Contains("sessionid=resolver123", first);
-        Assert.Equal(first, second);
-        Assert.Equal(resolveCallsAfterWarmup, Volatile.Read(ref resolveCalls));
+        var provider = new FileCookieProvider(config, douyin);
+        var ex = await Assert.ThrowsAsync<CookieInvalidException>(() => provider.GetActiveCookieAsync());
+        Assert.Equal("gift_cookie_unavailable", ex.Message);
     }
 
     [Fact]
@@ -276,6 +240,62 @@ public sealed class GiftCollectorTests : IDisposable
         collector.StopGiftCollector();
         Assert.False(collector.IsRunning);
         db.Dispose();
+    }
+
+    [Fact]
+    public async Task GiftCollector_ExportWithoutSession_StaysOfflineAndRetries()
+    {
+        var config = new ConfigManager();
+        config.Load();
+        config.Settings.Gift.IdleImFetchIntervalMs = 50;
+        config.Settings.Gift.ReconnectDelayMs = 30;
+
+        var dataDir = Path.Combine(_tempDir, "db-cookie");
+        Directory.CreateDirectory(dataDir);
+        var db = new AppDatabase(dataDir);
+        var users = new UserRepository(db);
+        var log = new LogService(dataDir);
+        var douyin = new DouyinService(config.Settings.Douyin, log);
+        var gifts = new GiftService(
+            config, douyin, new GiftRepository(db), users,
+            new UserLevelService(config, users), new GiftRuleRepository(db),
+            log, new SystemMessageService(20));
+        var calls = 0;
+        var cookies = new ThrowingCookieProvider(() =>
+        {
+            Interlocked.Increment(ref calls);
+            throw new CookieInvalidException("gift_cookie_unavailable");
+        });
+
+        using var collector = new GiftCollectorService(
+            config, douyin, gifts, log,
+            new GiftImFetchClient(new HttpClient(new ScriptedHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)))),
+            cookies,
+            new StaticRoomResolver("999"),
+            cursorStore: new GiftCursorStore(dataDir));
+        collector.StartGiftCollector("123");
+        var until = DateTime.UtcNow.AddSeconds(3);
+        while (Volatile.Read(ref calls) < 2 && DateTime.UtcNow < until)
+        {
+            await Task.Delay(40);
+        }
+
+        Assert.Equal("gift_cookie_unavailable", collector.Status);
+        Assert.True(collector.IsRunning);
+        Assert.True(Volatile.Read(ref calls) >= 2);
+        collector.StopGiftCollector();
+        db.Dispose();
+    }
+
+    private sealed class ThrowingCookieProvider : ICookieProvider
+    {
+        private readonly Action _throw;
+        public ThrowingCookieProvider(Action throwAction) => _throw = throwAction;
+        public Task<string> GetActiveCookieAsync(CancellationToken ct = default)
+        {
+            _throw();
+            return Task.FromResult("");
+        }
     }
 
     private sealed class StaticCookieProvider : ICookieProvider

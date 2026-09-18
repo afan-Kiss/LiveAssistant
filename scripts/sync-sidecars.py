@@ -16,10 +16,10 @@ ROOT = Path(__file__).resolve().parents[1]
 SIDEcars = ROOT / "sidecars"
 PUBLISH = ROOT / "publish" / "LiveAssistant-one"
 
-DOUYIN_SRC = Path(r"E:\我的源码目录\抖音网页弹幕\build")
+DOUYIN_SRC = Path(r"E:\我的源码目录\抖音cdp弹幕\bin")
 KUGOU_SRC = Path(r"E:\我的源码目录\酷狗协议\KgDesktop\build\bin")
 
-DOUYIN_EXE = "抖音直播弹幕助手.exe"
+DOUYIN_EXE = "cdp-danmaku.exe"
 KUGOU_EXE = "酷狗api_v1.5.exe"
 
 # 用户运行时文件：目标已存在时一律跳过，禁止用开发机 build/data 覆盖。

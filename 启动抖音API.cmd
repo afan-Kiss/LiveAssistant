@@ -2,21 +2,20 @@
 chcp 65001 >nul
 cd /d "%~dp0"
 
-if exist "抖音直播弹幕助手.exe" (
-  echo 正在启动抖音直播弹幕助手（监控弹幕 / 发弹幕 / HTTP API）...
-  start "douyin-api" /D "%~dp0" "抖音直播弹幕助手.exe"
-  echo 已启动。健康检查: http://127.0.0.1:4723/api/health
+if exist "cdp-danmaku.exe" (
+  echo 正在启动抖音 CDP ...
+  start "douyin-cdp" /D "%~dp0" "cdp-danmaku.exe"
+  echo 已启动。健康检查: http://127.0.0.1:17891/api/health
   exit /b 0
 )
 
-if exist "douyin-danmaku.exe" (
-  echo 未找到「抖音直播弹幕助手.exe」，改用 douyin-danmaku.exe -api
-  start "douyin-api" /D "%~dp0" "douyin-danmaku.exe" -api
-  echo 已启动。健康检查: http://127.0.0.1:4723/api/health
+if exist "sidecars\douyin-cdp\cdp-danmaku.exe" (
+  echo 正在启动 sidecars\douyin-cdp\cdp-danmaku.exe ...
+  start "douyin-cdp" /D "%~dp0sidecars\douyin-cdp" "cdp-danmaku.exe"
+  echo 已启动。健康检查: http://127.0.0.1:17891/api/health
   exit /b 0
 )
 
-echo 当前目录找不到抖音直播弹幕助手.exe
-echo 请先运行 scripts\sync-sidecars.py 同步 sidecar，或把 抖音直播弹幕助手.exe 放到本目录
+echo 当前目录找不到 cdp-danmaku.exe
+echo 请把抖音 CDP 程序放到本目录或 sidecars\douyin-cdp\
 pause
-exit /b 1

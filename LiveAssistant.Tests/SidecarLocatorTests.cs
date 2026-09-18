@@ -11,7 +11,7 @@ public sealed class SidecarLocatorTests
         var root = CreateTempRoot();
         try
         {
-            var local = Path.Combine(root, "抖音直播弹幕助手.exe");
+            var local = Path.Combine(root, "cdp-danmaku.exe");
             File.WriteAllBytes(local, new byte[] { 0 });
             var configured = Path.Combine(root, "elsewhere", "douyin-danmaku.exe");
 
@@ -177,11 +177,10 @@ public sealed class SidecarLocatorTests
     {
         Assert.True(SidecarLocator.LooksLikeFudaiOrUnrelated("福袋助手.exe"));
         Assert.True(SidecarLocator.LooksLikeFudaiOrUnrelated("抖音24小时无人直播.exe"));
-        Assert.False(SidecarLocator.IsDouyinApiExe("福袋助手.exe"));
-        Assert.True(SidecarLocator.IsDouyinApiExe("douyin-danmaku.exe"));
-        Assert.True(SidecarLocator.IsDouyinApiExe("抖音直播弹幕助手.exe"));
-        Assert.Equal("", SidecarLocator.DouyinStartArgs(@"E:\x\抖音直播弹幕助手.exe"));
-        Assert.Equal("-api", SidecarLocator.DouyinStartArgs(@"E:\x\douyin-danmaku.exe"));
+        Assert.False(SidecarLocator.IsDouyinApiExe("抖音直播弹幕助手.exe"));
+        Assert.True(SidecarLocator.IsDouyinApiExe("cdp-danmaku.exe"));
+        Assert.True(SidecarLocator.IsDouyinApiExe("抖音直播弹幕v1.3.exe"));
+        Assert.Equal("", SidecarLocator.DouyinStartArgs(@"E:\x\cdp-danmaku.exe"));
         Assert.True(SidecarLocator.IsKugouApiExe("酷狗api_v1.9.exe"));
     }
 

@@ -100,7 +100,8 @@
       <SidecarsRoot>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\..\sidecars'))</SidecarsRoot>
     </PropertyGroup>
     <ItemGroup>
-      <SidecarExe Include="$(SidecarsRoot)\抖音直播弹幕助手.exe" Condition="Exists('$(SidecarsRoot)\抖音直播弹幕助手.exe')" />
+      <SidecarExe Include="$(SidecarsRoot)\cdp-danmaku.exe" Condition="Exists('$(SidecarsRoot)\cdp-danmaku.exe')" />
+      <SidecarExe Include="$(SidecarsRoot)\douyin-cdp\cdp-danmaku.exe" Condition="Exists('$(SidecarsRoot)\douyin-cdp\cdp-danmaku.exe')" />
       <SidecarExe Include="$(SidecarsRoot)\酷狗api_v1.5.exe" Condition="Exists('$(SidecarsRoot)\酷狗api_v1.5.exe')" />
       <SidecarKgapijs Include="$(SidecarsRoot)\kgapijs\**\*" Condition="Exists('$(SidecarsRoot)\kgapijs')" />
       <SidecarData Include="$(SidecarsRoot)\data\**\*" Condition="Exists('$(SidecarsRoot)\data')" />

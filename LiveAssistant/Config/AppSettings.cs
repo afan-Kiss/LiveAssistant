@@ -156,12 +156,14 @@ public sealed class AiSpeechSettings
 
 public sealed class DouyinSettings
 {
-    public string BaseUrl { get; set; } = "http://127.0.0.1:4723";
+    public string BaseUrl { get; set; } = "http://127.0.0.1:17891";
     public string ApiToken { get; set; } = "";
     public string WebRid { get; set; } = "";
     /// <summary>弹幕轮询间隔（毫秒）。越小越快，建议 500～1000，过低可能增加侧车压力。</summary>
     public int PollIntervalMs { get; set; } = 800;
-    public string DouyinExePath { get; set; } = "";
+    /// <summary>CDP 程序路径。空则按 cdp-danmaku.exe / sidecars/douyin-cdp 查找。</summary>
+    public string CdpExePath { get; set; } = "";
+    public string DouyinExePath { get; set; } = "cdp-danmaku.exe";
     /// <summary>Sidecar cookies.json 路径；空则按 exe 旁 data/cookies.json 推断。</summary>
     public string CookieStorePath { get; set; } = "";
 }
@@ -779,7 +781,10 @@ public sealed class ConfigManager
     /// </summary>
     private void ResolveSidecarPaths()
     {
-        Settings.Douyin.DouyinExePath = global::LiveAssistant.SidecarLocator.ResolveDouyin(Settings.Douyin.DouyinExePath);
+        var configured = string.IsNullOrWhiteSpace(Settings.Douyin.CdpExePath)
+            ? Settings.Douyin.DouyinExePath
+            : Settings.Douyin.CdpExePath;
+        Settings.Douyin.DouyinExePath = global::LiveAssistant.SidecarLocator.ResolveDouyin(configured);
         Settings.Kugou.KugouExePath = global::LiveAssistant.SidecarLocator.ResolveKugou(Settings.Kugou.KugouExePath);
     }
 

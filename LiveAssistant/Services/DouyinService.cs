@@ -36,7 +36,15 @@ public sealed class DouyinService
         => SafeAsync("get_health", async () =>
         {
             var result = await HttpJson.GetAsync<DouyinEnvelope<DouyinHealthData>>(_client, "api/health", ct);
-            return result?.Ok == true ? result.Data : null;
+            if (result?.Ok == true && result.Data != null)
+            {
+                _log.DouyinInfo(
+                    $"DOUYIN_CDP_HEALTH loginOk={result.Data.LoginOk} nickname={result.Data.Nickname ?? ""}");
+                return result.Data;
+            }
+
+            _log.DouyinWarn("DOUYIN_CDP_HEALTH result=fail");
+            return null;
         }, null);
 
     public static bool IsWriteCredentialBlocked(DouyinHealthData? health)
@@ -68,87 +76,44 @@ public sealed class DouyinService
                || reason.Contains("无权限", StringComparison.Ordinal)
                || reason.Contains("20003", StringComparison.Ordinal));
 
-    public Task<bool> ArmWriteCandidateProbeAsync(CancellationToken ct = default)
-        => SafeAsync("arm_write_probe", async () =>
-        {
-            var result = await HttpJson.PostAsync<DouyinEnvelope<object>>(
-                _client, "api/diag/write-candidate/probe/arm", new { }, ct);
-            if (result?.Ok == true)
-            {
-                _log.DouyinInfo("已 arm 写凭据 probe，下一条 @ 回复将验证发弹幕能力");
-                return true;
-            }
+    public Task<bool> EnsureWriteGateReadyAsync(CancellationToken ct = default)
+    {
+        _ = ct;
+        return Task.FromResult(true);
+    }
 
-            _log.DouyinWarn($"arm 写凭据 probe 失败: {result?.Message ?? "无响应"}");
-            return false;
-        }, false);
+    public Task<bool> ArmWriteCandidateProbeAsync(CancellationToken ct = default)
+    {
+        _ = ct;
+        return Task.FromResult(false);
+    }
 
     public Task<bool> VerifyWriteCredentialAsync(CancellationToken ct = default)
-        => SafeAsync("verify_write", async () =>
-        {
-            var result = await HttpJson.PostAsync<DouyinEnvelope<object>>(
-                _client, "api/cookie/verify-write", new { }, ct);
-            if (result?.Ok == true)
-            {
-                _log.DouyinInfo("写凭据验证成功，可以发弹幕");
-                return true;
-            }
-
-            _log.DouyinWarn($"写凭据验证未完成: {result?.Message ?? "无响应"}");
-            return false;
-        }, false);
+    {
+        _ = ct;
+        return Task.FromResult(false);
+    }
 
     public Task<bool> ClearSendPauseAsync(string kind = "403", CancellationToken ct = default)
-        => SafeAsync("clear_send_pause", async () =>
-        {
-            var result = await HttpJson.PostAsync<DouyinEnvelope<object>>(
-                _client, $"api/diag/send-pause/clear?kind={Uri.EscapeDataString(kind)}", new { }, ct);
-            if (result?.Ok == true)
-            {
-                _log.DouyinInfo($"已清除发送暂停: {kind}");
-                return true;
-            }
-
-            return false;
-        }, false);
-
-    public async Task EnsureWriteGateReadyAsync(CancellationToken ct = default)
     {
-        var health = await GetHealthAsync(ct);
-        if (health?.WriteGate is { ValueKind: JsonValueKind.Object } gate
-            && gate.TryGetProperty("paused", out var paused)
-            && paused.GetBoolean()
-            && gate.TryGetProperty("pause_kind", out var pauseKind)
-            && pauseKind.GetString() is "http_403_empty_body")
-        {
-            await ClearSendPauseAsync("403", ct);
-        }
+        _ = (kind, ct);
+        return Task.FromResult(false);
+    }
 
-        if (health?.LoginOk != true)
-        {
-            _log.DouyinWarn($"抖音 Cookie 未登录: {health?.LoginHint ?? "缺少 sessionid"}，@ 回复不可用（确认点歌弹幕发不出去）");
-        }
+    public Task<bool> ImportCookieAsync(
+        string cookie,
+        string? name = null,
+        bool autoTicket = true,
+        CancellationToken ct = default)
+    {
+        _ = (cookie, name, autoTicket, ct);
+        return Task.FromResult(false);
+    }
 
-        if (!IsWriteCredentialBlocked(health))
-        {
-            return;
-        }
-
-        _log.DouyinWarn("发弹幕凭据待验证，正在尝试完成验证...");
-        await SyncCookieProfileAsync(ct);
-
-        health = await GetHealthAsync(ct);
-        if (!IsWriteCredentialBlocked(health))
-        {
-            return;
-        }
-
-        if (await VerifyWriteCredentialAsync(ct))
-        {
-            return;
-        }
-
-        await ArmWriteCandidateProbeAsync(ct);
+    public Task<bool> SyncCookieProfileAsync(CancellationToken ct = default)
+    {
+        _ = ct;
+        return Task.FromResult(false);
     }
 
     public Task<DouyinRoomData?> ResolveRoomAsync(string webRid, CancellationToken ct = default)
@@ -159,12 +124,19 @@ public sealed class DouyinService
             return result?.Ok == true ? result.Data : null;
         }, null);
 
-    public Task StartCollectAsync(string webRid, CancellationToken ct = default)
-        => SafeVoidAsync("collect_start", async () =>
+    public async Task StartCollectAsync(string webRid, CancellationToken ct = default)
+    {
+        var result = await HttpJson.PostAsync<DouyinEnvelope<object>>(
+            _client, "api/live/collect/start", new { web_rid = webRid }, ct);
+        if (result?.Ok != true)
         {
-            await HttpJson.PostAsync<DouyinEnvelope<object>>(_client, "api/live/collect/start",
-                new { web_rid = webRid }, ct);
-        });
+            var message = string.IsNullOrWhiteSpace(result?.Message) ? "collect/start 失败" : result!.Message!;
+            _log.DouyinWarn($"DOUYIN_CDP_COLLECT stage=start webRid={webRid} result=fail errorCode={message}");
+            throw new InvalidOperationException(message);
+        }
+
+        _log.DouyinInfo($"DOUYIN_CDP_COLLECT stage=start webRid={webRid} result=ok");
+    }
 
     public Task<DouyinDanmakuFeedData?> PollDanmakuAsync(string webRid, int after, int limit = 50, CancellationToken ct = default)
         => SafeAsync("poll_danmaku", async () =>
@@ -201,81 +173,9 @@ public sealed class DouyinService
         CancellationToken ct = default)
         => SafeAsync("send_mention", async () =>
         {
-            var detail = await PostMentionAsync(webRid, userId, content, cookie, ct);
-            if (detail.Ok || !IsProfileMismatch(detail.ErrorReason))
-            {
-                return detail;
-            }
-
-            _log.DouyinWarn($"@ 回复 Profile 不匹配，尝试同步 Cookie 后重试 web_rid={webRid}");
-            if (!await SyncCookieProfileAsync(ct))
-            {
-                return detail;
-            }
-
-            await ReconnectAsync(webRid, ct);
-            try
-            {
-                await Task.Delay(500, ct);
-            }
-            catch (OperationCanceledException)
-            {
-                return detail;
-            }
-
+            _ = cookie;
             return await PostMentionAsync(webRid, userId, content, cookie: null, ct);
         }, new MentionSendResult { Ok = false, ErrorReason = "request_failed", ReplyType = "mention" });
-
-    public Task<bool> ImportCookieAsync(
-        string cookie,
-        string? name = null,
-        bool autoTicket = true,
-        CancellationToken ct = default)
-        => SafeAsync("cookie_import", async () =>
-        {
-            var payload = new Dictionary<string, object>
-            {
-                ["cookie"] = cookie,
-                ["set_active"] = true,
-                ["auto_ticket"] = autoTicket
-            };
-            if (!string.IsNullOrWhiteSpace(name))
-            {
-                payload["name"] = name.Trim();
-            }
-
-            var result = await HttpJson.PostAsync<DouyinEnvelope<object>>(_client, "api/cookie/import", payload, ct);
-            return result?.Ok == true;
-        }, false);
-
-    public Task<bool> SyncCookieProfileAsync(CancellationToken ct = default)
-        => SafeAsync("sync_cookie_profile", async () =>
-        {
-            var path = SidecarCookieStore.ResolveStorePath(_settings);
-            if (string.IsNullOrWhiteSpace(path))
-            {
-                _log.DouyinWarn("同步 Cookie 失败: 未配置 CookieStorePath / DouyinExePath");
-                return false;
-            }
-
-            if (!SidecarCookieStore.TryReadActiveProfile(path, out var cookie, out var name, out _, out var error))
-            {
-                _log.DouyinWarn($"同步 Cookie 失败: {error}");
-                return false;
-            }
-
-            var ok = await ImportCookieAsync(cookie, name, autoTicket: true, ct);
-            if (ok)
-            {
-                _log.DouyinInfo($"已同步 Sidecar Cookie profile={name}");
-            }
-            else
-            {
-                _log.DouyinWarn("同步 Sidecar Cookie 失败: import 返回失败");
-            }
-
-            return ok;
-        }, false);
 
     public Task<List<DouyinCollectSession>?> ListCollectSessionsAsync(CancellationToken ct = default)
         => SafeAsync("collect_sessions", async () =>
@@ -285,17 +185,13 @@ public sealed class DouyinService
             return result?.Ok == true ? result.Data : null;
         }, null);
 
-    public Task<bool> StopCollectSessionAsync(string sessionId, CancellationToken ct = default)
+    public Task<bool> StopCollectAsync(CancellationToken ct = default)
         => SafeAsync("collect_stop", async () =>
         {
-            if (string.IsNullOrWhiteSpace(sessionId))
-            {
-                return false;
-            }
-
-            var path = $"api/live/collect/{sessionId.Trim()}/stop";
-            var result = await HttpJson.PostAsync<DouyinEnvelope<object>>(_client, path, new { }, ct);
-            return result?.Ok == true;
+            var result = await HttpJson.PostAsync<DouyinEnvelope<object>>(_client, "api/live/collect/stop", new { }, ct);
+            var ok = result?.Ok == true;
+            _log.DouyinInfo($"DOUYIN_CDP_COLLECT stage=stop result={(ok ? "ok" : "fail")}");
+            return ok;
         }, false);
 
     public async Task StopOtherCollectSessionsAsync(string keepWebRid, CancellationToken ct = default)
@@ -312,6 +208,7 @@ public sealed class DouyinService
             return;
         }
 
+        var otherRunning = false;
         foreach (var session in sessions)
         {
             if (!session.Running)
@@ -320,23 +217,22 @@ public sealed class DouyinService
             }
 
             var webRid = session.WebRid?.Trim() ?? "";
-            if (string.Equals(webRid, keep, StringComparison.Ordinal))
+            if (!string.Equals(webRid, keep, StringComparison.Ordinal))
             {
-                continue;
+                otherRunning = true;
+                break;
             }
-
-            var sessionId = session.SessionId?.Trim();
-            if (string.IsNullOrEmpty(sessionId))
-            {
-                continue;
-            }
-
-            var stopped = await StopCollectSessionAsync(sessionId, ct);
-            _log.DouyinInfo(
-                stopped
-                    ? $"已停止旧直播间弹幕采集 web_rid={webRid} session={sessionId}"
-                    : $"停止旧直播间弹幕采集失败 web_rid={webRid} session={sessionId}");
         }
+
+        if (!otherRunning)
+        {
+            return;
+        }
+
+        var stopped = await StopCollectAsync(ct);
+        _log.DouyinInfo(stopped
+            ? $"DOUYIN_CDP_COLLECT stage=stop_other webRid={keep} result=ok"
+            : $"DOUYIN_CDP_COLLECT stage=stop_other webRid={keep} result=fail");
     }
 
     public Task<bool> ReconnectAsync(string webRid, CancellationToken ct = default)
@@ -355,11 +251,19 @@ public sealed class DouyinService
             return result?.Ok == true ? result.Data : null;
         }, null);
 
-    public Task<DouyinCookieStatusData?> GetCookieStatusAsync(CancellationToken ct = default)
-        => SafeAsync("cookie_status", async () =>
+    public Task<string?> ExportCookieAsync(CancellationToken ct = default)
+        => SafeAsync("cookie_export", async () =>
         {
-            var result = await HttpJson.GetAsync<DouyinEnvelope<DouyinCookieStatusData>>(_client, "api/cookie", ct);
-            return result?.Ok == true ? result.Data : null;
+            var result = await HttpJson.GetAsync<DouyinEnvelope<DouyinCookieExportData>>(_client, "api/cookie/export", ct);
+            var cookie = result?.Ok == true ? result.Data?.Cookie : null;
+            if (string.IsNullOrWhiteSpace(cookie) || !SidecarCookieStore.HasSessionId(cookie))
+            {
+                _log.DouyinWarn("DOUYIN_CDP_COOKIE_EXPORT result=gift_cookie_unavailable");
+                return null;
+            }
+
+            _log.DouyinInfo("DOUYIN_CDP_COOKIE_EXPORT result=ok");
+            return cookie;
         }, null);
 
     public Task<bool> ModSilenceAsync(string webRid, string userId, string action, CancellationToken ct = default)

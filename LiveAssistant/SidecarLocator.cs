@@ -10,6 +10,8 @@ internal static class SidecarLocator
     {
         "",
         "sidecars",
+        "sidecars\\douyin-cdp",
+        "douyin-cdp",
         "bin",
         "抖音",
         "酷狗"
@@ -17,9 +19,8 @@ internal static class SidecarLocator
 
     private static readonly string[] DouyinExact =
     {
-        "抖音直播弹幕助手.exe",
-        "douyin-danmaku.exe",
-        "douyin-api.exe"
+        "cdp-danmaku.exe",
+        "抖音直播弹幕v1.3.exe"
     };
 
     private static readonly string[] KugouExact =
@@ -29,7 +30,7 @@ internal static class SidecarLocator
         "KugouAPI.exe"
     };
 
-    public const string PreferredDouyinFileName = "抖音直播弹幕助手.exe";
+    public const string PreferredDouyinFileName = "cdp-danmaku.exe";
     public const string PreferredKugouFileName = "酷狗api_v1.5.exe";
     public const string KugouJsFolderName = "kgapijs";
     public const string KgapiJsEntryFileName = "app.js";
@@ -179,35 +180,23 @@ internal static class SidecarLocator
             return false;
         }
 
-        return fileName.Contains("danmaku", StringComparison.OrdinalIgnoreCase)
-               || fileName.Contains("douyin-api", StringComparison.OrdinalIgnoreCase)
-               || fileName.Contains("弹幕助手", StringComparison.OrdinalIgnoreCase)
-               || fileName.Contains("抖音弹幕", StringComparison.OrdinalIgnoreCase);
+        if (fileName.Contains("弹幕助手", StringComparison.OrdinalIgnoreCase)
+            || fileName.Contains("douyin-danmaku", StringComparison.OrdinalIgnoreCase)
+            || fileName.Contains("douyin-api", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return fileName.Equals("cdp-danmaku.exe", StringComparison.OrdinalIgnoreCase)
+               || fileName.Equals("cdp-server.exe", StringComparison.OrdinalIgnoreCase)
+               || fileName.Contains("抖音直播弹幕", StringComparison.OrdinalIgnoreCase)
+               || fileName.Contains("douyin-cdp", StringComparison.OrdinalIgnoreCase);
     }
 
-    /// <summary>
-    /// 弹幕助手桌面版打开即起 HTTP API，不要加 -api。
-    /// Wails 的 douyin-danmaku.exe 双击是福袋界面，必须加 -api。
-    /// </summary>
+    /// <summary>CDP 原生程序打开即起 API，不附加旧助手参数。</summary>
     public static string DouyinStartArgs(string exePath)
     {
-        var name = Path.GetFileNameWithoutExtension(exePath ?? "");
-        if (string.IsNullOrWhiteSpace(name))
-        {
-            return "";
-        }
-
-        if (name.Contains("弹幕助手", StringComparison.OrdinalIgnoreCase))
-        {
-            return "";
-        }
-
-        if (name.Equals("douyin-danmaku", StringComparison.OrdinalIgnoreCase)
-            || name.Contains("danmaku", StringComparison.OrdinalIgnoreCase))
-        {
-            return "-api";
-        }
-
+        _ = exePath;
         return "";
     }
 

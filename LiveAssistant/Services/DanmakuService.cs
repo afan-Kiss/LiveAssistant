@@ -58,29 +58,45 @@ public sealed class DanmakuService : IDisposable
         _afterAt = 0;
 
         var health = await _douyin.GetHealthAsync(ct);
-        DouyinLoginNickname = health?.Nickname ?? "-";
+        if (health?.LoginOk != true)
+        {
+            ConnectionStatus = "抖音 CDP 未登录，请先完成扫码登录";
+            _system.Add("抖音 CDP 未登录，请先完成扫码登录");
+            _log.DouyinWarn($"DOUYIN_CDP_LOGIN result=fail hint={health?.LoginHint}");
+            throw new InvalidOperationException("抖音 CDP 未登录，请先完成扫码登录");
+        }
+
+        DouyinLoginNickname = string.IsNullOrWhiteSpace(health.Nickname) ? "-" : health.Nickname.Trim();
+        _log.DouyinInfo($"DOUYIN_CDP_LOGIN result=ok nickname={DouyinLoginNickname}");
 
         var room = await _douyin.ResolveRoomAsync(_webRid, ct);
-        RoomOwnerNickname = room?.Owner?.Nickname ?? "-";
-        RoomTitle = room?.Title ?? _webRid;
+        if (room == null || string.IsNullOrWhiteSpace(room.RoomId))
+        {
+            ConnectionStatus = "解析直播间失败";
+            throw new InvalidOperationException("解析直播间失败");
+        }
+
+        RoomOwnerNickname = string.IsNullOrWhiteSpace(room.Owner?.Nickname) ? "-" : room.Owner.Nickname.Trim();
+        RoomTitle = string.IsNullOrWhiteSpace(room.Title) ? _webRid : room.Title;
+        _log.DouyinInfo($"DOUYIN_CDP_START stage=resolve webRid={_webRid} roomId={room.RoomId} nickname={RoomOwnerNickname}");
 
         await _douyin.StopOtherCollectSessionsAsync(_webRid, ct);
-        await _douyin.SyncCookieProfileAsync(ct);
-        await _douyin.EnsureWriteGateReadyAsync(ct);
-        await _douyin.ReconnectAsync(_webRid, ct);
+        var reconnected = await _douyin.ReconnectAsync(_webRid, ct);
+        if (!reconnected)
+        {
+            ConnectionStatus = "抖音 CDP 重连浏览器失败";
+            throw new InvalidOperationException("抖音 CDP 重连浏览器失败");
+        }
+
         await _douyin.StartCollectAsync(_webRid, ct);
-        // 连接/重连时只追赶游标，不派发缓冲区历史弹幕，避免旧点歌被重复入队
         await CatchUpCursorAsync(ct);
 
         var postHealth = await _douyin.GetHealthAsync(ct);
         if (postHealth?.LoginOk != true)
         {
-            _system.Add($"警告：抖音未登录（{postHealth?.LoginHint ?? "缺少 sessionid"}），弹幕 @ 回复不可用，请在抖音助手里扫码登录");
-            _log.DouyinWarn($"连接后 Cookie 未登录: {postHealth?.LoginHint}");
-        }
-        else if (DouyinService.IsWriteCredentialBlocked(postHealth))
-        {
-            _system.Add("警告：发弹幕凭据待验证，@ 回复可能失败；发送任意弹幕可触发验证");
+            ConnectionStatus = "抖音 CDP 未登录，请先完成扫码登录";
+            _system.Add("抖音 CDP 未登录，请先完成扫码登录");
+            throw new InvalidOperationException("抖音 CDP 未登录，请先完成扫码登录");
         }
 
         _cts = new CancellationTokenSource();
@@ -305,6 +321,8 @@ public sealed class DanmakuService : IDisposable
 
                 var timestamp = DanmakuItem.ParseTimestamp(msg.Timestamp);
                 _log.DouyinInfo(
+                    $"DOUYIN_CDP_EVENT eventType={msgType} msgId={msgId} nickname={nickname}");
+                _log.DouyinInfo(
                     $"[danmaku-recv] time={timestamp:HH:mm:ss} msg_id={msgId} user_id={userId} nickname={nickname} content={Truncate(content)}");
 
                 if (!_deduper.TryAdmit(msgId))
@@ -388,6 +406,8 @@ public sealed class DanmakuService : IDisposable
         // 内容相同但身份不是登录号：必须放行真人
         return false;
     }
+
+    internal void DispatchForTests(List<DouyinDanmakuMessage>? items) => DispatchItems(items);
 
     internal void SetDouyinLoginNicknameForTests(string nickname)
         => DouyinLoginNickname = string.IsNullOrWhiteSpace(nickname) ? "-" : nickname.Trim();
