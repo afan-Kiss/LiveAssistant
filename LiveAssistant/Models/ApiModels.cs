@@ -68,6 +68,12 @@ public sealed class DouyinHealthData
     [JsonPropertyName("nickname")]
     public string? Nickname { get; set; }
 
+    [JsonPropertyName("can_send")]
+    public bool? CanSend { get; set; }
+
+    [JsonPropertyName("can_moderate")]
+    public bool? CanModerate { get; set; }
+
     [JsonPropertyName("collect_sessions")]
     public int CollectSessions { get; set; }
 

@@ -10,6 +10,7 @@ public sealed class DouyinService
     private readonly DouyinSettings _settings;
     private readonly LogService _log;
     private readonly HttpClient _client;
+    private readonly SemaphoreSlim _writeGate = new(1, 1);
 
     public DouyinService(DouyinSettings settings, LogService log)
     {
@@ -38,8 +39,16 @@ public sealed class DouyinService
             var result = await HttpJson.GetAsync<DouyinEnvelope<DouyinHealthData>>(_client, "api/health", ct);
             if (result?.Ok == true && result.Data != null)
             {
+                var canSend = result.Data.CanSend ?? result.Data.LoginOk;
+                var canMod = result.Data.CanModerate ?? false;
                 _log.DouyinInfo(
-                    $"DOUYIN_CDP_HEALTH loginOk={result.Data.LoginOk} nickname={result.Data.Nickname ?? ""}");
+                    $"DOUYIN_CDP_HEALTH loginOk={result.Data.LoginOk} nickname={result.Data.Nickname ?? ""} " +
+                    $"canSend={canSend} canModerate={canMod}");
+                if (result.Data.LoginOk && !canSend)
+                {
+                    _log.DouyinWarn("DOUYIN_PERMISSION_DENIED can_send=false");
+                }
+
                 return result.Data;
             }
 
@@ -70,11 +79,28 @@ public sealed class DouyinService
                    || reason.Contains("local_blocked", StringComparison.OrdinalIgnoreCase)));
 
     public static bool IsBizAuthFailure(string? reason, int? httpStatus)
-        => httpStatus == 400
-           && !string.IsNullOrWhiteSpace(reason)
+        => !string.IsNullOrWhiteSpace(reason)
            && (reason.Contains("未登录", StringComparison.Ordinal)
+               || reason.Contains("not_logged_in", StringComparison.OrdinalIgnoreCase)
                || reason.Contains("无权限", StringComparison.Ordinal)
-               || reason.Contains("20003", StringComparison.Ordinal));
+               || reason.Contains("20003", StringComparison.Ordinal)
+               || (httpStatus == 400 && reason.Contains("权限", StringComparison.Ordinal)));
+
+    public static bool IsNotLoggedIn(string? reason)
+        => !string.IsNullOrWhiteSpace(reason)
+           && (reason.Contains("not_logged_in", StringComparison.OrdinalIgnoreCase)
+               || reason.Contains("尚未登录", StringComparison.Ordinal)
+               || reason.Contains("未登录", StringComparison.Ordinal));
+
+    public static bool IsRoomMismatch(string? reason)
+        => !string.IsNullOrWhiteSpace(reason)
+           && reason.Contains("room_mismatch", StringComparison.OrdinalIgnoreCase);
+
+    public static bool IsPermissionDenied(string? reason)
+        => !string.IsNullOrWhiteSpace(reason)
+           && (reason.Contains("无权限", StringComparison.Ordinal)
+               || reason.Contains("permission", StringComparison.OrdinalIgnoreCase)
+               || reason.Contains("DOUYIN_PERMISSION_DENIED", StringComparison.Ordinal));
 
     public Task<bool> EnsureWriteGateReadyAsync(CancellationToken ct = default)
     {
@@ -157,25 +183,44 @@ public sealed class DouyinService
     public Task<bool> SendMentionAsync(string webRid, string userId, string content, CancellationToken ct = default)
         => SafeAsync("send_mention", async () =>
         {
-            var detail = await SendMentionDetailedAsync(webRid, userId, content, ct);
+            var detail = await SendMentionDetailedAsync(webRid, userId, content, nickname: null, ct);
             return detail.Ok;
         }, false);
 
     public Task<MentionSendResult> SendMentionDetailedAsync(
         string webRid, string userId, string content, CancellationToken ct = default)
-        => SendMentionDetailedAsync(webRid, userId, content, cookie: null, ct);
+        => SendMentionDetailedAsync(webRid, userId, content, nickname: null, ct);
 
     public Task<MentionSendResult> SendMentionDetailedAsync(
         string webRid,
         string userId,
         string content,
-        string? cookie,
+        string? nickname,
         CancellationToken ct = default)
         => SafeAsync("send_mention", async () =>
-        {
-            _ = cookie;
-            return await PostMentionAsync(webRid, userId, content, cookie: null, ct);
-        }, new MentionSendResult { Ok = false, ErrorReason = "request_failed", ReplyType = "mention" });
+            await PostSendAsync(
+                path: "api/live/danmaku/mention",
+                webRid: webRid,
+                content: content,
+                userId: userId,
+                nickname: nickname,
+                replyType: "mention",
+                ct),
+            new MentionSendResult { Ok = false, ErrorReason = "request_failed", ReplyType = "mention" });
+
+    /// <summary>主动发送普通弹幕（不 @）。</summary>
+    public Task<MentionSendResult> SendDanmakuAsync(
+        string webRid, string content, string? nickname = null, CancellationToken ct = default)
+        => SafeAsync("send_danmaku", async () =>
+            await PostSendAsync(
+                path: "api/live/danmaku/send",
+                webRid: webRid,
+                content: content,
+                userId: null,
+                nickname: nickname,
+                replyType: "send",
+                ct),
+            new MentionSendResult { Ok = false, ErrorReason = "request_failed", ReplyType = "send" });
 
     public Task<List<DouyinCollectSession>?> ListCollectSessionsAsync(CancellationToken ct = default)
         => SafeAsync("collect_sessions", async () =>
@@ -266,12 +311,56 @@ public sealed class DouyinService
             return cookie;
         }, null);
 
-    public Task<bool> ModSilenceAsync(string webRid, string userId, string action, CancellationToken ct = default)
+    public Task<bool> ModSilenceAsync(
+        string webRid,
+        string userId,
+        string action,
+        CancellationToken ct = default)
+        => ModSilenceAsync(webRid, userId, action, durationSeconds: 0, ct);
+
+    public Task<bool> ModSilenceAsync(
+        string webRid,
+        string userId,
+        string action,
+        int durationSeconds,
+        CancellationToken ct = default)
         => SafeAsync("mod_silence", async () =>
         {
-            var result = await HttpJson.PostAsync<DouyinEnvelope<object>>(_client, "api/live/mod/silence",
-                new { web_rid = webRid, user_id = userId, action }, ct);
-            return result?.Ok == true;
+            var normalized = (action ?? "").Trim().ToLowerInvariant();
+            if (normalized is "unsilence" or "unmute" or "0" or "false")
+            {
+                return await ModUnsilenceAsync(webRid, userId, ct);
+            }
+
+            var payload = new Dictionary<string, object?>
+            {
+                ["web_rid"] = webRid,
+                ["user_id"] = userId,
+                ["action"] = "silence"
+            };
+            if (durationSeconds > 0)
+            {
+                payload["duration"] = durationSeconds;
+            }
+
+            var result = await PostModAsync("api/live/mod/silence", payload, ct);
+            LogSendMessage(webRid, nickname: "", content: $"silence duration={durationSeconds}", result);
+            return result.Ok;
+        }, false);
+
+    public Task<bool> ModUnsilenceAsync(string webRid, string userId, CancellationToken ct = default)
+        => SafeAsync("mod_unsilence", async () =>
+        {
+            var result = await PostModAsync(
+                "api/live/mod/unsilence",
+                new Dictionary<string, object?>
+                {
+                    ["web_rid"] = webRid,
+                    ["user_id"] = userId
+                },
+                ct);
+            LogSendMessage(webRid, nickname: "", content: "unsilence", result);
+            return result.Ok;
         }, false);
 
     public Task<DouyinUser?> LookupUserAsync(string webRid, string keyword, CancellationToken ct = default)
@@ -291,50 +380,155 @@ public sealed class DouyinService
         => !string.IsNullOrWhiteSpace(reason)
            && reason.Contains("ProfileID", StringComparison.OrdinalIgnoreCase);
 
-    private async Task<MentionSendResult> PostMentionAsync(
+    private async Task<MentionSendResult> PostSendAsync(
+        string path,
         string webRid,
-        string userId,
         string content,
-        string? cookie,
+        string? userId,
+        string? nickname,
+        string replyType,
         CancellationToken ct)
     {
         var payload = new Dictionary<string, object?>
         {
             ["web_rid"] = webRid,
-            ["user_id"] = userId,
             ["content"] = content
         };
-        if (!string.IsNullOrWhiteSpace(cookie))
+        if (!string.IsNullOrWhiteSpace(userId))
         {
-            payload["cookie"] = cookie;
+            payload["user_id"] = userId;
         }
 
-        var json = JsonSerializer.Serialize(payload, HttpJson.Options);
-        using var body = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
-        using var response = await _client.PostAsync("api/live/danmaku/mention", body, ct);
-        var text = await response.Content.ReadAsStringAsync(ct);
-        DouyinEnvelope<object>? envelope = null;
+        if (!string.IsNullOrWhiteSpace(nickname))
+        {
+            payload["nickname"] = nickname.Trim();
+        }
+
+        var result = await PostEnvelopeAsync(path, payload, replyType, ct);
+        LogSendMessage(webRid, nickname ?? "", content, result);
+        return result;
+    }
+
+    private async Task<MentionSendResult> PostModAsync(
+        string path,
+        Dictionary<string, object?> payload,
+        CancellationToken ct)
+        => await PostEnvelopeAsync(path, payload, "mod", ct);
+
+    private async Task<MentionSendResult> PostEnvelopeAsync(
+        string path,
+        Dictionary<string, object?> payload,
+        string replyType,
+        CancellationToken ct)
+    {
+        await _writeGate.WaitAsync(ct);
         try
         {
-            envelope = JsonSerializer.Deserialize<DouyinEnvelope<object>>(text, HttpJson.Options);
+            var json = JsonSerializer.Serialize(payload, HttpJson.Options);
+            using var body = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+            using var response = await _client.PostAsync(path, body, ct);
+            var text = await response.Content.ReadAsStringAsync(ct);
+            DouyinEnvelope<object>? envelope = null;
+            try
+            {
+                envelope = JsonSerializer.Deserialize<DouyinEnvelope<object>>(text, HttpJson.Options);
+            }
+            catch
+            {
+                // ignore parse errors; use raw body as reason
+            }
+
+            // HTTP 200 但 ok=false 必须识别为失败
+            var ok = response.IsSuccessStatusCode && envelope?.Ok == true;
+            var reason = ok
+                ? ""
+                : envelope?.Message ?? (text.Length > 160 ? text[..160] : text);
+            if (IsNotLoggedIn(reason))
+            {
+                reason = "not_logged_in";
+            }
+
+            return new MentionSendResult
+            {
+                Ok = ok,
+                HttpStatus = (int)response.StatusCode,
+                ErrorReason = reason,
+                ReplyType = replyType,
+                PlatformMessageId = TryExtractPlatformMessageId(text),
+                ActiveRoomId = TryExtractRoomField(text, "active_room_id"),
+                SendRoomId = TryExtractRoomField(text, "send_room_id")
+            };
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
+    }
+
+    private void LogSendMessage(string roomId, string nickname, string content, MentionSendResult result)
+    {
+        var err = result.Ok ? "" : (result.ErrorReason ?? "");
+        // 禁止输出 cookie / token
+        _log.DouyinInfo(
+            $"DOUYIN_SEND_MESSAGE room_id={roomId} nickname={nickname} content={TruncateForLog(content)} " +
+            $"success={result.Ok} error={err} msg_id={result.PlatformMessageId ?? ""} " +
+            $"active_room_id={result.ActiveRoomId ?? ""} send_room_id={result.SendRoomId ?? ""}");
+        if (IsPermissionDenied(err) || (result.Ok == false && err.Contains("无权限", StringComparison.Ordinal)))
+        {
+            _log.DouyinWarn($"DOUYIN_PERMISSION_DENIED room_id={roomId} error={err}");
+        }
+    }
+
+    private static string TruncateForLog(string? text)
+    {
+        text ??= "";
+        return text.Length <= 80 ? text : text[..80] + "…";
+    }
+
+    internal static string? TryExtractRoomField(string rawJson, string field)
+    {
+        if (string.IsNullOrWhiteSpace(rawJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(rawJson);
+            if (doc.RootElement.TryGetProperty(field, out var prop)
+                && prop.ValueKind == JsonValueKind.String)
+            {
+                return prop.GetString();
+            }
+
+            if (doc.RootElement.TryGetProperty("data", out var data)
+                && data.ValueKind == JsonValueKind.Object
+                && data.TryGetProperty(field, out var nested)
+                && nested.ValueKind == JsonValueKind.String)
+            {
+                return nested.GetString();
+            }
+
+            if (doc.RootElement.TryGetProperty("message", out var message)
+                && message.ValueKind == JsonValueKind.String)
+            {
+                var msg = message.GetString() ?? "";
+                var key = field + "=";
+                var idx = msg.IndexOf(key, StringComparison.OrdinalIgnoreCase);
+                if (idx >= 0)
+                {
+                    var rest = msg[(idx + key.Length)..];
+                    var end = rest.IndexOf(' ');
+                    return end < 0 ? rest.Trim() : rest[..end].Trim();
+                }
+            }
         }
         catch
         {
-            // ignore parse errors; use raw body as reason
+            // ignore
         }
 
-        var ok = response.IsSuccessStatusCode && envelope?.Ok == true;
-        var reason = ok
-            ? ""
-            : envelope?.Message ?? (text.Length > 160 ? text[..160] : text);
-        return new MentionSendResult
-        {
-            Ok = ok,
-            HttpStatus = (int)response.StatusCode,
-            ErrorReason = reason,
-            ReplyType = "mention",
-            PlatformMessageId = TryExtractPlatformMessageId(text)
-        };
+        return null;
     }
 
     /// <summary>尽力从侧车响应提取平台 msg_id；字段缺失时返回 null。</summary>

@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using LiveAssistant.Config;
 using LiveAssistant.Database;
 using LiveAssistant.Models;
@@ -7,6 +8,14 @@ namespace LiveAssistant.Services;
 
 public sealed class BanVoteService : IDisposable
 {
+    private static readonly Regex DirectBanRegex = new(
+        @"^禁言\s+(?<name>.+?)\s+(?<sec>\d+)\s*$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    private static readonly Regex UnbanRegex = new(
+        @"^(?:解除禁言|解禁)\s+(?<name>.+?)\s*$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
     private readonly ConfigManager _config;
     private readonly BanVoteRepository _votes;
     private readonly UserRepository _users;
@@ -38,21 +47,37 @@ public sealed class BanVoteService : IDisposable
         _log = log;
     }
 
-    /// <summary>命中「禁言」业务命令时返回 true（无论投票是否成功）。</summary>
+    /// <summary>命中「禁言 / 解除禁言」业务命令时返回 true（无论投票是否成功）。</summary>
     public async Task<bool> TryHandleAsync(DanmakuItem item, string webRid, CancellationToken ct = default)
     {
+        var content = item.Content.Trim();
+        if (await TryHandleUnsilenceAsync(item, webRid, content, ct))
+        {
+            return true;
+        }
+
+        if (await TryHandleDirectSilenceAsync(item, webRid, content, ct))
+        {
+            return true;
+        }
+
         if (!_config.Settings.BanVote.Enabled)
         {
             return false;
         }
 
-        var content = item.Content.Trim();
         if (!content.StartsWith("禁言", StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
 
         var targetName = content.Length > 2 ? content[2..].Trim() : "";
+        // 「禁言 用户 10」已由直禁处理；投票命令不要把尾部秒数当昵称
+        if (DirectBanRegex.IsMatch(content))
+        {
+            return true;
+        }
+
         if (string.IsNullOrWhiteSpace(targetName))
         {
             return true;
@@ -145,6 +170,119 @@ public sealed class BanVoteService : IDisposable
     public Task HandleDanmakuAsync(DanmakuItem item, string webRid, CancellationToken ct = default)
         => TryHandleAsync(item, webRid, ct);
 
+    /// <summary>主播指令：禁言 用户昵称 秒数</summary>
+    private async Task<bool> TryHandleDirectSilenceAsync(
+        DanmakuItem item, string webRid, string content, CancellationToken ct)
+    {
+        var m = DirectBanRegex.Match(content);
+        if (!m.Success)
+        {
+            return false;
+        }
+
+        if (KuaishouService.IsKuaishouRoom(webRid))
+        {
+            _system.Add("快手不支持平台禁言指令");
+            return true;
+        }
+
+        var targetName = m.Groups["name"].Value.Trim();
+        if (!int.TryParse(m.Groups["sec"].Value, out var seconds) || seconds <= 0)
+        {
+            return true;
+        }
+
+        var target = await ResolveTargetAsync(webRid, targetName, ct);
+        if (target == null)
+        {
+            _system.Add($"禁言失败: 未找到用户 {targetName}");
+            return true;
+        }
+
+        var ok = await _douyin.ModSilenceAsync(
+            webRid, PlatformUserIds.RawForApi(target.UserId), "silence", seconds, ct);
+        if (!ok)
+        {
+            _system.Add($"禁言失败: {target.Nickname}");
+            _log.BanWarn($"直禁失败 target={target.Nickname} duration={seconds}s");
+            return true;
+        }
+
+        _users.SetStatus(target.UserId, UserStatus.Muted);
+        _system.Add($"已禁言 {target.Nickname} {seconds}秒");
+        _log.BanInfo($"直禁成功 target={target.Nickname} duration={seconds}s by={item.Nickname}");
+
+        if (seconds > 0)
+        {
+            ScheduleAutoUnsilence(target, webRid, seconds);
+        }
+
+        return true;
+    }
+
+    /// <summary>主播指令：解除禁言 用户昵称 / 解禁 用户昵称</summary>
+    private async Task<bool> TryHandleUnsilenceAsync(
+        DanmakuItem item, string webRid, string content, CancellationToken ct)
+    {
+        var m = UnbanRegex.Match(content);
+        if (!m.Success)
+        {
+            return false;
+        }
+
+        if (KuaishouService.IsKuaishouRoom(webRid))
+        {
+            var localName = m.Groups["name"].Value.Trim();
+            var local = _users.FindByNickname(localName, "kuaishou");
+            if (local != null)
+            {
+                _users.SetStatus(local.UserId, UserStatus.Active);
+                _system.Add($"已本地解除禁言 {local.Nickname}（快手无平台解禁）");
+            }
+
+            return true;
+        }
+
+        var targetName = m.Groups["name"].Value.Trim();
+        var target = await ResolveTargetAsync(webRid, targetName, ct);
+        if (target == null)
+        {
+            _system.Add($"解除禁言失败: 未找到用户 {targetName}");
+            return true;
+        }
+
+        var ok = await _douyin.ModUnsilenceAsync(
+            webRid, PlatformUserIds.RawForApi(target.UserId), ct);
+        if (!ok)
+        {
+            _system.Add($"解除禁言失败: {target.Nickname}");
+            _log.BanWarn($"解禁失败 target={target.Nickname}");
+            return true;
+        }
+
+        _users.SetStatus(target.UserId, UserStatus.Active);
+        _system.Add($"已解除禁言 {target.Nickname}");
+        _log.BanInfo($"解禁成功 target={target.Nickname} by={item.Nickname}");
+        return true;
+    }
+
+    private async Task<UserProfile?> ResolveTargetAsync(string webRid, string targetName, CancellationToken ct)
+    {
+        var target = _users.FindByNickname(targetName, "douyin");
+        if (target != null)
+        {
+            return target;
+        }
+
+        var lookup = await _douyin.LookupUserAsync(webRid, targetName, ct);
+        if (lookup == null || string.IsNullOrWhiteSpace(lookup.UserId))
+        {
+            return null;
+        }
+
+        return _users.EnsureUser(lookup.UserId, lookup.Nickname ?? targetName);
+    }
+
     private async Task ExecuteBanAsync(UserProfile target, string webRid, BanVoteSession session)
     {
         var duration = _config.Settings.BanVote.BanDurationSeconds;
@@ -152,7 +290,7 @@ public sealed class BanVoteService : IDisposable
 
         // 快手无平台禁言 API：仅本地禁言（点歌权限），并 @ 通知
         var ok = isKuaishou || await _douyin.ModSilenceAsync(
-            webRid, PlatformUserIds.RawForApi(target.UserId), "silence", _lifetimeCts.Token);
+            webRid, PlatformUserIds.RawForApi(target.UserId), "silence", duration, _lifetimeCts.Token);
 
         if (!ok)
         {
@@ -173,30 +311,7 @@ public sealed class BanVoteService : IDisposable
 
         if (duration > 0)
         {
-            var lifetime = _lifetimeCts.Token;
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    await Task.Delay(TimeSpan.FromSeconds(duration), lifetime);
-                    if (!isKuaishou)
-                    {
-                        await _douyin.ModSilenceAsync(
-                            webRid, PlatformUserIds.RawForApi(target.UserId), "unsilence", lifetime);
-                    }
-
-                    _users.SetStatus(target.UserId, UserStatus.Active);
-                    _log.BanInfo($"自动解除禁言 target={target.Nickname} duration={duration}s");
-                }
-                catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
-                {
-                    // service disposing
-                }
-                catch (Exception ex)
-                {
-                    _log.BanWarn($"自动解除禁言失败: {ex.Message}");
-                }
-            }, lifetime);
+            ScheduleAutoUnsilence(target, webRid, duration, isKuaishou);
         }
 
         var reply = _reply.Render("banVotePassed", new Dictionary<string, string>
@@ -209,6 +324,34 @@ public sealed class BanVoteService : IDisposable
         }
 
         _replyQueue.EnqueueMention(webRid, target.UserId, reply, nickname: target.Nickname);
+    }
+
+    private void ScheduleAutoUnsilence(UserProfile target, string webRid, int duration, bool isKuaishou = false)
+    {
+        var lifetime = _lifetimeCts.Token;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(duration), lifetime);
+                if (!isKuaishou)
+                {
+                    await _douyin.ModUnsilenceAsync(
+                        webRid, PlatformUserIds.RawForApi(target.UserId), lifetime);
+                }
+
+                _users.SetStatus(target.UserId, UserStatus.Active);
+                _log.BanInfo($"自动解除禁言 target={target.Nickname} duration={duration}s");
+            }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+            {
+                // service disposing
+            }
+            catch (Exception ex)
+            {
+                _log.BanWarn($"自动解除禁言失败: {ex.Message}");
+            }
+        }, lifetime);
     }
 
     private void SendVoteProgressReply(

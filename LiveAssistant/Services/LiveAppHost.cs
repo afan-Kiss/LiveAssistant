@@ -797,9 +797,9 @@ public sealed class LiveAppHost : IDisposable
             };
         }
 
-        // 抖音走详细发送，保留 PlatformMessageId 供回显过滤
+        // 抖音走详细发送，带 nickname 便于 CDP 纯文字 @；保留 PlatformMessageId 供回显过滤
         return await _douyin.SendMentionDetailedAsync(
-            webRid, PlatformUserIds.RawForApi(userId), content, ct);
+            webRid, PlatformUserIds.RawForApi(userId), content, nickname, ct);
     }
 
     private void OnDanmakuReceived(DanmakuItem item)
@@ -867,7 +867,9 @@ public sealed class LiveAppHost : IDisposable
                || SongNameParser.TryParse(content, out _)
                || SkipSongParser.TryParse(content)
                || PointsQueryParser.TryParse(content)
-               || content.StartsWith("禁言", StringComparison.OrdinalIgnoreCase);
+               || content.StartsWith("禁言", StringComparison.OrdinalIgnoreCase)
+               || content.StartsWith("解除禁言", StringComparison.OrdinalIgnoreCase)
+               || content.StartsWith("解禁", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task ProcessDanmakuAsync(DanmakuItem item)

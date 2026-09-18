@@ -69,6 +69,22 @@ public sealed class DanmakuService : IDisposable
         DouyinLoginNickname = string.IsNullOrWhiteSpace(health.Nickname) ? "-" : health.Nickname.Trim();
         _log.DouyinInfo($"DOUYIN_CDP_LOGIN result=ok nickname={DouyinLoginNickname}");
 
+        var canSend = health.CanSend ?? health.LoginOk;
+        var canModerate = health.CanModerate ?? false;
+        if (health.LoginOk && !canSend)
+        {
+            ConnectionStatus = "抖音账号无发送权限";
+            _system.Add("抖音账号无发送权限（请确认 Chrome 登录的是主播账号）");
+            _log.DouyinWarn("DOUYIN_PERMISSION_DENIED can_send=false");
+            throw new InvalidOperationException("抖音账号无发送权限");
+        }
+
+        if (!canModerate)
+        {
+            _system.Add("提示：当前登录号可能不是主播，禁言功能可能不可用");
+            _log.DouyinWarn("DOUYIN_PERMISSION_DENIED can_moderate=false");
+        }
+
         var room = await _douyin.ResolveRoomAsync(_webRid, ct);
         if (room == null || string.IsNullOrWhiteSpace(room.RoomId))
         {
@@ -374,7 +390,9 @@ public sealed class DanmakuService : IDisposable
                || SongNameParser.TryParse(content, out _)
                || SkipSongParser.TryParse(content)
                || PointsQueryParser.TryParse(content)
-               || content.StartsWith("禁言", StringComparison.OrdinalIgnoreCase);
+               || content.StartsWith("禁言", StringComparison.OrdinalIgnoreCase)
+               || content.StartsWith("解除禁言", StringComparison.OrdinalIgnoreCase)
+               || content.StartsWith("解禁", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

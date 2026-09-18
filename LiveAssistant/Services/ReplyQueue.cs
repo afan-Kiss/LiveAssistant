@@ -71,8 +71,8 @@ public sealed class ReplyQueue : IDisposable
         _onSendFailed = onSendFailed;
         _onSendSucceeded = onSendSucceeded;
         _sendMentionInjected = sendMention != null;
-        _sendMention = sendMention ?? ((webRid, userId, content, _, ct) =>
-            _douyin.SendMentionDetailedAsync(webRid, userId, content, ct));
+        _sendMention = sendMention ?? ((webRid, userId, content, nickname, ct) =>
+            _douyin.SendMentionDetailedAsync(webRid, userId, content, nickname, ct));
         _worker = Task.Run(() => WorkerLoopAsync(_cts.Token));
     }
 
@@ -320,7 +320,7 @@ public sealed class ReplyQueue : IDisposable
             return await _sendMention(job.WebRid, job.UserId, job.Content, job.Nickname, ct);
         }
 
-        return await _douyin.SendMentionDetailedAsync(job.WebRid, job.UserId, job.Content, ct);
+        return await _douyin.SendMentionDetailedAsync(job.WebRid, job.UserId, job.Content, job.Nickname, ct);
     }
 
     private void LogReplySendDiagnostic(ReplyJob job, MentionSendResult detail, DateTime sentAtUtc)
@@ -356,7 +356,10 @@ public sealed class ReplyQueue : IDisposable
         }
 
         job.RetryCount++;
-            if (job.RetryCount <= _settings.MaxRetries)
+            if (job.RetryCount <= _settings.MaxRetries
+                && !DouyinService.IsNotLoggedIn(reason)
+                && !DouyinService.IsRoomMismatch(reason)
+                && !DouyinService.IsPermissionDenied(reason))
             {
                 _log.DouyinWarn(
                     $"REPLY_QUEUE replyId={job.ReplyId} type={(job.IsSongRequestBatch ? "song_request_batch" : "mention")} " +
@@ -382,6 +385,34 @@ public sealed class ReplyQueue : IDisposable
             return;
         }
 
+        if (DouyinService.IsNotLoggedIn(reason))
+        {
+            _log.DouyinWarn(
+                $"REPLY_QUEUE replyId={job.ReplyId} result=fail error=not_logged_in " +
+                $"ui=抖音未登录（停止重试）");
+            var nowLogin = DateTime.UtcNow;
+            if (nowLogin - _lastFailureNoticeUtc > TimeSpan.FromSeconds(30))
+            {
+                _lastFailureNoticeUtc = nowLogin;
+                _onSendFailed?.Invoke("抖音未登录");
+            }
+
+            return;
+        }
+
+        if (DouyinService.IsPermissionDenied(reason))
+        {
+            _log.DouyinWarn($"DOUYIN_PERMISSION_DENIED replyId={job.ReplyId} error={reason}");
+            var nowPerm = DateTime.UtcNow;
+            if (nowPerm - _lastFailureNoticeUtc > TimeSpan.FromSeconds(30))
+            {
+                _lastFailureNoticeUtc = nowPerm;
+                _onSendFailed?.Invoke("抖音账号无发送权限（请确认 Chrome 登录的是主播账号）");
+            }
+
+            return;
+        }
+
         _log.Error(
             "douyin",
             $"REPLY_QUEUE replyId={job.ReplyId} type={(job.IsSongRequestBatch ? "song_request_batch" : "mention")} " +
@@ -396,7 +427,9 @@ public sealed class ReplyQueue : IDisposable
                 : DouyinService.IsBizAuthFailure(reason, detail.HttpStatus)
                   || DouyinService.IsWriteCredentialPending(reason, detail.HttpStatus)
                     ? $"弹幕@回复失败：{reason}。请在抖音 CDP 里完成扫码登录后再试"
-                    : $"弹幕@回复失败：{reason}";
+                    : DouyinService.IsRoomMismatch(reason)
+                        ? $"弹幕@回复失败：监听房间与发送房间不一致"
+                        : $"弹幕@回复失败：{reason}";
             _onSendFailed?.Invoke(tip);
         }
     }
