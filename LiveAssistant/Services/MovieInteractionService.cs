@@ -311,7 +311,9 @@ public sealed class MovieInteractionService : IDisposable
         {
             movieId = t.MovieId,
             movieName = t.MovieName,
-            score = t.Score
+            score = t.Score,
+            goodUserCount = t.GoodUserCount,
+            badUserCount = t.BadUserCount
         }).ToList();
         return new { ok = true, movies };
     }

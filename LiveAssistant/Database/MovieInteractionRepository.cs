@@ -415,8 +415,20 @@ public sealed class MovieInteractionRepository
         using var conn = _db.Open();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT t.movie_id, COALESCE(NULLIF(c.movie_name, ''), t.movie_name) AS movie_name,
-                   t.score, t.updated_at
+            SELECT t.movie_id,
+                   COALESCE(NULLIF(c.movie_name, ''), t.movie_name) AS movie_name,
+                   t.score,
+                   t.updated_at,
+                   COALESCE((
+                       SELECT COUNT(DISTINCT e.user_id)
+                       FROM movie_score_events e
+                       WHERE e.movie_id = t.movie_id AND e.action = 'good'
+                   ), 0) AS good_user_count,
+                   COALESCE((
+                       SELECT COUNT(DISTINCT e.user_id)
+                       FROM movie_score_events e
+                       WHERE e.movie_id = t.movie_id AND e.action = 'bad'
+                   ), 0) AS bad_user_count
             FROM movie_score_totals t
             LEFT JOIN movie_catalog c ON c.movie_id = t.movie_id
             ORDER BY t.score DESC, t.movie_id ASC
@@ -429,7 +441,9 @@ public sealed class MovieInteractionRepository
                 MovieId = reader.GetString(0),
                 MovieName = reader.IsDBNull(1) ? "" : reader.GetString(1),
                 Score = reader.GetInt64(2),
-                UpdatedAt = DateTime.TryParse(reader.GetString(3), out var dt) ? dt : DateTime.Now
+                UpdatedAt = DateTime.TryParse(reader.GetString(3), out var dt) ? dt : DateTime.Now,
+                GoodUserCount = reader.GetInt64(4),
+                BadUserCount = reader.GetInt64(5)
             });
         }
 

@@ -118,6 +118,76 @@ public sealed class MovieInteractionTests : IDisposable
     }
 
     [Fact]
+    public void VoterCounts_DistinctUsers_NotScoreTimes()
+    {
+        var now = DateTime.Now;
+        // 1) A 好评一次 → good=1 bad=0
+        Assert.True(_svc.OnGiftReceived(Gift("vc1", "A", 1, now)));
+        Assert.True(Apply("A", "哪吒 好评", now.AddSeconds(1), "vc-m1"));
+        AssertVoterCounts("1462628", score: 10, good: 1, bad: 0);
+
+        // 2) A 再连续好评 2 次（共 3 次）→ good 仍=1
+        Assert.True(_svc.OnGiftReceived(Gift("vc2", "A", 1, now.AddSeconds(2))));
+        Assert.True(Apply("A", "哪吒 好评", now.AddSeconds(3), "vc-m2"));
+        Assert.True(_svc.OnGiftReceived(Gift("vc3", "A", 1, now.AddSeconds(4))));
+        Assert.True(Apply("A", "哪吒 好评", now.AddSeconds(5), "vc-m3"));
+        AssertVoterCounts("1462628", score: 30, good: 1, bad: 0);
+
+        // 3) A 再差评 → good=1 bad=1（不互相覆盖）
+        Assert.True(_svc.OnGiftReceived(Gift("vc4", "A", 1, now.AddSeconds(6))));
+        Assert.True(Apply("A", "哪吒 差评", now.AddSeconds(7), "vc-m4"));
+        AssertVoterCounts("1462628", score: 20, good: 1, bad: 1);
+
+        // 4) B/C 好评 → good=3
+        Assert.True(_svc.OnGiftReceived(Gift("vc5", "B", 1, now.AddSeconds(8))));
+        Assert.True(Apply("B", "哪吒 好评", now.AddSeconds(9), "vc-m5"));
+        Assert.True(_svc.OnGiftReceived(Gift("vc6", "C", 1, now.AddSeconds(10))));
+        Assert.True(Apply("C", "哪吒 好评", now.AddSeconds(11), "vc-m6"));
+        AssertVoterCounts("1462628", score: 40, good: 3, bad: 1);
+    }
+
+    [Fact]
+    public void VoterCounts_ArePerMovie_AndSurviveRestart()
+    {
+        var now = DateTime.Now;
+        Assert.True(_svc.OnGiftReceived(Gift("pm1", "u1", 1, now)));
+        Assert.True(Apply("u1", "哪吒 好评", now.AddSeconds(1), "pm-nezha"));
+        Assert.True(_svc.OnGiftReceived(Gift("pm2", "u2", 2, now.AddSeconds(2))));
+        Assert.True(Apply("u2", "流浪地球 差评", now.AddSeconds(3), "pm-earth"));
+
+        AssertVoterCounts("1462628", score: 10, good: 1, bad: 0);
+        AssertVoterCounts("2", score: -20, good: 0, bad: 1);
+
+        using var db2 = new AppDatabase(_dataDir);
+        var svc2 = new MovieInteractionService(_config, db2, _log);
+        var payload = JsonSerializer.Serialize(svc2.GetScores());
+        using var doc = JsonDocument.Parse(payload);
+        var movies = doc.RootElement.GetProperty("movies");
+        Assert.Equal(2, movies.GetArrayLength());
+
+        var nezha = movies.EnumerateArray().First(m => m.GetProperty("movieId").GetString() == "1462628");
+        Assert.Equal(10, nezha.GetProperty("score").GetInt64());
+        Assert.Equal(1, nezha.GetProperty("goodUserCount").GetInt64());
+        Assert.Equal(0, nezha.GetProperty("badUserCount").GetInt64());
+
+        var earth = movies.EnumerateArray().First(m => m.GetProperty("movieId").GetString() == "2");
+        Assert.Equal(-20, earth.GetProperty("score").GetInt64());
+        Assert.Equal(0, earth.GetProperty("goodUserCount").GetInt64());
+        Assert.Equal(1, earth.GetProperty("badUserCount").GetInt64());
+        svc2.Dispose();
+    }
+
+    [Fact]
+    public void GetScores_EmptyMovieHasZeroVoterCounts()
+    {
+        // 无任何评分时 movies 为空列表
+        var payload = JsonSerializer.Serialize(_svc.GetScores());
+        using var doc = JsonDocument.Parse(payload);
+        Assert.True(doc.RootElement.GetProperty("ok").GetBoolean());
+        Assert.Equal(0, doc.RootElement.GetProperty("movies").GetArrayLength());
+    }
+
+    [Fact]
     public void ConsumedCredits_CannotBeUsedAgain()
     {
         var now = DateTime.Now;
@@ -439,6 +509,22 @@ public sealed class MovieInteractionTests : IDisposable
 
     private bool Apply(string userId, string content, DateTime now, string msgId)
         => _svc.TryApplyScoreFromDanmaku(Chat(userId, content, msgId), content, now);
+
+    private void AssertVoterCounts(string movieId, long score, long good, long bad)
+    {
+        var total = _svc.Repository.GetTotals().Single(t => t.MovieId == movieId);
+        Assert.Equal(score, total.Score);
+        Assert.Equal(good, total.GoodUserCount);
+        Assert.Equal(bad, total.BadUserCount);
+
+        var payload = JsonSerializer.Serialize(_svc.GetScores());
+        using var doc = JsonDocument.Parse(payload);
+        var movie = doc.RootElement.GetProperty("movies").EnumerateArray()
+            .Single(m => m.GetProperty("movieId").GetString() == movieId);
+        Assert.Equal(score, movie.GetProperty("score").GetInt64());
+        Assert.Equal(good, movie.GetProperty("goodUserCount").GetInt64());
+        Assert.Equal(bad, movie.GetProperty("badUserCount").GetInt64());
+    }
 
     private void ForceRetryNow(string eventId)
     {

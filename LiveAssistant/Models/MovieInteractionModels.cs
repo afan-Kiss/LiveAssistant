@@ -55,6 +55,10 @@ public sealed class MovieScoreTotal
     public string MovieId { get; set; } = "";
     public string MovieName { get; set; } = "";
     public long Score { get; set; }
+    /// <summary>好评去重人数（按 user_id DISTINCT，不按次数）。</summary>
+    public long GoodUserCount { get; set; }
+    /// <summary>差评去重人数（按 user_id DISTINCT，不按次数）。</summary>
+    public long BadUserCount { get; set; }
     public DateTime UpdatedAt { get; set; }
 }
 
