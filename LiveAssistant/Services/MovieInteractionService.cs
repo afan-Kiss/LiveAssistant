@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using LiveAssistant.Config;
 using LiveAssistant.Database;
 using LiveAssistant.Models;
@@ -13,9 +12,8 @@ namespace LiveAssistant.Services;
 /// </summary>
 public sealed class MovieInteractionService : IDisposable
 {
-    private static readonly Regex ScoreDanmakuRegex = new(
-        @"^(?<name>.+?)\s*(?<action>好评|差评)\s*$",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    // 长词优先，避免「不好看」被「好看」截断
+    private static readonly string[] ScoreActions = ["不好看", "差评", "好看", "好评"];
 
     private const int MaxDanmakuChars = 45;
     private const string NotifyFailTag = "MOVIE_INTERACTION_NOTIFY_SEND_FAILED";
@@ -23,7 +21,9 @@ public sealed class MovieInteractionService : IDisposable
     private readonly ConfigManager _config;
     private readonly MovieInteractionRepository _repo;
     private readonly LogService _log;
+    private readonly ChatAudienceFilter? _audienceFilter;
     private readonly ConcurrentDictionary<string, object> _userLocks = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, string> _userCreditMovieHints = new(StringComparer.Ordinal);
     private readonly object _notifyLock = new();
     private readonly Dictionary<string, DateTime> _giftGuideCooldownUtc = new(StringComparer.Ordinal);
     private readonly Dictionary<string, DateTime> _hintCooldownUtc = new(StringComparer.Ordinal);
@@ -34,12 +34,18 @@ public sealed class MovieInteractionService : IDisposable
     /// <summary>测试可注入时钟；生产默认 DateTime.Now。</summary>
     internal Func<DateTime>? NowProvider { get; set; }
 
-    public MovieInteractionService(ConfigManager config, AppDatabase db, LogService log, ReplyQueue? replyQueue = null)
+    public MovieInteractionService(
+        ConfigManager config,
+        AppDatabase db,
+        LogService log,
+        ReplyQueue? replyQueue = null,
+        ChatAudienceFilter? audienceFilter = null)
     {
         _config = config;
         _repo = new MovieInteractionRepository(db);
         _log = log;
         _replyQueue = replyQueue;
+        _audienceFilter = audienceFilter;
     }
 
     private DateTime Now() => NowProvider?.Invoke() ?? DateTime.Now;
@@ -136,11 +142,18 @@ public sealed class MovieInteractionService : IDisposable
             return false;
         }
 
+        var movieHint = PickShortMovieExample();
+        if (!string.IsNullOrWhiteSpace(movieHint))
+        {
+            _userCreditMovieHints[gift.UserId] = movieHint;
+        }
+
         _log.Info(
             $"[MOVIE_SCORE_CREDIT] 生成可评分积分 giftEventId={gift.EventId} userId={gift.UserId} " +
-            $"gift={gift.GiftName} diamonds={gift.Value} points={points} expiresAt={credit.ExpiresAt:O}");
+            $"gift={gift.GiftName} diamonds={gift.Value} points={points} expiresAt={credit.ExpiresAt:O} " +
+            $"movieHint={movieHint}");
 
-        TryEnqueueGiftScoreGuide(gift);
+        TryEnqueueGiftScoreGuide(gift, movieHint);
         return true;
     }
 
@@ -155,8 +168,7 @@ public sealed class MovieInteractionService : IDisposable
             return;
         }
 
-        if (!string.Equals(item.MsgType, "chat", StringComparison.OrdinalIgnoreCase)
-            && !string.IsNullOrWhiteSpace(item.MsgType))
+        if (!ChatMessageFilter.IsAudienceChat(item))
         {
             return;
         }
@@ -167,24 +179,46 @@ public sealed class MovieInteractionService : IDisposable
             return;
         }
 
-        var createdAt = item.Timestamp == default ? DateTime.Now : item.Timestamp;
-        try
+        var ctx = _audienceFilter?.Snapshot(item.RoomKey) ?? new ChatMessageFilterContext();
+        var classification = ChatMessageFilter.Classify(item, ctx);
+        if (classification.Kind is ChatMessageKind.SystemMessage
+            or ChatMessageKind.BotMessage
+            or ChatMessageKind.StreamerMessage)
         {
-            _repo.AppendDanmakuStream(item.MsgId ?? "", new
-            {
-                type = "danmaku",
-                msgId = item.MsgId ?? "",
-                userId = item.UserId,
-                nickname = item.Nickname ?? "",
-                content,
-                createdAt = createdAt.ToString("O"),
-                platform = item.Platform ?? "douyin",
-                roomId = item.RoomKey ?? ""
-            }, createdAt);
+            _log.Info(
+                $"[MOVIE_SCORE_STREAM_SKIP] msgId={item.MsgId} userId={item.UserId} " +
+                $"kind={classification.Kind} reason={classification.Reason}");
+            return;
         }
-        catch (Exception ex)
+
+        var createdAt = item.Timestamp == default ? DateTime.Now : item.Timestamp;
+
+        if (classification.Kind == ChatMessageKind.NormalChat)
         {
-            _log.Error("movie_score", "[MOVIE_SCORE_API] 写入弹幕事件流失败", ex);
+            try
+            {
+                _repo.AppendDanmakuStream(item.MsgId ?? "", new
+                {
+                    type = "danmaku",
+                    msgId = item.MsgId ?? "",
+                    userId = item.UserId,
+                    nickname = item.Nickname ?? "",
+                    content,
+                    createdAt = createdAt.ToString("O"),
+                    platform = item.Platform ?? "douyin",
+                    roomId = item.RoomKey ?? ""
+                }, createdAt);
+            }
+            catch (Exception ex)
+            {
+                _log.Error("movie_score", "[MOVIE_SCORE_API] 写入弹幕事件流失败", ex);
+            }
+        }
+        else
+        {
+            _log.Info(
+                $"[WORD_CLOUD_SKIP] msgId={item.MsgId} userId={item.UserId} " +
+                $"kind={classification.Kind} reason={classification.Reason} content={Truncate(content, 40)}");
         }
 
         TryApplyScoreFromDanmaku(item, content, createdAt);
@@ -194,23 +228,30 @@ public sealed class MovieInteractionService : IDisposable
     {
         var content = (contentOverride ?? item.Content ?? "").Trim();
         var now = nowOverride ?? DateTime.Now;
-        var match = ScoreDanmakuRegex.Match(content);
-        if (!match.Success)
+        _log.Info(
+            $"[MOVIE_SCORE_PARSE_INPUT] msgId={item.MsgId} userId={item.UserId} content={Truncate(content, 80)}");
+
+        if (!TryParseScoreDanmaku(content, out var movieQuery, out var actionRaw))
         {
             return false;
         }
 
-        var movieQuery = match.Groups["name"].Value.Trim();
-        var actionRaw = match.Groups["action"].Value;
+        var action = MapScoreAction(actionRaw);
+        var standalone = string.IsNullOrWhiteSpace(movieQuery);
+        if (standalone)
+        {
+            movieQuery = ResolveCreditContextMovie(item.UserId, now);
+        }
+
+        _log.Info(
+            $"[MOVIE_SCORE_PARSE_RESULT] msgId={item.MsgId} userId={item.UserId} " +
+            $"query={movieQuery} action={action} standalone={standalone}");
+
         if (string.IsNullOrWhiteSpace(movieQuery))
         {
+            _log.Info($"[MOVIE_SCORE_PARSE] 仅动作词但无可用电影上下文 userId={item.UserId}");
             return false;
         }
-
-        var action = actionRaw == "差评" ? "bad" : "good";
-        _log.Info(
-            $"[MOVIE_SCORE_PARSE] msgId={item.MsgId} userId={item.UserId} content={Truncate(content, 80)} " +
-            $"query={movieQuery} action={action}");
 
         var resolved = ResolveMovie(movieQuery);
         if (resolved.Ambiguous)
@@ -301,6 +342,9 @@ public sealed class MovieInteractionService : IDisposable
                 $"movie={resolved.Entry.MovieName}({resolved.Entry.MovieId}) action={action} " +
                 $"delta={delta} before={before} after={totalAfter} " +
                 $"consumedGiftEventIds=[{string.Join(",", scoreEvent.SourceGiftEventIds)}]");
+            _log.Info(
+                $"[MOVIE_SCORE_CREDIT_USED] userId={item.UserId} movieId={resolved.Entry.MovieId} " +
+                $"credits={credits.Count} points={absolute} action={action}");
 
             TryEnqueueScoreSuccessReply(item, scoreEvent, totalAfter);
             return true;
@@ -468,7 +512,7 @@ public sealed class MovieInteractionService : IDisposable
         return (matches[0], false, 1);
     }
 
-    private void TryEnqueueGiftScoreGuide(GiftEvent gift)
+    private void TryEnqueueGiftScoreGuide(GiftEvent gift, string? movieHint = null)
     {
         var notify = _config.Settings.MovieInteraction.Notification;
         if (notify == null || !notify.Enabled || _replyQueue == null)
@@ -500,10 +544,10 @@ public sealed class MovieInteractionService : IDisposable
         }
 
         var minutes = Math.Max(1, _config.Settings.MovieInteraction.CreditExpireSeconds / 60);
-        var example = PickShortMovieExample();
+        var example = string.IsNullOrWhiteSpace(movieHint) ? PickShortMovieExample() : movieHint;
         var msg = string.IsNullOrWhiteSpace(example)
-            ? $"感谢你的礼物❤️ 已获得电影评分机会，{minutes}分钟内发送「电影名 好评」或「电影名 差评」即可参与评分"
-            : $"感谢礼物❤️ {minutes}分钟内发送「{example} 好评」或「{example} 差评」即可参与电影评分";
+            ? $"感谢你的礼物❤️ 已获得电影评分机会，{minutes}分钟内发送「电影名 好看」或「电影名 不好看」即可参与评分"
+            : $"感谢礼物❤️ {minutes}分钟内发送「{example} 好看」或「{example} 不好看」即可参与电影评分";
         msg = ClampDanmaku(msg);
 
         _replyQueue.EnqueueMention(
@@ -533,12 +577,12 @@ public sealed class MovieInteractionService : IDisposable
         string msg;
         if (scoreEvent.Action == "bad")
         {
-            msg = $"《{shortName}》差评成功 {scoreEvent.ScoreDelta}分";
+            msg = $"《{shortName}》不好看 {scoreEvent.ScoreDelta}分";
         }
         else
         {
             var deltaText = scoreEvent.ScoreDelta >= 0 ? $"+{scoreEvent.ScoreDelta}" : scoreEvent.ScoreDelta.ToString();
-            msg = $"《{shortName}》好评成功 {deltaText}分❤️";
+            msg = $"《{shortName}》好看 {deltaText}分❤️";
         }
 
         var withTotal = ClampDanmaku($"{msg} 当前总分 {totalAfter}");
@@ -587,8 +631,8 @@ public sealed class MovieInteractionService : IDisposable
         var minutes = Math.Max(1, _config.Settings.MovieInteraction.CreditExpireSeconds / 60);
         var msg = kind switch
         {
-            "ambiguous" => "电影名不够明确，请发送完整片名 + 好评/差评",
-            "not_found" => "没找到这部电影，请使用榜单上的电影名 + 好评/差评",
+            "ambiguous" => "电影名不够明确，请发送完整片名 + 好看/不好看",
+            "not_found" => "没找到这部电影，请使用榜单上的电影名 + 好看/不好看",
             "expired" => $"这次评分资格已过期，送礼后可重新获得{minutes}分钟评分机会",
             _ => $"暂无评分机会，送礼后可获得{minutes}分钟电影评分资格～"
         };
@@ -669,6 +713,118 @@ public sealed class MovieInteractionService : IDisposable
         {
             map.Remove(dead);
         }
+    }
+
+    /// <summary>
+    /// 支持：哪吒好评 / 哪吒 好看 / 《哪吒》差评 / 给哪吒不好看 / 单独「好评」「好看」（需后续结合 credit 上下文电影）。
+    /// </summary>
+    internal static bool TryParseScoreDanmaku(string content, out string movieQuery, out string actionRaw)
+    {
+        movieQuery = "";
+        actionRaw = "";
+        var text = NormalizeScoreInput(content);
+        if (text.Length == 0)
+        {
+            return false;
+        }
+
+        foreach (var candidate in ScoreActions)
+        {
+            if (!text.Equals(candidate, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            actionRaw = candidate;
+            return true;
+        }
+
+        var action = "";
+        foreach (var candidate in ScoreActions)
+        {
+            if (!text.EndsWith(candidate, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            action = candidate;
+            text = text[..^candidate.Length];
+            break;
+        }
+
+        if (action.Length == 0)
+        {
+            return false;
+        }
+
+        text = StripMovieQuery(text);
+        actionRaw = action;
+        movieQuery = text;
+        return true;
+    }
+
+    private static string NormalizeScoreInput(string? content)
+    {
+        var text = (content ?? "").Trim();
+        if (text.Length == 0)
+        {
+            return "";
+        }
+
+        while (text.StartsWith('@'))
+        {
+            var space = text.IndexOf(' ');
+            if (space <= 0)
+            {
+                break;
+            }
+
+            text = text[(space + 1)..].Trim();
+        }
+
+        return text.Trim('。', '.', '!', '！', '?', '？', '~', '～', ' ');
+    }
+
+    private static string StripMovieQuery(string text)
+    {
+        text = text.Trim();
+        text = text.TrimEnd(' ', '\t', ':', '：', ',', '，', '、', '-', '—', '–', '/', '／', '的', '。', '.', '!', '！', '?', '？');
+        text = text.Trim().Trim('《', '》', '「', '」', '『', '』', '"', '“', '”', '\'', '‘', '’');
+        text = text.Trim();
+        if (text.StartsWith("给", StringComparison.Ordinal) || text.StartsWith("为", StringComparison.Ordinal))
+        {
+            text = text[1..].Trim().Trim('《', '》', '「', '」', '『', '』', '"', '“', '”');
+        }
+
+        return text.Trim();
+    }
+
+    private static string MapScoreAction(string actionRaw)
+        => actionRaw is "差评" or "不好看" ? "bad" : "good";
+
+    private string ResolveCreditContextMovie(string userId, DateTime now)
+    {
+        if (string.IsNullOrWhiteSpace(userId))
+        {
+            return "";
+        }
+
+        if (_userCreditMovieHints.TryGetValue(userId, out var hint) && !string.IsNullOrWhiteSpace(hint))
+        {
+            return hint.Trim();
+        }
+
+        _repo.ExpirePendingCredits(now);
+        if (_repo.GetPendingCreditsForUser(userId, now).Count == 0)
+        {
+            return "";
+        }
+
+        var catalog = _repo.GetCatalog()
+            .OrderBy(m => m.Rank <= 0 ? int.MaxValue : m.Rank)
+            .ThenBy(m => m.MovieName, StringComparer.Ordinal)
+            .FirstOrDefault();
+        return catalog == null ? "" : ShortMovieName(catalog.MovieName);
     }
 
     private static string NormalizeName(string name)

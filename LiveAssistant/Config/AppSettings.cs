@@ -479,6 +479,7 @@ public sealed class ConfigManager
 
         ApplyTunnelCredentialsFile();
         ResolveSidecarPaths();
+        MigrateDouyinCdpBaseUrl();
         MigrateRequireConfirmDefault();
         MigrateAiSpeechDefaults();
 
@@ -583,6 +584,38 @@ public sealed class ConfigManager
         catch (Exception ex)
         {
             StartupDiagnostics.Write($"纠正 AI 语音默认配置失败: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 旧网页弹幕侧车 4723 已废弃，统一切到 CDP 17891，避免发弹幕卡在「凭据验证中」。
+    /// </summary>
+    private void MigrateDouyinCdpBaseUrl()
+    {
+        var current = (Settings.Douyin.BaseUrl ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(current))
+        {
+            Settings.Douyin.BaseUrl = "http://127.0.0.1:17891";
+        }
+        else if (Uri.TryCreate(current, UriKind.Absolute, out var uri)
+                 && uri.Port == 4723)
+        {
+            var builder = new UriBuilder(uri) { Port = 17891 };
+            Settings.Douyin.BaseUrl = builder.Uri.ToString().TrimEnd('/');
+        }
+        else
+        {
+            return;
+        }
+
+        try
+        {
+            Save();
+            StartupDiagnostics.Write($"已迁移抖音 CDP 地址 {current} -> {Settings.Douyin.BaseUrl}");
+        }
+        catch (Exception ex)
+        {
+            StartupDiagnostics.Write($"迁移抖音 CDP 地址失败: {ex.Message}");
         }
     }
 

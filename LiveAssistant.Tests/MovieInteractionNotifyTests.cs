@@ -107,7 +107,7 @@ public sealed class MovieInteractionNotifyTests : IDisposable
 
         Assert.True(_svc.TryApplyScoreFromDanmaku(Chat("u1", "哪吒 好评", "m1"), nowOverride: now));
         Assert.True(WaitSent(1));
-        Assert.Contains(_sent, x => x.Content.Contains("好评成功") && x.Content.Contains("+10"));
+        Assert.Contains(_sent, x => x.Content.Contains("好看") && x.Content.Contains("+10"));
 
         lock (_sent) { _sent.Clear(); }
         Assert.True(_svc.OnGiftReceived(Gift("g-bad", "u2", 2, now)));
@@ -116,7 +116,7 @@ public sealed class MovieInteractionNotifyTests : IDisposable
 
         Assert.True(_svc.TryApplyScoreFromDanmaku(Chat("u2", "哪吒 差评", "m2"), nowOverride: now));
         Assert.True(WaitSent(1));
-        Assert.Contains(_sent, x => x.Content.Contains("差评成功") && x.Content.Contains("-20"));
+        Assert.Contains(_sent, x => x.Content.Contains("不好看") && x.Content.Contains("-20"));
     }
 
     [Fact]

@@ -137,13 +137,42 @@ public sealed class MovieInteractionTests : IDisposable
     public void InvalidDanmaku_DoesNotConsumeCredits()
     {
         Assert.True(_svc.OnGiftReceived(Gift("g", "u1", 1)));
-        foreach (var text in new[] { "你好", "哪吒加油", "点歌 晴天", "好评", "哪吒 好 评", "今天哪吒不错" })
+        foreach (var text in new[] { "你好", "哪吒加油", "点歌 晴天", "哪吒 好 评", "今天哪吒不错" })
         {
             Assert.False(Apply("u1", text, DateTime.Now, "m-" + text.GetHashCode()));
         }
 
         Assert.Equal("pending", _svc.Repository.GetCreditByGiftEventId("g")!.Status);
         Assert.Equal(0, _svc.Repository.GetTotalScore("1462628"));
+    }
+
+    [Fact]
+    public void StandaloneGoodReview_WithoutCredit_DoesNotConsume()
+    {
+        Assert.False(Apply("u-no-credit", "好看", DateTime.Now, "standalone-no-credit"));
+        Assert.False(Apply("u-no-credit", "好评", DateTime.Now, "standalone-no-credit-2"));
+    }
+
+    [Fact]
+    public void StandaloneGoodReview_WithCredit_AppliesScore()
+    {
+        var now = DateTime.Now;
+        Assert.True(_svc.OnGiftReceived(Gift("g-standalone", "u1", 1, now)));
+        Assert.True(Apply("u1", "好看", now.AddSeconds(1), "standalone-good"));
+        Assert.Equal(10, _svc.Repository.GetTotalScore("1462628"));
+    }
+
+    [Fact]
+    public void MovieName_WithHaoKanAndBuHaoKan_Work()
+    {
+        var now = DateTime.Now;
+        Assert.True(_svc.OnGiftReceived(Gift("hk1", "u1", 1, now)));
+        Assert.True(Apply("u1", "哪吒 好看", now.AddSeconds(1), "m-haokan"));
+        Assert.Equal(10, _svc.Repository.GetTotalScore("1462628"));
+
+        Assert.True(_svc.OnGiftReceived(Gift("hk2", "u2", 2, now.AddSeconds(2))));
+        Assert.True(Apply("u2", "流浪地球 不好看", now.AddSeconds(3), "m-buhaokan"));
+        Assert.Equal(-20, _svc.Repository.GetTotalScore("2"));
     }
 
     [Fact]

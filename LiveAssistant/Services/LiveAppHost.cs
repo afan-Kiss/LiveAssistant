@@ -153,6 +153,7 @@ public sealed class LiveAppHost : IDisposable
         _queue = new QueueService(_db);
         _reply = new ReplyService(_config);
         _outboundTracker = new OutboundReplyTracker();
+        var audienceFilter = new ChatAudienceFilter(_outboundTracker);
         _replyQueue = new ReplyQueue(
             _douyin,
             _log,
@@ -173,7 +174,7 @@ public sealed class LiveAppHost : IDisposable
         _engine = new PlaybackEngine(_config, _playbackCommands, _system);
         _danmaku = new DanmakuService(
             _douyin, _log, _system, new DanmakuDeduplicator(_config.DataDirectory), _outboundTracker,
-            _config.Settings.Douyin.PollIntervalMs);
+            audienceFilter, _config.Settings.Douyin.PollIntervalMs);
 
         var songBlacklist = new SongBlacklistService(_songBlacklistRepo);
         _userLevel = new UserLevelService(_config, _users);
@@ -204,10 +205,10 @@ public sealed class LiveAppHost : IDisposable
             _permission.RefundQueueItemIfNeeded(id, reason);
 
         _adminTunnel = new AdminTunnelService(_config, _log, _system);
-        _aiSpeech = new AiSpeechCoordinator(_config, _log, _outboundTracker);
+        _aiSpeech = new AiSpeechCoordinator(_config, _log, _outboundTracker, audienceFilter);
         _aiSpeech.StatusChanged += () => NotifyStateChanged();
         _machineSetup = new MachineSetupService(_config, _log, _playback, _aiSpeech);
-        _movieInteraction = new MovieInteractionService(_config, _db, _log, _replyQueue);
+        _movieInteraction = new MovieInteractionService(_config, _db, _log, _replyQueue, audienceFilter);
         _movieInteraction.ApplyGlobalSendInterval();
         _movieScoreSync = new MovieScoreSyncService(_config, _movieInteraction, _log);
 
@@ -814,7 +815,8 @@ public sealed class LiveAppHost : IDisposable
     private async Task ProcessDanmakuSafeAsync(DanmakuItem item)
     {
         // 点歌/确认/切歌等业务指令绕过并发门控，避免高峰被闲聊挤掉
-        if (IsPriorityDanmaku(item.Content))
+        if (IsPriorityDanmaku(item.Content)
+            || string.Equals(item.MsgType, "member", StringComparison.OrdinalIgnoreCase))
         {
             try
             {

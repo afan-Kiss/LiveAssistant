@@ -10,6 +10,7 @@ public sealed class DanmakuService : IDisposable
     private readonly SystemMessageService _system;
     private readonly DanmakuDeduplicator _deduper;
     private readonly OutboundReplyTracker? _outboundTracker;
+    private readonly ChatAudienceFilter? _audienceFilter;
     private readonly int _pollIntervalMs;
     private CancellationTokenSource? _cts;
     private int _after;
@@ -29,6 +30,9 @@ public sealed class DanmakuService : IDisposable
     /// <summary>抖音侧车登录用户号；可能为空。</summary>
     public string DouyinLoginUserId { get; private set; } = "";
 
+    /// <summary>直播间主播 user_id（来自 room/resolve）。</summary>
+    public string RoomOwnerUserId { get; private set; } = "";
+
     public string RoomTitle { get; private set; } = "-";
 
     public DanmakuService(
@@ -37,6 +41,7 @@ public sealed class DanmakuService : IDisposable
         SystemMessageService system,
         DanmakuDeduplicator? deduper = null,
         OutboundReplyTracker? outboundTracker = null,
+        ChatAudienceFilter? audienceFilter = null,
         int pollIntervalMs = 1500)
     {
         _douyin = douyin;
@@ -44,6 +49,7 @@ public sealed class DanmakuService : IDisposable
         _system = system;
         _deduper = deduper ?? new DanmakuDeduplicator();
         _outboundTracker = outboundTracker;
+        _audienceFilter = audienceFilter;
         _pollIntervalMs = Math.Clamp(pollIntervalMs, 300, 10_000);
     }
 
@@ -71,6 +77,7 @@ public sealed class DanmakuService : IDisposable
 
         DouyinLoginNickname = string.IsNullOrWhiteSpace(health.Nickname) ? "-" : health.Nickname.Trim();
         DouyinLoginUserId = string.IsNullOrWhiteSpace(health.UserId) ? "" : health.UserId.Trim();
+        _audienceFilter?.UpdateDouyinIdentity(DouyinLoginUserId, DouyinLoginNickname, _webRid);
         _log.DouyinInfo(
             $"DOUYIN_CDP_LOGIN result=ok nickname={DouyinLoginNickname} userId={DouyinLoginUserId}");
 
@@ -99,8 +106,12 @@ public sealed class DanmakuService : IDisposable
         }
 
         RoomOwnerNickname = string.IsNullOrWhiteSpace(room.Owner?.Nickname) ? "-" : room.Owner.Nickname.Trim();
+        RoomOwnerUserId = string.IsNullOrWhiteSpace(room.Owner?.UserId) ? "" : room.Owner.UserId.Trim();
         RoomTitle = string.IsNullOrWhiteSpace(room.Title) ? _webRid : room.Title;
-        _log.DouyinInfo($"DOUYIN_CDP_START stage=resolve webRid={_webRid} roomId={room.RoomId} nickname={RoomOwnerNickname}");
+        _audienceFilter?.UpdateRoomOwner(RoomOwnerUserId, RoomOwnerNickname);
+        _log.DouyinInfo(
+            $"DOUYIN_CDP_START stage=resolve webRid={_webRid} roomId={room.RoomId} " +
+            $"ownerNick={RoomOwnerNickname} ownerUserId={RoomOwnerUserId}");
 
         await _douyin.StopOtherCollectSessionsAsync(_webRid, ct);
         var reconnected = await _douyin.ReconnectAsync(_webRid, ct);
@@ -379,9 +390,10 @@ public sealed class DanmakuService : IDisposable
                     continue;
                 }
 
-                if (ShouldIgnoreBotMessage(msgId, nickname, content))
+                if (ShouldIgnoreBotMessage(msgId, nickname, content, userId))
                 {
-                    _log.DouyinInfo($"[danmaku-bot] drop self/bot msg_id={msgId} content={Truncate(content)}");
+                    _log.DouyinInfo(
+                        $"[danmaku-bot] drop self/bot msg_id={msgId} user_id={userId} content={Truncate(content)}");
                     continue;
                 }
 
@@ -428,34 +440,35 @@ public sealed class DanmakuService : IDisposable
     }
 
     /// <summary>
-    /// 机器人回显过滤：msg_id 精确命中优先；登录昵称命中次之。
-    /// nickname 为空时用近期出站正文兜底，避免回复回环；禁止仅靠正文误杀真人。
+    /// 机器人/主播/出站回显统一过滤（见 <see cref="ChatMessageFilter"/>）。
     /// </summary>
-    internal bool ShouldIgnoreBotMessage(string msgId, string nickname, string content)
+    internal bool ShouldIgnoreBotMessage(string msgId, string nickname, string content, string? userId = null)
     {
-        if (_outboundTracker?.MatchesTrackedMessageId(msgId) == true)
+        var item = new DanmakuItem
         {
-            return true;
+            MsgId = msgId,
+            Nickname = nickname,
+            Content = content,
+            UserId = userId ?? "",
+            MsgType = "chat",
+            RoomKey = _webRid
+        };
+
+        if (_audienceFilter != null)
+        {
+            return _audienceFilter.ShouldExclude(item, out _);
         }
 
-        var hasLoginNick = !string.IsNullOrWhiteSpace(DouyinLoginNickname)
-            && !DouyinLoginNickname.Equals("-", StringComparison.Ordinal);
-        var isLoginAccount = hasLoginNick
-            && nickname.Equals(DouyinLoginNickname, StringComparison.OrdinalIgnoreCase);
-
-        if (isLoginAccount)
+        var ctx = new ChatMessageFilterContext
         {
-            return true;
-        }
-
-        // nickname 拿不到时：仅当正文刚好匹配近期出站内容才丢弃，防止机器人自己刷自己。
-        if (!hasLoginNick
-            && _outboundTracker?.HasRecentOutboundContent(content, _webRid) == true)
-        {
-            return true;
-        }
-
-        return false;
+            LoginUserId = DouyinLoginUserId,
+            LoginNickname = DouyinLoginNickname,
+            RoomOwnerUserId = RoomOwnerUserId,
+            RoomOwnerNickname = RoomOwnerNickname,
+            RoomKey = _webRid,
+            OutboundTracker = _outboundTracker
+        };
+        return ChatMessageFilter.Evaluate(item, ctx).Excluded;
     }
 
     internal void DispatchForTests(List<DouyinDanmakuMessage>? items) => DispatchItems(items);
@@ -464,7 +477,17 @@ public sealed class DanmakuService : IDisposable
         => DouyinLoginNickname = string.IsNullOrWhiteSpace(nickname) ? "-" : nickname.Trim();
 
     internal void SetDouyinLoginUserIdForTests(string userId)
-        => DouyinLoginUserId = userId?.Trim() ?? "";
+    {
+        DouyinLoginUserId = userId?.Trim() ?? "";
+        _audienceFilter?.UpdateDouyinIdentity(DouyinLoginUserId, DouyinLoginNickname, _webRid);
+    }
+
+    internal void SetRoomOwnerForTests(string userId, string nickname)
+    {
+        RoomOwnerUserId = userId?.Trim() ?? "";
+        RoomOwnerNickname = string.IsNullOrWhiteSpace(nickname) ? "-" : nickname.Trim();
+        _audienceFilter?.UpdateRoomOwner(RoomOwnerUserId, RoomOwnerNickname);
+    }
 
     private static string ResolveMsgId(DouyinDanmakuMessage msg)
     {

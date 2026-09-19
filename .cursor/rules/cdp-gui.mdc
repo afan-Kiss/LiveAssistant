@@ -1,0 +1,15 @@
+---
+description: 启动抖音 CDP 必须用带窗口的最新版，禁止黑 CMD
+alwaysApply: true
+---
+
+# 抖音 CDP 只用窗口最新版
+
+启动或编译 CDP 时，必须是带界面的最新版，不要弹出黑色 CMD。
+
+- 入口：`E:\我的源码目录\抖音cdp弹幕\cmd\native`（窗口标题「抖音直播弹幕」）
+- 产物：`E:\我的源码目录\抖音cdp弹幕\bin\cdp-danmaku.exe`
+- 编译：`go build -ldflags "-H windowsgui" -o bin/cdp-danmaku.exe ./cmd/native`
+- 禁止用 `./cmd/server`。那是控制台程序，Windows 会弹出 CMD 窗口
+- `StartLiveSystem` 自动编译也必须走 `./cmd/native` + `-H windowsgui`
+- 需要重启时用 `publish\StartLiveSystem\StartLiveSystem.exe`，它会替换旧 CDP

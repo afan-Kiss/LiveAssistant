@@ -1,0 +1,19 @@
+---
+description: 点歌、CDP、票房编译必须使用同一产品版本号
+alwaysApply: true
+---
+
+# 统一产品版本
+
+点歌软件、窗口版 CDP、票房软件、StartLiveSystem 共用一个版本号。不要各自递增。
+
+当前版本：**1.0.0**（文件属性 1.0.0.0）。从这一版重新起算。
+
+改版本时同时改这些位置：
+
+- `LiveAssistant/LiveAssistant.csproj` 与 `StartLiveSystem/StartLiveSystem.csproj` 的 `Version`
+- `抖音cdp弹幕/internal/api/helpers.go` 的 `APIVersion`
+- `StartLiveSystem/Program.cs` 与 `launcher.json` 的 CDP `MinVersion`（必须等于该版本，不能再写 1.2.1）
+- `抖音直播24小时无人直播/package.json` 的 `version`（安装包名会变成 `MaoyanOverlay-<版本>.exe`）
+
+编译产物必须带上这个版本。CDP 只用 `./cmd/native` 加 `-H windowsgui`。酷狗是外部程序，不要改它的文件名版本。

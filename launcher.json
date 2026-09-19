@@ -8,7 +8,7 @@
     "SourceDir": "E:\\\u6211\u7684\u6E90\u7801\u76EE\u5F55\\\u6296\u97F3cdp\u5F39\u5E55",
     "GitCommit": "d60f33880e0ae3f8ef3d2615fd68a53bf4a37519",
     "BuildTime": "2026-09-19T00:38:00.6486465\u002B08:00",
-    "MinVersion": "1.2.1",
+    "MinVersion": "1.0.0",
     "DevCommand": "go",
     "DevArgs": "run ./cmd/server",
     "DevWorkingDirectory": "E:\\\u6211\u7684\u6E90\u7801\u76EE\u5F55\\\u6296\u97F3cdp\u5F39\u5E55",
@@ -78,7 +78,7 @@
   },
   "Maoyan": {
     "Enabled": true,
-    "Exe": "E:\\\u6211\u7684\u6E90\u7801\u76EE\u5F55\\\u6296\u97F3\u76F4\u64AD24\u5C0F\u65F6\u65E0\u4EBA\u76F4\u64AD\\dist\\MaoyanOverlay-1.64.4.exe",
+    "Exe": "E:\\\u6211\u7684\u6E90\u7801\u76EE\u5F55\\\u6296\u97F3\u76F4\u64AD24\u5C0F\u65F6\u65E0\u4EBA\u76F4\u64AD\\dist\\MaoyanOverlay-1.0.0.exe",
     "SourceDir": "E:\\\u6211\u7684\u6E90\u7801\u76EE\u5F55\\\u6296\u97F3\u76F4\u64AD24\u5C0F\u65F6\u65E0\u4EBA\u76F4\u64AD",
     "GitCommit": "",
     "BuildTime": "2026-09-19T00:10:50.0466997\u002B08:00",
@@ -95,7 +95,7 @@
     "WaitLogin": false,
     "LoginOkField": "login_ok",
     "CandidateExes": [
-      "../\u6296\u97F3\u76F4\u64AD24\u5C0F\u65F6\u65E0\u4EBA\u76F4\u64AD/dist/MaoyanOverlay-1.64.4.exe",
+      "../\u6296\u97F3\u76F4\u64AD24\u5C0F\u65F6\u65E0\u4EBA\u76F4\u64AD/dist/MaoyanOverlay-1.0.0.exe",
       "../\u6296\u97F3\u76F4\u64AD24\u5C0F\u65F6\u65E0\u4EBA\u76F4\u64AD/dist/MaoyanOverlay.exe",
       "../\u6296\u97F3\u76F4\u64AD24\u5C0F\u65F6\u65E0\u4EBA\u76F4\u64AD/dist/win-unpacked/MaoyanOverlay.exe"
     ],
@@ -105,7 +105,7 @@
     "CandidateEntryJs": [],
     "ScanNames": [
       "MaoyanOverlay.exe",
-      "MaoyanOverlay-1.64.4.exe"
+      "MaoyanOverlay-1.0.0.exe"
     ],
     "RequireSibling": "",
     "StartBat": "E:\\\u6211\u7684\u6E90\u7801\u76EE\u5F55\\\u6296\u97F3\u76F4\u64AD24\u5C0F\u65F6\u65E0\u4EBA\u76F4\u64AD\\start.bat"

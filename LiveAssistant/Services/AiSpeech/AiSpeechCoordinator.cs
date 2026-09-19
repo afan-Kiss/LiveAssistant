@@ -16,6 +16,7 @@ public sealed class AiSpeechCoordinator : IDisposable
     private readonly ConfigManager _config;
     private readonly LogService _log;
     private readonly OutboundReplyTracker _outboundTracker;
+    private readonly ChatAudienceFilter? _audienceFilter;
     private readonly OllamaClient _ollama;
     private readonly GptSovitsClient _tts;
     private readonly AiSpeechPlayer _player;
@@ -74,11 +75,13 @@ public sealed class AiSpeechCoordinator : IDisposable
     public AiSpeechCoordinator(
         ConfigManager config,
         LogService log,
-        OutboundReplyTracker outboundTracker)
+        OutboundReplyTracker outboundTracker,
+        ChatAudienceFilter? audienceFilter = null)
     {
         _config = config;
         _log = log;
         _outboundTracker = outboundTracker;
+        _audienceFilter = audienceFilter;
         var s = config.Settings.AiSpeech;
         _ollama = new OllamaClient(s.OllamaUrl, TimeSpan.FromSeconds(Math.Clamp(s.OllamaTimeoutSeconds, 10, 120)));
         _tts = new GptSovitsClient(s.TtsUrl, TimeSpan.FromSeconds(Math.Clamp(s.TtsTimeoutSeconds, 10, 120)));
@@ -460,19 +463,11 @@ public sealed class AiSpeechCoordinator : IDisposable
                 return;
             }
 
-            if (IsSelfHostMessage(item!, roomOwnerNickname, loginNickname))
+            if (ShouldExcludeAudienceMessage(item!, roomOwnerNickname, loginNickname, out var excludeReason))
             {
                 _metrics.NoteFiltered();
                 _log.AiInfo(
-                    $"AI_SELF_MESSAGE_SKIP reason=host_or_login nick={item!.Nickname} user={MaskId(item.UserId)} len={contentLen} score={scored.Score} enter_ai=0");
-                return;
-            }
-
-            if (_outboundTracker.MatchesTrackedMessageId(item!.MsgId))
-            {
-                _metrics.NoteFiltered();
-                _log.AiInfo(
-                    $"AI_SELF_MESSAGE_SKIP reason=outbound_msg_id nick={item.Nickname} len={item.Content.Length} score={scored.Score} enter_ai=0");
+                    $"AI_SELF_MESSAGE_SKIP reason={excludeReason} nick={item!.Nickname} user={MaskId(item.UserId)} len={contentLen} score={scored.Score} enter_ai=0");
                 return;
             }
 
@@ -593,31 +588,33 @@ public sealed class AiSpeechCoordinator : IDisposable
             if (item == null)
             {
                 LogEventSkip("member", "null_item");
-                _log.AiInfo("AI_MEMBER_SKIP reason=null_item");
+                _log.AiInfo("WELCOME_TTS_SKIP reason=null_item");
                 return;
             }
 
+            _log.AiInfo(
+                $"WELCOME_EVENT_RECEIVED user={MaskId(item.UserId)} nick={item.Nickname} msgId={item.MsgId}");
             _log.AiInfo(
                 $"AI_MEMBER_RECEIVED user={MaskId(item.UserId)} nick={item.Nickname} msgId={item.MsgId}");
 
             if (!IsInteractionEnabled())
             {
                 LogEventSkip("member", "ai_disabled");
-                _log.AiInfo("AI_MEMBER_SKIP reason=ai_disabled");
+                _log.AiInfo("WELCOME_TTS_SKIP reason=ai_disabled");
                 return;
             }
 
             if (!Settings.WelcomeUser)
             {
                 LogEventSkip("member", "welcome_disabled");
-                _log.AiInfo("AI_MEMBER_SKIP reason=welcome_disabled");
+                _log.AiInfo("WELCOME_TTS_SKIP reason=welcome_disabled");
                 return;
             }
 
             if (!_welcomeBuffer.TryAdd(item.UserId, item.Nickname, NormalizePlatform(item.Platform, item.RoomKey), out var skipReason))
             {
                 LogEventSkip("member", skipReason);
-                _log.AiInfo($"AI_MEMBER_SKIP reason={skipReason}");
+                _log.AiInfo($"WELCOME_TTS_SKIP reason={skipReason}");
                 return;
             }
 
@@ -953,6 +950,7 @@ public sealed class AiSpeechCoordinator : IDisposable
                     : !Settings.WelcomeUser
                         ? "welcome_disabled"
                         : "empty_batch";
+                _log.AiInfo($"WELCOME_TTS_SKIP reason={reason}_at_flush");
                 _log.AiInfo($"AI_MEMBER_SKIP reason={reason}_at_flush");
                 LogEventSkip("member", reason + "_at_flush");
                 return;
@@ -973,6 +971,7 @@ public sealed class AiSpeechCoordinator : IDisposable
             };
             _log.AiInfo($"AI_MEMBER_FLUSH task={task.TaskId} platform={task.Platform} names={names}");
             _log.AiInfo($"AI_WELCOME_FLUSH task={task.TaskId} platform={task.Platform} names={names}");
+            _log.AiInfo($"WELCOME_TTS_ENQUEUE task={task.TaskId} names={names} queue={_scheduler.Count}");
             _metrics.NoteReceived();
             Enqueue(task);
             _log.AiInfo($"AI_MEMBER_ENQUEUE task={task.TaskId} queue={_scheduler.Count}");
@@ -1021,6 +1020,12 @@ public sealed class AiSpeechCoordinator : IDisposable
         _scheduler.Enqueue(task);
         var q = _scheduler.Count;
         _metrics.NoteQueueSize(q);
+        if (task.Kind == AiSpeechEventKind.Welcome)
+        {
+            _log.AiInfo(
+                $"WELCOME_TTS_ENQUEUE task={task.TaskId} queue={q}/{_scheduler.MaxSize} nick={task.Nickname}");
+        }
+
         _log.AiInfo(
             $"AI_QUEUE_ADD task={task.TaskId} kind={task.Kind} priority={task.Priority} queue={q}/{_scheduler.MaxSize} nick={task.Nickname}");
         _latestNickname = task.Nickname;
@@ -1196,6 +1201,11 @@ public sealed class AiSpeechCoordinator : IDisposable
         _latestNickname = task.Nickname;
         _latestContent = task.Content;
         _latestKind = task.Kind;
+        if (task.Kind == AiSpeechEventKind.Welcome)
+        {
+            _log.AiInfo($"WELCOME_TTS_PLAY start task={task.TaskId} nick={task.Nickname} queueWaitMs={queueWaitMs}");
+        }
+
         await _executionGate.WaitAsync(ct);
         var playCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         Volatile.Write(ref _activePlayCts, playCts);
@@ -1427,6 +1437,11 @@ public sealed class AiSpeechCoordinator : IDisposable
                 $"AI_SPEECH taskId={task.TaskId} kind={task.Kind} sourceMsgId={task.MsgId} queueWait={queueWaitMs} " +
                 $"generateMs={ollamaMs} ttsMs={ttsSw.ElapsedMilliseconds} " +
                 $"playMs={playSw.ElapsedMilliseconds} emotion={emotion.EmotionUsed} speed={speed} phase=Idle result=ok");
+            if (task.Kind == AiSpeechEventKind.Welcome)
+            {
+                _log.AiInfo(
+                    $"WELCOME_TTS_PLAY ok task={task.TaskId} playMs={playSw.ElapsedMilliseconds} nick={task.Nickname}");
+            }
 
             _lastPlayCompletedUtc = DateTime.UtcNow;
             Interlocked.Exchange(ref _lastTotalMs, totalSw.ElapsedMilliseconds);
@@ -1794,7 +1809,64 @@ public sealed class AiSpeechCoordinator : IDisposable
             $"AI_EVENT_RECEIVED event_type={eventType} buffered={(buffered ? 1 : 0)} enqueued={(enqueued ? 1 : 0)}");
     }
 
-    private bool IsSelfHostMessage(DanmakuItem item, string? roomOwnerNickname, string? loginNickname)
+    private bool ShouldExcludeAudienceMessage(
+        DanmakuItem item,
+        string? roomOwnerNickname,
+        string? loginNickname,
+        out string reason)
+    {
+        if (_audienceFilter != null)
+        {
+            var ctx = _audienceFilter.Snapshot(item.RoomKey);
+            if (string.Equals(item.Platform, "kuaishou", StringComparison.OrdinalIgnoreCase)
+                || KuaishouService.IsKuaishouRoom(item.RoomKey))
+            {
+                ctx = new ChatMessageFilterContext
+                {
+                    RoomOwnerUserId = ctx.RoomOwnerUserId,
+                    RoomOwnerNickname = ctx.RoomOwnerNickname,
+                    RoomKey = ctx.RoomKey,
+                    OutboundTracker = ctx.OutboundTracker
+                };
+            }
+            else if (!string.IsNullOrWhiteSpace(loginNickname) && !loginNickname.Equals("-", StringComparison.Ordinal))
+            {
+                ctx = new ChatMessageFilterContext
+                {
+                    LoginUserId = ctx.LoginUserId,
+                    LoginNickname = loginNickname.Trim(),
+                    RoomOwnerUserId = ctx.RoomOwnerUserId,
+                    RoomOwnerNickname = string.IsNullOrWhiteSpace(roomOwnerNickname)
+                        ? ctx.RoomOwnerNickname
+                        : roomOwnerNickname.Trim(),
+                    RoomKey = ctx.RoomKey,
+                    OutboundTracker = ctx.OutboundTracker
+                };
+            }
+
+            var result = ChatMessageFilter.Evaluate(item, ctx);
+            if (result.Excluded)
+            {
+                reason = result.Reason;
+                return true;
+            }
+        }
+        else if (IsSelfHostMessage(item, roomOwnerNickname, loginNickname))
+        {
+            reason = "host_or_login";
+            return true;
+        }
+        else if (_outboundTracker.MatchesTrackedMessageId(item.MsgId))
+        {
+            reason = "outbound_msg_id";
+            return true;
+        }
+
+        reason = "";
+        return false;
+    }
+
+    private static bool IsSelfHostMessage(DanmakuItem item, string? roomOwnerNickname, string? loginNickname)
     {
         var nick = item.Nickname?.Trim() ?? "";
         if (nick.Length == 0)

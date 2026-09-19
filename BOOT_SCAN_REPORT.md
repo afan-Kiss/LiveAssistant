@@ -13,7 +13,7 @@
 | 1 | LiveAssistant（点歌系统） | `E:\我的源码目录\抖音弹幕点歌系统` | 当前工作区；另有镜像目录 `E:\我的源码目录\LiveAssistant` |
 | 2 | 抖音 CDP 弹幕 | `E:\我的源码目录\抖音cdp弹幕` | Go 模块 `douyin-cdp-danmaku` |
 | 3 | 酷狗 API | `E:\我的源码目录\酷狗协议` | 实际入口为 `KgDesktop`（`酷狗api_v1.5.exe`） |
-| 4 | 猫眼票房助手 | `E:\我的源码目录\猫眼票房助手` | **未找到**名为 `douyin-maoyan-overlay` 的目录；对应此 Node 票房 API |
+| 4 | 猫眼票房 Overlay | `E:\我的源码目录\抖音直播24小时无人直播` | package=`douyin-maoyan-overlay`，产物 `MaoyanOverlay.exe`（含词云球） |
 
 ---
 
@@ -64,17 +64,20 @@
 | 依赖 | 同目录 `kgapijs\`（含 `app.js`） |
 | Python | **主路径不依赖 Python**（部分采样脚本可用 Python，非启动必需） |
 
-### 2.4 猫眼票房助手（用户所称 Overlay）
+### 2.4 猫眼票房 Overlay（douyin-maoyan-overlay）
 
 | 项 | 值 |
 |----|----|
-| 正式入口 | `dist\maoyan-box\start.bat` 或 `dist\猫眼票房助手\启动.bat` → `node index.js` |
-| 开发入口 | 源码根目录 `start.bat` / `npm start` |
-| 运行环境 | Node.js + Express + Playwright |
-| 端口 | `8765`（`config.ini` `[server] port=`） |
-| 健康检查 | `GET http://127.0.0.1:8765/health` |
-| 依赖 | Node、`node_modules`、Chrome（签名抓取） |
-| Electron | **无** Electron 构建；为 Node 终端服务，非独立 Overlay GUI |
+| 项目路径 | `E:\我的源码目录\抖音直播24小时无人直播`（package `douyin-maoyan-overlay`） |
+| 正式入口 | `dist\MaoyanOverlay-1.64.4.exe`（或同目录最新 `MaoyanOverlay*.exe`） |
+| 开发入口 | `start.bat` / `npm start`（Electron） |
+| 运行环境 | Electron + 内置猫眼 sidecar（Node/Playwright） |
+| 票房 API 端口 | `8765` → `GET /health` |
+| 管理后台端口 | `8780`（`overlay-settings.json` → `admin.port`） |
+| 进程名 | `MaoyanOverlay` |
+| 功能 | 票房展示 + 弹幕词云球 等 Overlay UI |
+
+说明：`E:\我的源码目录\猫眼票房助手` 是独立 Node API，**不是**直播 Overlay；启动器已改指向无人直播仓库中的 `MaoyanOverlay`。
 
 ---
 

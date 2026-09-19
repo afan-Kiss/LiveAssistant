@@ -78,7 +78,7 @@ internal static class Program
         var loginOk = ExtractJsonBool(body, "login_ok");
         Boot($"cdp health healthy={healthy} version={version} login_ok={loginOk?.ToString() ?? "-"} can_send={canSend?.ToString() ?? "-"}");
 
-        var minVersion = string.IsNullOrWhiteSpace(component.MinVersion) ? "1.2.1" : component.MinVersion.Trim();
+        var minVersion = string.IsNullOrWhiteSpace(component.MinVersion) ? "1.0.0" : component.MinVersion.Trim();
         var versionOk = healthy && IsVersionAtLeast(version, minVersion);
         var fieldsOk = canSend.HasValue; // 旧 1.1.0 没有 can_send
         var processOk = IsProcessRunning(component.ProcessNames);
@@ -220,7 +220,7 @@ internal static class Program
         var psi = new ProcessStartInfo
         {
             FileName = go,
-            Arguments = $"build -o \"{exePath}\" ./cmd/native",
+            Arguments = $"build -ldflags \"-H windowsgui\" -o \"{exePath}\" ./cmd/native",
             WorkingDirectory = sourceDir,
             UseShellExecute = false,
             RedirectStandardOutput = true,
@@ -577,7 +577,7 @@ internal static class Program
         var cdpExe = PreferCdpExe(cfg.DouyinCdp);
         cfg.DouyinCdp.SourceDir = cdpSource;
         cfg.DouyinCdp.Exe = cdpExe;
-        cfg.DouyinCdp.MinVersion = string.IsNullOrWhiteSpace(cfg.DouyinCdp.MinVersion) ? "1.2.1" : cfg.DouyinCdp.MinVersion;
+        cfg.DouyinCdp.MinVersion = string.IsNullOrWhiteSpace(cfg.DouyinCdp.MinVersion) ? "1.0.0" : cfg.DouyinCdp.MinVersion;
         cfg.DouyinCdp.GitCommit = TryReadGitHead(cdpSource);
         if (File.Exists(cdpExe))
         {
