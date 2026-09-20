@@ -264,14 +264,17 @@ public sealed class MovieInteractionService : IDisposable
         var resolved = ResolveMovie(movieQuery);
         if (resolved.Ambiguous)
         {
-            _log.Info($"[MOVIE_SCORE_PARSE] 电影名歧义 query={movieQuery} matches={resolved.MatchCount}，不消费积分");
+            _log.Info(
+                $"[MOVIE_SCORE_PARSE] 电影名歧义 query={movieQuery} matches={resolved.MatchCount} " +
+                $"matchType={resolved.MatchType}，不消费积分");
             TryEnqueueInvalidHint(item, "ambiguous");
             return false;
         }
 
         if (resolved.Entry == null)
         {
-            _log.Info($"[MOVIE_SCORE_PARSE] 未识别电影 query={movieQuery}，不消费积分");
+            _log.Info(
+                $"[MOVIE_SCORE_PARSE] 未识别电影 query={movieQuery} reason={resolved.FailReason}，不消费积分");
             TryEnqueueInvalidHint(item, "not_found");
             return false;
         }
@@ -380,17 +383,17 @@ public sealed class MovieInteractionService : IDisposable
         var now = DateTime.Now;
         var movies = (request.Movies ?? new List<MovieCatalogUpdateItem>())
             .Where(m => !string.IsNullOrWhiteSpace(m.MovieId) && !string.IsNullOrWhiteSpace(m.MovieName))
-            .Select(m => new MovieCatalogEntry
+            .Select(m =>
             {
-                MovieId = m.MovieId.Trim(),
-                MovieName = m.MovieName.Trim(),
-                Aliases = (m.Aliases ?? new List<string>())
-                    .Where(a => !string.IsNullOrWhiteSpace(a))
-                    .Select(a => a.Trim())
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToList(),
-                Rank = m.Rank,
-                UpdatedAt = now
+                var name = m.MovieName.Trim();
+                return new MovieCatalogEntry
+                {
+                    MovieId = m.MovieId.Trim(),
+                    MovieName = name,
+                    Aliases = MergeAliases(name, m.Aliases),
+                    Rank = m.Rank,
+                    UpdatedAt = now
+                };
             })
             .ToList();
 
@@ -477,55 +480,373 @@ public sealed class MovieInteractionService : IDisposable
         };
     }
 
-    public (MovieCatalogEntry? Entry, bool Ambiguous, int MatchCount) ResolveMovie(string query)
+    public MovieResolveResult ResolveMovie(string query)
     {
         var catalog = _repo.GetCatalog();
-        if (catalog.Count == 0 || string.IsNullOrWhiteSpace(query))
+        var rawQuery = (query ?? "").Trim();
+        if (catalog.Count == 0)
         {
-            return (null, false, 0);
+            LogResolveFailure(rawQuery, 0, "empty_catalog", catalog);
+            return MovieResolveResult.Fail("empty_catalog");
         }
 
-        var q = NormalizeName(query);
-        if (q.Length == 0)
+        if (string.IsNullOrWhiteSpace(rawQuery))
         {
-            return (null, false, 0);
+            LogResolveFailure(rawQuery, catalog.Count, "empty_query", catalog);
+            return MovieResolveResult.Fail("empty_query");
         }
 
-        var matches = new List<MovieCatalogEntry>();
+        // 1) movieId 精准匹配
+        var idHits = catalog
+            .Where(m => m.MovieId.Equals(rawQuery, StringComparison.OrdinalIgnoreCase))
+            .GroupBy(m => m.MovieId, StringComparer.Ordinal)
+            .Select(g => g.First())
+            .ToList();
+        if (idHits.Count == 1)
+        {
+            return LogResolveSuccess(rawQuery, idHits[0], "movieId");
+        }
+
+        if (idHits.Count > 1)
+        {
+            LogResolveFailure(rawQuery, catalog.Count, "ambiguous_movieId", catalog, idHits.Count);
+            return MovieResolveResult.AmbiguousResult(idHits.Count, "movieId");
+        }
+
+        var qNorm = NormalizeName(rawQuery);
+        if (qNorm.Length == 0)
+        {
+            LogResolveFailure(rawQuery, catalog.Count, "empty_normalized_query", catalog);
+            return MovieResolveResult.Fail("empty_normalized_query");
+        }
+
+        // 2) alias 精准匹配（去符号后相等）
+        var aliasHits = FindExactAliasMatches(catalog, qNorm);
+        if (aliasHits.Count == 1)
+        {
+            return LogResolveSuccess(rawQuery, aliasHits[0], "alias");
+        }
+
+        if (aliasHits.Count > 1)
+        {
+            LogResolveFailure(rawQuery, catalog.Count, "ambiguous_alias", catalog, aliasHits.Count);
+            return MovieResolveResult.AmbiguousResult(aliasHits.Count, "alias");
+        }
+
+        // 3) movieName 精准匹配（原始去空白后忽略大小写）
+        var nameExactHits = catalog
+            .Where(m => m.MovieName.Trim().Equals(rawQuery, StringComparison.OrdinalIgnoreCase))
+            .GroupBy(m => m.MovieId, StringComparer.Ordinal)
+            .Select(g => g.First())
+            .ToList();
+        if (nameExactHits.Count == 1)
+        {
+            return LogResolveSuccess(rawQuery, nameExactHits[0], "movieName");
+        }
+
+        if (nameExactHits.Count > 1)
+        {
+            LogResolveFailure(rawQuery, catalog.Count, "ambiguous_movieName", catalog, nameExactHits.Count);
+            return MovieResolveResult.AmbiguousResult(nameExactHits.Count, "movieName");
+        }
+
+        // 4) 去除符号后匹配（片名规范化相等，或规范化后的自动拆片段相等）
+        var strippedHits = FindNormalizedExactMatches(catalog, qNorm);
+        if (strippedHits.Count == 1)
+        {
+            return LogResolveSuccess(rawQuery, strippedHits[0], "normalized");
+        }
+
+        if (strippedHits.Count > 1)
+        {
+            LogResolveFailure(rawQuery, catalog.Count, "ambiguous_normalized", catalog, strippedHits.Count);
+            return MovieResolveResult.AmbiguousResult(strippedHits.Count, "normalized");
+        }
+
+        // 5) 包含关系（最后手段）：仅「片名包含查询」，且唯一；禁止查询包含片名（避免「奥德赛续集」误中「奥德赛」）
+        var containHits = FindSafeContainmentMatches(catalog, qNorm);
+        if (containHits.Count == 1)
+        {
+            return LogResolveSuccess(rawQuery, containHits[0], "contains");
+        }
+
+        if (containHits.Count > 1)
+        {
+            LogResolveFailure(rawQuery, catalog.Count, "ambiguous_contains", catalog, containHits.Count);
+            return MovieResolveResult.AmbiguousResult(containHits.Count, "contains");
+        }
+
+        LogResolveFailure(rawQuery, catalog.Count, "not_found", catalog);
+        return MovieResolveResult.Fail("not_found");
+    }
+
+    private MovieResolveResult LogResolveSuccess(string query, MovieCatalogEntry entry, string matchType)
+    {
+        _log.Info(
+            $"[MOVIE_RESOLVE_SUCCESS] query={Truncate(query, 80)} movieId={entry.MovieId} " +
+            $"movieName={Truncate(entry.MovieName, 80)} matchType={matchType}");
+        return MovieResolveResult.Ok(entry, matchType);
+    }
+
+    private void LogResolveFailure(
+        string query,
+        int catalogCount,
+        string reason,
+        IReadOnlyList<MovieCatalogEntry> catalog,
+        int matchCount = 0)
+    {
+        var preview = string.Join(
+            " | ",
+            catalog
+                .OrderBy(m => m.Rank <= 0 ? int.MaxValue : m.Rank)
+                .ThenBy(m => m.MovieName, StringComparer.Ordinal)
+                .Take(10)
+                .Select(m =>
+                {
+                    var aliasPreview = string.Join(",", (m.Aliases ?? new List<string>()).Take(3));
+                    return $"{m.Rank}:{m.MovieId}:{Truncate(m.MovieName, 24)}" +
+                           (string.IsNullOrWhiteSpace(aliasPreview) ? "" : $"[{aliasPreview}]");
+                }));
+        _log.Info(
+            $"[MOVIE_RESOLVE_FAIL] query={Truncate(query, 80)} count={catalogCount} " +
+            $"reason={reason} matchCount={matchCount} candidates=[{preview}]");
+    }
+
+    private static List<MovieCatalogEntry> FindExactAliasMatches(
+        IReadOnlyList<MovieCatalogEntry> catalog,
+        string normalizedQuery)
+    {
+        var hits = new List<MovieCatalogEntry>();
         foreach (var m in catalog)
         {
-            if (NamesMatch(NormalizeName(m.MovieName), q))
-            {
-                matches.Add(m);
-                continue;
-            }
-
             foreach (var alias in m.Aliases ?? new List<string>())
             {
-                if (NamesMatch(NormalizeName(alias), q))
+                if (NormalizeName(alias).Equals(normalizedQuery, StringComparison.Ordinal))
                 {
-                    matches.Add(m);
+                    hits.Add(m);
                     break;
                 }
             }
         }
 
-        matches = matches
+        return DedupByMovieId(hits);
+    }
+
+    private static List<MovieCatalogEntry> FindNormalizedExactMatches(
+        IReadOnlyList<MovieCatalogEntry> catalog,
+        string normalizedQuery)
+    {
+        var hits = new List<MovieCatalogEntry>();
+        foreach (var m in catalog)
+        {
+            var nameNorm = NormalizeName(m.MovieName);
+            if (nameNorm.Equals(normalizedQuery, StringComparison.Ordinal))
+            {
+                hits.Add(m);
+                continue;
+            }
+
+            // 去符号后，片名拆分段与查询相等（覆盖「杀死比尔：血色全传」↔「杀死比尔」在 aliases 未落库时的兜底）
+            foreach (var part in ExpandTitleParts(m.MovieName))
+            {
+                if (NormalizeName(part).Equals(normalizedQuery, StringComparison.Ordinal))
+                {
+                    hits.Add(m);
+                    break;
+                }
+            }
+        }
+
+        return DedupByMovieId(hits);
+    }
+
+    private static List<MovieCatalogEntry> FindSafeContainmentMatches(
+        IReadOnlyList<MovieCatalogEntry> catalog,
+        string normalizedQuery)
+    {
+        // 短查询太容易误伤，至少 2 字；更长查询才允许子串包含
+        if (normalizedQuery.Length < 2)
+        {
+            return new List<MovieCatalogEntry>();
+        }
+
+        var hits = new List<(MovieCatalogEntry Entry, int Score)>();
+        foreach (var m in catalog)
+        {
+            var nameNorm = NormalizeName(m.MovieName);
+            if (nameNorm.Length == 0)
+            {
+                continue;
+            }
+
+            // 禁止反向包含：查询更长且包含片名时不匹配
+            if (normalizedQuery.Length > nameNorm.Length
+                && normalizedQuery.Contains(nameNorm, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (!nameNorm.Contains(normalizedQuery, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            // 覆盖率：查询占片名比例越高越可信；过短子串相对长片名时丢弃
+            var coverage = (double)normalizedQuery.Length / nameNorm.Length;
+            if (normalizedQuery.Length < 3 && coverage < 0.5)
+            {
+                continue;
+            }
+
+            if (coverage < 0.25 && normalizedQuery.Length < 4)
+            {
+                continue;
+            }
+
+            hits.Add((m, normalizedQuery.Length));
+        }
+
+        if (hits.Count == 0)
+        {
+            return new List<MovieCatalogEntry>();
+        }
+
+        // 多部电影同时包含同一查询时：取查询覆盖更长者；仍并列则歧义
+        var bestLen = hits.Max(h => h.Score);
+        var best = hits.Where(h => h.Score == bestLen).Select(h => h.Entry).ToList();
+        return DedupByMovieId(best);
+    }
+
+    private static List<MovieCatalogEntry> DedupByMovieId(List<MovieCatalogEntry> hits)
+        => hits
             .GroupBy(m => m.MovieId, StringComparer.Ordinal)
             .Select(g => g.First())
             .ToList();
 
-        if (matches.Count == 0)
+    /// <summary>
+    /// 合并客户端别名与由片名自动拆出的别名；不改写原始 movieName。
+    /// </summary>
+    internal static List<string> MergeAliases(string movieName, IEnumerable<string>? provided)
+    {
+        var result = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void Add(string? value)
         {
-            return (null, false, 0);
+            var v = (value ?? "").Trim();
+            if (v.Length == 0)
+            {
+                return;
+            }
+
+            // 不把完整原名再塞进 aliases
+            if (v.Equals(movieName.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            if (seen.Add(v))
+            {
+                result.Add(v);
+            }
         }
 
-        if (matches.Count > 1)
+        foreach (var a in provided ?? Array.Empty<string>())
         {
-            return (null, true, matches.Count);
+            Add(a);
         }
 
-        return (matches[0], false, 1);
+        foreach (var part in ExpandTitleParts(movieName))
+        {
+            Add(part);
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// 从正式片名拆出可检索片段：冒号前后、空格分段、去括号后的主干等。
+    /// </summary>
+    internal static IEnumerable<string> ExpandTitleParts(string movieName)
+    {
+        var name = (movieName ?? "").Trim();
+        if (name.Length == 0)
+        {
+            yield break;
+        }
+
+        yield return StripBracketSegments(name);
+
+        foreach (var piece in SplitTitleDelimiters(name))
+        {
+            yield return piece;
+            yield return StripBracketSegments(piece);
+        }
+
+        // 去括号后的主干再按分隔符拆一次
+        var stripped = StripBracketSegments(name);
+        if (!stripped.Equals(name, StringComparison.Ordinal))
+        {
+            foreach (var piece in SplitTitleDelimiters(stripped))
+            {
+                yield return piece;
+            }
+        }
+    }
+
+    private static IEnumerable<string> SplitTitleDelimiters(string name)
+    {
+        var parts = name.Split(
+            new[] { '：', ':', ' ', '\t', '/', '／', '|', '｜' },
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        foreach (var p in parts)
+        {
+            if (p.Length > 0)
+            {
+                yield return p;
+            }
+        }
+    }
+
+    /// <summary>去掉 （）()【】[]《》 及其内部内容，保留主干。</summary>
+    internal static string StripBracketSegments(string name)
+    {
+        var text = name ?? "";
+        if (text.Length == 0)
+        {
+            return "";
+        }
+
+        Span<char> buffer = text.Length <= 128 ? stackalloc char[text.Length] : new char[text.Length];
+        var n = 0;
+        var depth = 0;
+        foreach (var c in text)
+        {
+            if (c is '(' or '（' or '[' or '【' or '《')
+            {
+                depth++;
+                continue;
+            }
+
+            if (c is ')' or '）' or ']' or '】' or '》')
+            {
+                if (depth > 0)
+                {
+                    depth--;
+                }
+
+                continue;
+            }
+
+            if (depth > 0)
+            {
+                continue;
+            }
+
+            buffer[n++] = c;
+        }
+
+        return n == 0 ? "" : new string(buffer[..n]).Trim();
     }
 
     private void TryEnqueueGiftScoreGuide(GiftEvent gift, string? movieHint = null)
@@ -871,8 +1192,8 @@ public sealed class MovieInteractionService : IDisposable
         return n == 0 ? "" : new string(buffer[..n]);
     }
 
-    /// <summary>片名模糊匹配：去标点空格后相等，或榜单名以查询为前缀（查询至少 2 字）。</summary>
-    private static bool NamesMatch(string normalizedCatalogName, string normalizedQuery)
+    /// <summary>片名模糊匹配：去标点空格后相等，或榜单名以查询为前缀（查询至少 2 字）。保留供单测/兼容。</summary>
+    internal static bool NamesMatch(string normalizedCatalogName, string normalizedQuery)
     {
         if (normalizedCatalogName.Length == 0 || normalizedQuery.Length == 0)
         {

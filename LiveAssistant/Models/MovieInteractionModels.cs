@@ -83,3 +83,41 @@ public sealed class MovieCatalogUpdateItem
     public List<string>? Aliases { get; set; }
     public int Rank { get; set; }
 }
+
+/// <summary>ResolveMovie 结果：含匹配类型与失败原因，供日志与调用方使用。</summary>
+public sealed class MovieResolveResult
+{
+    public MovieCatalogEntry? Entry { get; init; }
+    public bool Ambiguous { get; init; }
+    public int MatchCount { get; init; }
+    public string MatchType { get; init; } = "";
+    public string FailReason { get; init; } = "";
+
+    public static MovieResolveResult Ok(MovieCatalogEntry entry, string matchType)
+        => new()
+        {
+            Entry = entry,
+            Ambiguous = false,
+            MatchCount = 1,
+            MatchType = matchType
+        };
+
+    public static MovieResolveResult AmbiguousResult(int matchCount, string matchType)
+        => new()
+        {
+            Entry = null,
+            Ambiguous = true,
+            MatchCount = matchCount,
+            MatchType = matchType,
+            FailReason = "ambiguous"
+        };
+
+    public static MovieResolveResult Fail(string reason)
+        => new()
+        {
+            Entry = null,
+            Ambiguous = false,
+            MatchCount = 0,
+            FailReason = reason
+        };
+}

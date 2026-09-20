@@ -617,6 +617,98 @@ public sealed class MovieInteractionTests : IDisposable
         Assert.Equal(15, doc.RootElement.GetProperty("creditExpireMinutes").GetInt32());
     }
 
+    [Fact]
+    public void ResolveMovie_SubtitleAndMainTitle_MatchKillBill()
+    {
+        _svc.UpdateCatalog(new MovieCatalogUpdateRequest
+        {
+            Movies =
+            [
+                new MovieCatalogUpdateItem
+                {
+                    MovieId = "75313",
+                    MovieName = "杀死比尔：血色全传",
+                    Aliases = [],
+                    Rank = 7
+                },
+                new MovieCatalogUpdateItem
+                {
+                    MovieId = "1500469",
+                    MovieName = "功夫女足",
+                    Rank = 1
+                }
+            ]
+        });
+
+        var stored = _svc.Repository.GetCatalog().Single(m => m.MovieId == "75313");
+        Assert.Contains("杀死比尔", stored.Aliases);
+        Assert.Contains("血色全传", stored.Aliases);
+
+        var bySub = _svc.ResolveMovie("血色全传");
+        Assert.False(bySub.Ambiguous);
+        Assert.NotNull(bySub.Entry);
+        Assert.Equal("75313", bySub.Entry!.MovieId);
+        Assert.Equal("alias", bySub.MatchType);
+
+        var byMain = _svc.ResolveMovie("杀死比尔");
+        Assert.False(byMain.Ambiguous);
+        Assert.NotNull(byMain.Entry);
+        Assert.Equal("75313", byMain.Entry!.MovieId);
+        Assert.Equal("alias", byMain.MatchType);
+
+        var byFull = _svc.ResolveMovie("杀死比尔：血色全传");
+        Assert.False(byFull.Ambiguous);
+        Assert.NotNull(byFull.Entry);
+        Assert.Equal("75313", byFull.Entry!.MovieId);
+        Assert.True(byFull.MatchType is "movieName" or "normalized");
+
+        var missing = _svc.ResolveMovie("不存在的电影名");
+        Assert.Null(missing.Entry);
+        Assert.False(missing.Ambiguous);
+        Assert.Equal("not_found", missing.FailReason);
+    }
+
+    [Fact]
+    public void ScoreDanmaku_SubtitleAlias_AppliesToKillBill()
+    {
+        _svc.UpdateCatalog(new MovieCatalogUpdateRequest
+        {
+            Movies =
+            [
+                new MovieCatalogUpdateItem
+                {
+                    MovieId = "75313",
+                    MovieName = "杀死比尔：血色全传",
+                    Aliases = [],
+                    Rank = 7
+                }
+            ]
+        });
+
+        var now = DateTime.Now;
+        Assert.True(_svc.OnGiftReceived(Gift("kb1", "u1", 1, now)));
+        Assert.True(Apply("u1", "血色全传 好看", now.AddSeconds(1), "kb-sub"));
+        Assert.Equal(10, _svc.Repository.GetTotalScore("75313"));
+        AssertVoterCounts("75313", score: 10, good: 1, bad: 0);
+
+        Assert.True(_svc.OnGiftReceived(Gift("kb2", "u2", 1, now.AddSeconds(2))));
+        Assert.True(Apply("u2", "杀死比尔 好看", now.AddSeconds(3), "kb-main"));
+        AssertVoterCounts("75313", score: 20, good: 2, bad: 0);
+    }
+
+    [Fact]
+    public void ExpandTitleParts_SplitsColonAndStripsBrackets()
+    {
+        var parts = MovieInteractionService.ExpandTitleParts("杀死比尔：血色全传").ToList();
+        Assert.Contains("杀死比尔", parts);
+        Assert.Contains("血色全传", parts);
+
+        var merged = MovieInteractionService.MergeAliases("电影名（导演剪辑版）", ["官方别名"]);
+        Assert.Contains("官方别名", merged);
+        Assert.Contains("电影名", merged);
+        Assert.DoesNotContain("电影名（导演剪辑版）", merged);
+    }
+
     [Theory]
     [InlineData("/api/movie-interaction/health")]
     [InlineData("/api/movie-interaction/movies")]
