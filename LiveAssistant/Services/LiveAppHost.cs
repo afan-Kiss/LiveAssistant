@@ -179,7 +179,7 @@ public sealed class LiveAppHost : IDisposable
         var songBlacklist = new SongBlacklistService(_songBlacklistRepo);
         _userLevel = new UserLevelService(_config, _users);
         _health = new LiveHealthService();
-        _songRequestControl = new SongRequestControlService(_config, _users);
+        _songRequestControl = new SongRequestControlService(_config, _users, _settingsStore);
         _userDetail = new UserDetailService(_users, _giftRepo, pointsLedgerRepo);
         _templatePreview = new ReplyTemplatePreviewService(_config, _replyTemplateRepo, _reply);
         _permission = new SongRequestPermissionService(
@@ -205,7 +205,7 @@ public sealed class LiveAppHost : IDisposable
             _permission.RefundQueueItemIfNeeded(id, reason);
 
         _adminTunnel = new AdminTunnelService(_config, _log, _system);
-        _aiSpeech = new AiSpeechCoordinator(_config, _log, _outboundTracker, audienceFilter);
+        _aiSpeech = new AiSpeechCoordinator(_config, _log, _outboundTracker, audienceFilter, _playback);
         _aiSpeech.StatusChanged += () => NotifyStateChanged();
         _machineSetup = new MachineSetupService(_config, _log, _playback, _aiSpeech);
         _movieInteraction = new MovieInteractionService(_config, _db, _log, _replyQueue, audienceFilter);

@@ -43,8 +43,18 @@ public sealed class WelcomeService
             return;
         }
 
-        // 进房仅走 AI 语音欢迎（AiSpeechCoordinator），不再发送 @ 欢迎弹幕，避免出站回显污染词云/AI。
+        var template = _config.Settings.Welcome.Template;
+        var msg = !string.IsNullOrWhiteSpace(template)
+            ? template.Replace("{name}", item.Nickname, StringComparison.OrdinalIgnoreCase)
+            : _reply.Render("welcome", new Dictionary<string, string> { ["name"] = item.Nickname });
+
+        if (string.IsNullOrWhiteSpace(msg))
+        {
+            msg = $"欢迎 {item.Nickname} 来到直播间";
+        }
+
+        _replyQueue.EnqueueMention(webRid, item.UserId, msg, nickname: item.Nickname);
         _cooldown.RecordWelcome(item.UserId);
-        _system.Add($"进房: {item.Nickname}（AI语音欢迎）");
+        _system.Add($"欢迎: {item.Nickname}");
     }
 }

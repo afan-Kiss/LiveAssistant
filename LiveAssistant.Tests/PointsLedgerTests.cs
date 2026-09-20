@@ -96,15 +96,15 @@ public sealed class PointsLedgerTests : IDisposable
     }
 
     [Fact]
-    public void PointsQuery_IncludesRecentLedgerDetails()
+    public void PointsQuery_OldTemplateWithDetails_DoesNotLeakPlaceholder()
     {
         _users.EnsureUser("u1", "测试");
-        _users.AddPoints("u1", "测试", 100);
-        _users.TryDeductPoints("u1", "测试", 10, PointsTransactionType.SongRequest, "点歌扣积分", "1", out _);
+        _users.AddPoints("u1", "测试", 50);
+        _users.SetLevel("u1", 2);
 
         var config = new ConfigManager();
         config.Load();
-        config.ReplyTemplates["pointsQuery"] = "积分 {score} Lv{level} 明细:{details}";
+        config.ReplyTemplates["pointsQuery"] = "积分 {score} Lv{level} 最近：{details}";
 
         var sent = new List<string>();
         var replyQueue = new ReplyQueue(
@@ -118,7 +118,45 @@ public sealed class PointsLedgerTests : IDisposable
             });
 
         var svc = new PointsQueryService(_users, _ledger);
-        svc.TryHandle(new DanmakuItem { UserId = "u1", Nickname = "测试", Content = "查积分" },
+        svc.TryHandle(new DanmakuItem { UserId = "u1", Nickname = "测试", Content = "查我" },
+            "room1", new ReplyService(config), replyQueue);
+
+        for (var i = 0; i < 20 && sent.Count == 0; i++)
+        {
+            Thread.Sleep(50);
+        }
+
+        Assert.Single(sent);
+        Assert.Contains("50", sent[0]);
+        Assert.DoesNotContain("{details}", sent[0]);
+        Assert.DoesNotContain("礼物", sent[0]);
+    }
+
+    [Fact]
+    public void PointsQuery_OnlyShowsScoreAndLevel()
+    {
+        _users.EnsureUser("u1", "测试");
+        _users.AddPoints("u1", "测试", 100);
+        _users.TryDeductPoints("u1", "测试", 10, PointsTransactionType.SongRequest, "点歌扣积分", "1", out _);
+        _users.SetLevel("u1", 4);
+
+        var config = new ConfigManager();
+        config.Load();
+        config.ReplyTemplates["pointsQuery"] = "积分 {score} Lv{level}";
+
+        var sent = new List<string>();
+        var replyQueue = new ReplyQueue(
+            new DouyinService(config.Settings.Douyin, new LogService(_dir)),
+            new LogService(_dir),
+            config.Settings.Reply,
+            sendMention: (_, _, content, _, _) =>
+            {
+                sent.Add(content);
+                return Task.FromResult(new MentionSendResult { Ok = true });
+            });
+
+        var svc = new PointsQueryService(_users, _ledger);
+        svc.TryHandle(new DanmakuItem { UserId = "u1", Nickname = "测试", Content = "查我" },
             "room1", new ReplyService(config), replyQueue);
 
         for (var i = 0; i < 20 && sent.Count == 0; i++)
@@ -128,7 +166,9 @@ public sealed class PointsLedgerTests : IDisposable
 
         Assert.Single(sent);
         Assert.Contains("90", sent[0]);
-        Assert.Contains("-10", sent[0]);
+        Assert.Contains("Lv4", sent[0]);
+        Assert.DoesNotContain("礼物", sent[0]);
+        Assert.DoesNotContain("点歌", sent[0]);
     }
 
     [Fact]

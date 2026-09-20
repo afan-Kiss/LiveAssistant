@@ -120,7 +120,7 @@ public sealed class MovieInteractionService : IDisposable
         }
 
         var expireSeconds = Math.Max(30, _config.Settings.MovieInteraction.CreditExpireSeconds);
-        // 3 分钟有效期从本机成功登记 credit 起算，不用平台 gift.Time 当过期起点
+        // 有效期从本机成功登记 credit 起算，不用平台 gift.Time 当过期起点
         var receivedAt = Now();
         var credit = new MovieScoreCredit
         {
@@ -179,6 +179,11 @@ public sealed class MovieInteractionService : IDisposable
             return;
         }
 
+        var createdAt = item.Timestamp == default ? DateTime.Now : item.Timestamp;
+
+        // 评分旁路优先：即使后续被词云/机器人过滤，送礼观众的评分指令仍应处理
+        TryApplyScoreFromDanmaku(item, content, createdAt);
+
         var ctx = _audienceFilter?.Snapshot(item.RoomKey) ?? new ChatMessageFilterContext();
         var classification = ChatMessageFilter.Classify(item, ctx);
         if (classification.Kind is ChatMessageKind.SystemMessage
@@ -190,8 +195,6 @@ public sealed class MovieInteractionService : IDisposable
                 $"kind={classification.Kind} reason={classification.Reason}");
             return;
         }
-
-        var createdAt = item.Timestamp == default ? DateTime.Now : item.Timestamp;
 
         if (classification.Kind == ChatMessageKind.NormalChat)
         {
@@ -220,16 +223,21 @@ public sealed class MovieInteractionService : IDisposable
                 $"[WORD_CLOUD_SKIP] msgId={item.MsgId} userId={item.UserId} " +
                 $"kind={classification.Kind} reason={classification.Reason} content={Truncate(content, 40)}");
         }
-
-        TryApplyScoreFromDanmaku(item, content, createdAt);
     }
 
     public bool TryApplyScoreFromDanmaku(DanmakuItem item, string? contentOverride = null, DateTime? nowOverride = null)
     {
         var content = (contentOverride ?? item.Content ?? "").Trim();
         var now = nowOverride ?? DateTime.Now;
-        _log.Info(
-            $"[MOVIE_SCORE_PARSE_INPUT] msgId={item.MsgId} userId={item.UserId} content={Truncate(content, 80)}");
+
+        if (_audienceFilter != null)
+        {
+            var filter = _audienceFilter.Evaluate(item);
+            if (filter.Excluded && filter.Reason is "outbound_msg_id" or "outbound_content" or "bot_template")
+            {
+                return false;
+            }
+        }
 
         if (!TryParseScoreDanmaku(content, out var movieQuery, out var actionRaw))
         {
@@ -244,8 +252,8 @@ public sealed class MovieInteractionService : IDisposable
         }
 
         _log.Info(
-            $"[MOVIE_SCORE_PARSE_RESULT] msgId={item.MsgId} userId={item.UserId} " +
-            $"query={movieQuery} action={action} standalone={standalone}");
+            $"[MOVIE_SCORE_PARSE] msgId={item.MsgId} userId={item.UserId} " +
+            $"content={Truncate(content, 80)} query={movieQuery} action={action} standalone={standalone}");
 
         if (string.IsNullOrWhiteSpace(movieQuery))
         {
@@ -354,13 +362,16 @@ public sealed class MovieInteractionService : IDisposable
     public object GetHealth()
     {
         var now = DateTime.Now;
+        var creditExpireSeconds = Math.Max(30, _config.Settings.MovieInteraction.CreditExpireSeconds);
         return new
         {
             ok = true,
             enabled = _config.Settings.MovieInteraction.Enabled,
             movieCount = _repo.CountCatalog(),
             pendingCreditCount = _repo.CountPendingCredits(now),
-            pendingUploadCount = _repo.CountPendingUploads()
+            pendingUploadCount = _repo.CountPendingUploads(),
+            creditExpireSeconds,
+            creditExpireMinutes = Math.Max(1, creditExpireSeconds / 60)
         };
     }
 
@@ -475,10 +486,15 @@ public sealed class MovieInteractionService : IDisposable
         }
 
         var q = NormalizeName(query);
+        if (q.Length == 0)
+        {
+            return (null, false, 0);
+        }
+
         var matches = new List<MovieCatalogEntry>();
         foreach (var m in catalog)
         {
-            if (NormalizeName(m.MovieName) == q)
+            if (NamesMatch(NormalizeName(m.MovieName), q))
             {
                 matches.Add(m);
                 continue;
@@ -486,7 +502,7 @@ public sealed class MovieInteractionService : IDisposable
 
             foreach (var alias in m.Aliases ?? new List<string>())
             {
-                if (NormalizeName(alias) == q)
+                if (NamesMatch(NormalizeName(alias), q))
                 {
                     matches.Add(m);
                     break;
@@ -633,8 +649,8 @@ public sealed class MovieInteractionService : IDisposable
         {
             "ambiguous" => "电影名不够明确，请发送完整片名 + 好看/不好看",
             "not_found" => "没找到这部电影，请使用榜单上的电影名 + 好看/不好看",
-            "expired" => $"这次评分资格已过期，送礼后可重新获得{minutes}分钟评分机会",
-            _ => $"暂无评分机会，送礼后可获得{minutes}分钟电影评分资格～"
+            "expired" => $"这次评分资格已过期，请先送礼再评分～送礼后{minutes}分钟内有效",
+            _ => $"你还没有送礼，需要先送礼才能评分哦～送礼后{minutes}分钟内可发「电影名 好看/不好看」"
         };
         msg = ClampDanmaku(msg);
 
@@ -828,7 +844,59 @@ public sealed class MovieInteractionService : IDisposable
     }
 
     private static string NormalizeName(string name)
-        => (name ?? "").Replace(" ", "", StringComparison.Ordinal).Trim();
+    {
+        var text = (name ?? "").Trim();
+        if (text.Length == 0)
+        {
+            return "";
+        }
+
+        Span<char> buffer = text.Length <= 128 ? stackalloc char[text.Length] : new char[text.Length];
+        var n = 0;
+        foreach (var c in text)
+        {
+            if (c is ' ' or '\t' or '\r' or '\n')
+            {
+                continue;
+            }
+
+            if (IsIgnorableMovieNamePunctuation(c))
+            {
+                continue;
+            }
+
+            buffer[n++] = c;
+        }
+
+        return n == 0 ? "" : new string(buffer[..n]);
+    }
+
+    /// <summary>片名模糊匹配：去标点空格后相等，或榜单名以查询为前缀（查询至少 2 字）。</summary>
+    private static bool NamesMatch(string normalizedCatalogName, string normalizedQuery)
+    {
+        if (normalizedCatalogName.Length == 0 || normalizedQuery.Length == 0)
+        {
+            return false;
+        }
+
+        if (normalizedCatalogName.Equals(normalizedQuery, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        // 观众常漏打标点/尾字：榜单名以查询开头（至少 2 字）。禁止反向前缀，避免「奥德赛续集」误中「奥德赛」
+        if (normalizedQuery.Length >= 2
+            && normalizedCatalogName.StartsWith(normalizedQuery, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsIgnorableMovieNamePunctuation(char c)
+        => c is '!' or '！' or ':' or '：' or '?' or '？' or '.' or '。' or ',' or '，' or '、'
+            or '…' or '·' or '•' or '-' or '—' or '–' or '/' or '／' or '~' or '～';
 
     private async Task CleanupLoopAsync(CancellationToken ct)
     {

@@ -19,7 +19,7 @@
   "banVotePassed": "已被投票禁言",
   "banVoteProgress": "已投票禁言 {target}，当前 {count}/{required} 票",
   "giftThanks": "感谢送出 {gift}×{count}",
-  "pointsQuery": "你当前有 {score} 积分，等级 Lv{level}。最近：{details}",
+  "pointsQuery": "你当前有 {score} 积分，等级 Lv{level}",
   "songRequestInsufficientPoints": "点歌需要 {cost} 积分，你当前只有 {score} 积分，已取消入队",
   "songResolveFailed": "《{song}》播放地址获取失败，请稍后重试或换一首歌",
   "songPreviewOnly": "《{song}》仅试听版，需完整版，请稍后重试或换一首歌",

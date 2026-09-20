@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "LiveAssistant": {
+      "commandName": "Project",
+      "environmentVariables": {
+        "LA_DATA_DIR": "..\\..\\data"
+      }
+    }
+  }
+}

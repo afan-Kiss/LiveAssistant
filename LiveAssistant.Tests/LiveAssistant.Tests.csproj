@@ -18,4 +18,8 @@
     <ProjectReference Include="..\LiveAssistant\LiveAssistant.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Include="..\LiveAssistant\Admin\AdminWebHost.cs" Link="repo-snapshots\AdminWebHost.cs" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

@@ -44,6 +44,28 @@ public static class EmotionPresets
     public static bool IsConfigured(string emotionId, string? voice = "my_voice")
         => FindReferWav(NormalizeId(emotionId), voice) != null;
 
+    /// <summary>返回首选落盘路径（用于 UI 提示）。</summary>
+    public static string GetExpectedReferPath(string emotionId, string? voice = "my_voice")
+    {
+        emotionId = NormalizeId(emotionId);
+        voice = string.IsNullOrWhiteSpace(voice) ? "my_voice" : voice.Trim();
+        foreach (var dir in CandidateDirs(voice))
+        {
+            if (Directory.Exists(dir))
+            {
+                return Path.Combine(dir, $"{emotionId}.wav");
+            }
+        }
+
+        var ttsRoot = ResolveGptSovitsRoot();
+        if (ttsRoot != null)
+        {
+            return Path.Combine(ttsRoot, "voices", voice, "reference", $"{emotionId}.wav");
+        }
+
+        return Path.Combine(AppPaths.ResolveDataDirectory(), "AiSpeech", "emotions", $"{emotionId}.wav");
+    }
+
     public static string? FindReferWav(string emotionId, string? voice = "my_voice")
     {
         emotionId = NormalizeId(emotionId);
@@ -81,6 +103,31 @@ public static class EmotionPresets
         yield return Path.Combine(exe, "Config", "AiSpeech", "emotions");
         yield return Path.Combine(AppPaths.ConfigDirectory, "AiSpeech", "emotions");
         yield return Path.Combine(AppPaths.ResolveDataDirectory(), "AiSpeech", "emotions");
+
+        var ttsRoot = ResolveGptSovitsRoot();
+        if (ttsRoot != null)
+        {
+            yield return Path.Combine(ttsRoot, "voices", voice, "reference");
+            yield return Path.Combine(ttsRoot, "voices", voice, "reference_audio");
+            yield return Path.Combine(ttsRoot, "voices", voice, "emotions");
+        }
+    }
+
+    private static string? ResolveGptSovitsRoot()
+    {
+        foreach (var d in new[]
+                 {
+                     @"E:\AI\GPT-SoVITS",
+                     Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "GPT-SoVITS")
+                 })
+        {
+            if (Directory.Exists(d) && File.Exists(Path.Combine(d, "service", "main.py")))
+            {
+                return d;
+            }
+        }
+
+        return null;
     }
 
     private static string NormalizeId(string id)

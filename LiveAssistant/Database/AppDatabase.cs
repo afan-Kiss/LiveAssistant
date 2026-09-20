@@ -13,6 +13,7 @@ public sealed class AppDatabase : IDisposable
         _connectionString = $"Data Source={dbPath}";
         Initialize();
         Migrate();
+        LegacyMovieScoreImporter.TryImport(dataDir);
     }
 
     private void Initialize()

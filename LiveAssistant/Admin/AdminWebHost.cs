@@ -500,6 +500,7 @@ public sealed class AdminWebHost : IDisposable
 
         app.MapPut("/api/welcome", (WelcomeSettings body, HttpContext http) => Auth(http, () =>
         {
+            body.DanmakuSendRestoredMigrated = true;
             _ctx.Config.Settings.Welcome = body;
             _ctx.Config.Save();
             _ctx.Commands.Enqueue(AdminCommandType.ReloadConfig);

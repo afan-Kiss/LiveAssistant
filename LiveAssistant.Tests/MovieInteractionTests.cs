@@ -25,7 +25,7 @@ public sealed class MovieInteractionTests : IDisposable
         _config.Load();
         _config.Settings.MovieInteraction.Enabled = true;
         _config.Settings.MovieInteraction.PointsPerDiamond = 10;
-        _config.Settings.MovieInteraction.CreditExpireSeconds = 180;
+        _config.Settings.MovieInteraction.CreditExpireSeconds = 900;
         _config.Settings.MovieInteraction.SyncEnabled = false;
         _config.Settings.MovieInteraction.ServerBaseUrl = "";
         _log = new LogService(_dataDir);
@@ -64,8 +64,8 @@ public sealed class MovieInteractionTests : IDisposable
         Assert.Equal(2, credits.Count);
         Assert.Equal(10, credits[0].Points);
         Assert.Equal(100, credits[1].Points);
-        Assert.Equal(t0.AddSeconds(180), credits[0].ExpiresAt);
-        Assert.Equal(t1.AddSeconds(180), credits[1].ExpiresAt);
+        Assert.Equal(t0.AddSeconds(900), credits[0].ExpiresAt);
+        Assert.Equal(t1.AddSeconds(900), credits[1].ExpiresAt);
         Assert.NotEqual(credits[0].ExpiresAt, credits[1].ExpiresAt);
 
         var now = t1.AddSeconds(30);
@@ -76,22 +76,22 @@ public sealed class MovieInteractionTests : IDisposable
     }
 
     [Fact]
-    public void CreditExpiresAfterThreeMinutes_AndIsNotDeleted()
+    public void CreditExpiresAfterFifteenMinutes_AndIsNotDeleted()
     {
         var created = new DateTime(2026, 9, 18, 12, 0, 0);
         _svc.NowProvider = () => created;
         Assert.True(_svc.OnGiftReceived(Gift("exp", "u1", 1, created.AddMinutes(-5))));
         var credit = _svc.Repository.GetCreditByGiftEventId("exp")!;
-        Assert.Equal(created.AddMinutes(3), credit.ExpiresAt);
+        Assert.Equal(created.AddMinutes(15), credit.ExpiresAt);
 
-        Assert.False(Apply("u1", "哪吒好评", created.AddMinutes(3), "m-exp"));
+        Assert.False(Apply("u1", "哪吒好评", created.AddMinutes(15), "m-exp"));
         var expired = _svc.Repository.GetCreditByGiftEventId("exp")!;
         Assert.Equal("expired", expired.Status);
         Assert.Equal(0, _svc.Repository.GetTotalScore("1462628"));
 
         _svc.NowProvider = () => created;
         Assert.True(_svc.OnGiftReceived(Gift("live", "u2", 1, created.AddMinutes(-5))));
-        Assert.True(Apply("u2", "哪吒好评", created.AddMinutes(3).AddSeconds(-1), "m-live"));
+        Assert.True(Apply("u2", "哪吒好评", created.AddMinutes(15).AddSeconds(-1), "m-live"));
         Assert.Equal(10, _svc.Repository.GetTotalScore("1462628"));
     }
 
@@ -104,10 +104,10 @@ public sealed class MovieInteractionTests : IDisposable
         Assert.True(_svc.OnGiftReceived(Gift("late", "u1", 1, platformTime)));
         var credit = _svc.Repository.GetCreditByGiftEventId("late")!;
         var remaining = (credit.ExpiresAt - receivedAt).TotalSeconds;
-        Assert.InRange(remaining, 179, 181);
-        Assert.Equal(receivedAt.AddSeconds(180), credit.ExpiresAt);
-        // 若误用平台时间，只剩约 60 秒
-        Assert.NotEqual(platformTime.AddSeconds(180), credit.ExpiresAt);
+        Assert.InRange(remaining, 899, 901);
+        Assert.Equal(receivedAt.AddSeconds(900), credit.ExpiresAt);
+        // 若误用平台时间，只剩约 780 秒
+        Assert.NotEqual(platformTime.AddSeconds(900), credit.ExpiresAt);
     }
 
     [Fact]
@@ -189,7 +189,7 @@ public sealed class MovieInteractionTests : IDisposable
     }
 
     [Fact]
-    public void VoterCounts_DistinctUsers_NotScoreTimes()
+    public void VoterCounts_PerGiftEvent_IncludingRepeatUsers()
     {
         var now = DateTime.Now;
         // 1) A 好评一次 → good=1 bad=0
@@ -197,24 +197,24 @@ public sealed class MovieInteractionTests : IDisposable
         Assert.True(Apply("A", "哪吒 好评", now.AddSeconds(1), "vc-m1"));
         AssertVoterCounts("1462628", score: 10, good: 1, bad: 0);
 
-        // 2) A 再连续好评 2 次（共 3 次）→ good 仍=1
+        // 2) A 再连续好评 2 次（共 3 次）→ good=3
         Assert.True(_svc.OnGiftReceived(Gift("vc2", "A", 1, now.AddSeconds(2))));
         Assert.True(Apply("A", "哪吒 好评", now.AddSeconds(3), "vc-m2"));
         Assert.True(_svc.OnGiftReceived(Gift("vc3", "A", 1, now.AddSeconds(4))));
         Assert.True(Apply("A", "哪吒 好评", now.AddSeconds(5), "vc-m3"));
-        AssertVoterCounts("1462628", score: 30, good: 1, bad: 0);
+        AssertVoterCounts("1462628", score: 30, good: 3, bad: 0);
 
-        // 3) A 再差评 → good=1 bad=1（不互相覆盖）
+        // 3) A 再差评 → good=3 bad=1（不互相覆盖）
         Assert.True(_svc.OnGiftReceived(Gift("vc4", "A", 1, now.AddSeconds(6))));
         Assert.True(Apply("A", "哪吒 差评", now.AddSeconds(7), "vc-m4"));
-        AssertVoterCounts("1462628", score: 20, good: 1, bad: 1);
+        AssertVoterCounts("1462628", score: 20, good: 3, bad: 1);
 
-        // 4) B/C 好评 → good=3
+        // 4) B/C 好评 → good=5
         Assert.True(_svc.OnGiftReceived(Gift("vc5", "B", 1, now.AddSeconds(8))));
         Assert.True(Apply("B", "哪吒 好评", now.AddSeconds(9), "vc-m5"));
         Assert.True(_svc.OnGiftReceived(Gift("vc6", "C", 1, now.AddSeconds(10))));
         Assert.True(Apply("C", "哪吒 好评", now.AddSeconds(11), "vc-m6"));
-        AssertVoterCounts("1462628", score: 40, good: 3, bad: 1);
+        AssertVoterCounts("1462628", score: 40, good: 5, bad: 1);
     }
 
     [Fact]
@@ -433,6 +433,79 @@ public sealed class MovieInteractionTests : IDisposable
     }
 
     [Fact]
+    public void OutboundScoreEcho_DoesNotConsumeCredit()
+    {
+        var tracker = new OutboundReplyTracker(TimeSpan.FromMinutes(2));
+        tracker.Track("reply-1", "哪吒 好看", platformMessageId: "plat-score-echo");
+        using var svc = new MovieInteractionService(
+            _config,
+            _db,
+            _log,
+            audienceFilter: new ChatAudienceFilter(tracker));
+        svc.UpdateCatalog(new MovieCatalogUpdateRequest
+        {
+            Movies =
+            [
+                new MovieCatalogUpdateItem
+                {
+                    MovieId = "1462628",
+                    MovieName = "哪吒之魔童闹海",
+                    Aliases = ["哪吒"],
+                    Rank = 1
+                }
+            ]
+        });
+
+        var now = DateTime.Now;
+        Assert.True(svc.OnGiftReceived(Gift("echo-gift", "u1", 1, now)));
+        var echo = Chat("u1", "哪吒 好看", "plat-score-echo");
+        echo.RoomKey = "room1";
+        Assert.False(svc.TryApplyScoreFromDanmaku(echo, nowOverride: now.AddSeconds(1)));
+        Assert.Equal("pending", svc.Repository.GetCreditByGiftEventId("echo-gift")!.Status);
+        Assert.Equal(0, svc.Repository.GetTotalScore("1462628"));
+    }
+
+    [Fact]
+    public void MovieName_FuzzyMatch_DoesNotMatchLongerUnrelatedQuery()
+    {
+        _svc.UpdateCatalog(new MovieCatalogUpdateRequest
+        {
+            Movies =
+            [
+                new MovieCatalogUpdateItem { MovieId = "ody", MovieName = "奥德赛", Rank = 1 }
+            ]
+        });
+
+        var now = DateTime.Now;
+        Assert.True(_svc.OnGiftReceived(Gift("ody-gift", "u1", 1, now)));
+        Assert.False(Apply("u1", "奥德赛续集 好评", now.AddSeconds(1), "ody-long"));
+        Assert.Equal("pending", _svc.Repository.GetCreditByGiftEventId("ody-gift")!.Status);
+        Assert.Equal(0, _svc.Repository.GetTotalScore("ody"));
+    }
+
+    [Fact]
+    public void MovieName_FuzzyMatch_IgnoresPunctuationInCatalog()
+    {
+        _svc.UpdateCatalog(new MovieCatalogUpdateRequest
+        {
+            Movies =
+            [
+                new MovieCatalogUpdateItem { MovieId = "bx", MovieName = "八仙！", Rank = 1 }
+            ]
+        });
+
+        var now = DateTime.Now;
+        Assert.True(_svc.OnGiftReceived(Gift("bx-gift", "u1", 1, now)));
+
+        Assert.True(Apply("u1", "八仙 不好看", now.AddSeconds(1), "bx-bad"));
+        Assert.Equal(-10, _svc.Repository.GetTotalScore("bx"));
+
+        Assert.True(_svc.OnGiftReceived(Gift("bx-gift2", "u2", 1, now.AddSeconds(2))));
+        Assert.True(Apply("u2", "八仙！ 好看", now.AddSeconds(3), "bx-good"));
+        Assert.Equal(0, _svc.Repository.GetTotalScore("bx"));
+    }
+
+    [Fact]
     public void CatalogUpdate_DoesNotEraseHistoricalScores()
     {
         var now = DateTime.Now;
@@ -533,6 +606,15 @@ public sealed class MovieInteractionTests : IDisposable
         Assert.False(Apply("u1", "哪吒好评", DateTime.Now, "none"));
         Assert.Equal(0, _svc.Repository.CountPendingUploads());
         Assert.Equal(0, _svc.Repository.GetTotalScore("1462628"));
+    }
+
+    [Fact]
+    public void GetHealth_ExposesCreditExpireWindow()
+    {
+        var json = JsonSerializer.Serialize(_svc.GetHealth());
+        using var doc = JsonDocument.Parse(json);
+        Assert.Equal(900, doc.RootElement.GetProperty("creditExpireSeconds").GetInt32());
+        Assert.Equal(15, doc.RootElement.GetProperty("creditExpireMinutes").GetInt32());
     }
 
     [Theory]
@@ -646,21 +728,32 @@ public sealed class MovieInteractionTests : IDisposable
         };
     }
 
-    private static string FindAdminWebHost()
+    private static string FindRepoRoot()
     {
         var dir = AppContext.BaseDirectory;
-        for (var i = 0; i < 10; i++)
+        for (var i = 0; i < 20; i++)
         {
-            var candidate = Path.Combine(dir, "LiveAssistant", "Admin", "AdminWebHost.cs");
-            if (File.Exists(candidate))
+            if (File.Exists(Path.Combine(dir, "LiveAssistant.sln")))
             {
-                return candidate;
+                return dir;
             }
 
-            dir = Directory.GetParent(dir)?.FullName ?? throw new DirectoryNotFoundException(candidate);
+            dir = Directory.GetParent(dir)?.FullName
+                  ?? throw new DirectoryNotFoundException("LiveAssistant.sln not found");
         }
 
-        throw new DirectoryNotFoundException("AdminWebHost.cs");
+        throw new DirectoryNotFoundException("LiveAssistant.sln not found");
+    }
+
+    private static string FindAdminWebHost()
+    {
+        var bundled = Path.Combine(AppContext.BaseDirectory, "repo-snapshots", "AdminWebHost.cs");
+        if (File.Exists(bundled))
+        {
+            return bundled;
+        }
+
+        return Path.Combine(FindRepoRoot(), "LiveAssistant", "Admin", "AdminWebHost.cs");
     }
 
     private sealed class ScriptedHandler : HttpMessageHandler

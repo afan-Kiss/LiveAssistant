@@ -166,7 +166,7 @@ public sealed class AiSpeechPlayer : IDisposable
             var limited = new SoftLimitingSampleProvider(faded);
             var waveProvider = limited.ToWaveProvider16();
 
-            output = new WaveOutEvent();
+            output = new WaveOutEvent { Volume = 1f };
             if (device >= 0)
             {
                 output.DeviceNumber = device;

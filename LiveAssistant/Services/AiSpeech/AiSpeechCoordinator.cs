@@ -17,6 +17,7 @@ public sealed class AiSpeechCoordinator : IDisposable
     private readonly LogService _log;
     private readonly OutboundReplyTracker _outboundTracker;
     private readonly ChatAudienceFilter? _audienceFilter;
+    private readonly PlaybackService? _playback;
     private readonly OllamaClient _ollama;
     private readonly GptSovitsClient _tts;
     private readonly AiSpeechPlayer _player;
@@ -76,12 +77,14 @@ public sealed class AiSpeechCoordinator : IDisposable
         ConfigManager config,
         LogService log,
         OutboundReplyTracker outboundTracker,
-        ChatAudienceFilter? audienceFilter = null)
+        ChatAudienceFilter? audienceFilter = null,
+        PlaybackService? playback = null)
     {
         _config = config;
         _log = log;
         _outboundTracker = outboundTracker;
         _audienceFilter = audienceFilter;
+        _playback = playback;
         var s = config.Settings.AiSpeech;
         _ollama = new OllamaClient(s.OllamaUrl, TimeSpan.FromSeconds(Math.Clamp(s.OllamaTimeoutSeconds, 10, 120)));
         _tts = new GptSovitsClient(s.TtsUrl, TimeSpan.FromSeconds(Math.Clamp(s.TtsTimeoutSeconds, 10, 120)));
@@ -762,6 +765,7 @@ public sealed class AiSpeechCoordinator : IDisposable
         await _executionGate.WaitAsync(ct);
         var playCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         Volatile.Write(ref _activePlayCts, playCts);
+        var musicDucked = false;
         try
         {
             ApplyDeviceFromSettings();
@@ -800,6 +804,7 @@ public sealed class AiSpeechCoordinator : IDisposable
             _log.AiInfo($"AI_TTS_OK task=test_voice tts_ms={ttsSw.ElapsedMilliseconds} bytes={synth.AudioWav.Length}");
             SetPhase(AiSpeechPhase.Playing);
             ApplyPlaybackVolumeFromSettings(taskId: "test_voice");
+            BeginMusicDuck(ref musicDucked);
             _log.AiInfo("AI_AUDIO_PLAY_START task=test_voice");
             var playSw = Stopwatch.StartNew();
             await _player.PlayWavAsync(synth.AudioWav, _tempDir, playCts.Token);
@@ -843,6 +848,7 @@ public sealed class AiSpeechCoordinator : IDisposable
         }
         finally
         {
+            EndMusicDuckIfActive(musicDucked);
             Interlocked.CompareExchange(ref _activePlayCts, null, playCts);
             try { playCts.Dispose(); } catch { /* ignore */ }
             SetPhase(AiSpeechPhase.Idle);
@@ -1210,6 +1216,7 @@ public sealed class AiSpeechCoordinator : IDisposable
         var playCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         Volatile.Write(ref _activePlayCts, playCts);
         var playCt = playCts.Token;
+        var musicDucked = false;
 
         long ollamaMs = 0;
         try
@@ -1398,6 +1405,7 @@ public sealed class AiSpeechCoordinator : IDisposable
             SetPhase(AiSpeechPhase.Playing);
             ApplyDeviceFromSettings(task.Platform);
             ApplyPlaybackVolumeFromSettings(task.TaskId);
+            BeginMusicDuck(ref musicDucked);
             _log.AiInfo($"AI_AUDIO_PLAY_START task={task.TaskId} platform={task.Platform}");
             var playSw = Stopwatch.StartNew();
             try
@@ -1497,6 +1505,7 @@ public sealed class AiSpeechCoordinator : IDisposable
         }
         finally
         {
+            EndMusicDuckIfActive(musicDucked);
             Interlocked.CompareExchange(ref _activePlayCts, null, playCts);
             try { playCts.Dispose(); } catch { /* ignore */ }
             SetPhase(AiSpeechPhase.Idle);
@@ -1694,6 +1703,7 @@ public sealed class AiSpeechCoordinator : IDisposable
         }
 
         s.VolumePercent = Math.Clamp(s.VolumePercent <= 0 ? 120 : s.VolumePercent, 50, 200);
+        s.DuckMusicVolumePercent = Math.Clamp(s.DuckMusicVolumePercent, 0, 100);
 
         if (string.IsNullOrWhiteSpace(s.Model))
         {
@@ -1727,6 +1737,42 @@ public sealed class AiSpeechCoordinator : IDisposable
         var pct = Math.Clamp(Settings.VolumePercent <= 0 ? 120 : Settings.VolumePercent, 50, 200);
         _player.SetVolumePercent(pct);
         _log.AiInfo($"AI_AUDIO_VOLUME task={taskId ?? "-"} volumePercent={pct} user_gain={pct / 100.0:F2}");
+    }
+
+    private void BeginMusicDuck(ref bool musicDucked)
+    {
+        if (_playback == null || !Settings.DuckMusicDuringSpeech || musicDucked)
+        {
+            return;
+        }
+
+        try
+        {
+            var duckVolume = Math.Clamp(Settings.DuckMusicVolumePercent, 0, 100);
+            _playback.BeginMusicDuck(duckVolume);
+            musicDucked = true;
+        }
+        catch (Exception ex)
+        {
+            _log.AiWarn($"music_duck_begin_fail {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private void EndMusicDuckIfActive(bool musicDucked)
+    {
+        if (!musicDucked || _playback == null)
+        {
+            return;
+        }
+
+        try
+        {
+            _playback.EndMusicDuck();
+        }
+        catch (Exception ex)
+        {
+            _log.AiWarn($"music_duck_end_fail {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     private bool TryAdmitGiftAi(GiftEvent gift, out string key)
@@ -1988,6 +2034,9 @@ public sealed class AiSpeechCoordinator : IDisposable
         {
             // ignore
         }
+
+        // worker finally 会先恢复；此处仅兜底 worker 未正常结束时的残留压低状态
+        try { _playback?.EndMusicDuck(); } catch { /* ignore */ }
 
         try
         {

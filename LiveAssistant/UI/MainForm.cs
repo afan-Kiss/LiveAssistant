@@ -48,6 +48,7 @@ public sealed class MainForm : Form
     private readonly Button _btnConnect = new();
     private readonly Button _btnKugouLogin = new();
     private readonly TextBox _txtWebRid = new();
+    private readonly CheckBox _chkWelcomeDanmaku = new();
     private readonly ComboBox _cmbMode = new();
     private readonly Button _btnSkipQueue = new();
     private readonly Button _btnRemoveQueue = new();
@@ -73,6 +74,8 @@ public sealed class MainForm : Form
     private readonly NumericUpDown _numAiLikeInterval = new();
     private readonly NumericUpDown _numAiSummaryInterval = new();
     private readonly NumericUpDown _numAiVolume = new();
+    private readonly CheckBox _chkAiDuckMusic = new();
+    private readonly NumericUpDown _numAiDuckVolume = new();
     private readonly ComboBox _cmbAiContext = new();
     private readonly ComboBox _cmbAiEmotion = new();
     private readonly ComboBox _cmbAiSpeed = new();
@@ -108,6 +111,7 @@ public sealed class MainForm : Form
     private readonly Button _btnAiEditPrompts = new();
     private bool _aiUiLoading;
     private bool _aiStartAllBusy;
+    private bool _welcomeUiLoading;
 
     private readonly System.Windows.Forms.Timer _uiTimer = new();
     private readonly HashSet<string> _seenDanmaku = new();
@@ -574,7 +578,7 @@ public sealed class MainForm : Form
         _chkAiReplyDanmaku.Checked = s.ReplyDanmaku;
         _chkAiThankGift.Text = "感谢礼物";
         _chkAiThankGift.Checked = s.ThankGift;
-        _chkAiWelcome.Text = "欢迎进入直播间";
+        _chkAiWelcome.Text = "AI欢迎语音";
         _chkAiWelcome.Checked = s.WelcomeUser;
         _chkAiThankLike.Text = "感谢点赞";
         _chkAiThankLike.Checked = s.ThankLike;
@@ -628,6 +632,14 @@ public sealed class MainForm : Form
         _numAiVolume.Maximum = 200;
         _numAiVolume.Increment = 10;
         _numAiVolume.Value = Math.Clamp(s.VolumePercent <= 0 ? 120 : s.VolumePercent, 50, 200);
+
+        _chkAiDuckMusic.Text = "AI说话时压低背景歌曲";
+        _chkAiDuckMusic.Checked = s.DuckMusicDuringSpeech;
+        _numAiDuckVolume.Minimum = 0;
+        _numAiDuckVolume.Maximum = 100;
+        _numAiDuckVolume.Increment = 5;
+        _numAiDuckVolume.Value = Math.Clamp(s.DuckMusicVolumePercent, 0, 100);
+        _numAiDuckVolume.Enabled = s.DuckMusicDuringSpeech;
 
         FillAiNamedCombo(_cmbAiContext, new[]
         {
@@ -782,6 +794,8 @@ public sealed class MainForm : Form
         AddRow("抖音输出设备", _cmbAiDevice, 32);
         AddRow("快手输出设备", _cmbAiKsDevice, 32);
         AddRow("AI语音音量%", _numAiVolume, 30);
+        AddRow("", _chkAiDuckMusic, 28);
+        AddRow("背景压低%", _numAiDuckVolume, 30);
         AddRow("回复间隔", _numAiInterval, 30);
         AddRow("最大排队", _numAiQueue, 30);
         AddRow("最大字数", _numAiMaxChars, 30);
@@ -824,7 +838,7 @@ public sealed class MainForm : Form
         var row = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 4,
+            ColumnCount = 5,
             RowCount = 1,
             Margin = new Padding(0),
             Padding = new Padding(4, 0, 4, 0)
@@ -833,6 +847,7 @@ public sealed class MainForm : Form
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
         row.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
 
         var lblRid = new Label
@@ -852,12 +867,21 @@ public sealed class MainForm : Form
 
         StyleButton(_btnKugouLogin, "酷狗登录", 0);
         _btnKugouLogin.Dock = DockStyle.Fill;
-        _btnKugouLogin.Margin = new Padding(0, 2, 0, 2);
+        _btnKugouLogin.Margin = new Padding(0, 2, 8, 2);
+
+        _chkWelcomeDanmaku.Text = "发欢迎弹幕";
+        _chkWelcomeDanmaku.AutoSize = true;
+        _chkWelcomeDanmaku.Dock = DockStyle.Fill;
+        _chkWelcomeDanmaku.CheckAlign = ContentAlignment.MiddleLeft;
+        _chkWelcomeDanmaku.TextAlign = ContentAlignment.MiddleLeft;
+        _chkWelcomeDanmaku.Margin = new Padding(0, 2, 0, 2);
+        _chkWelcomeDanmaku.Checked = _host.Config.Settings.Welcome.Enabled;
 
         row.Controls.Add(lblRid, 0, 0);
         row.Controls.Add(_txtWebRid, 1, 0);
         row.Controls.Add(_btnConnect, 2, 0);
         row.Controls.Add(_btnKugouLogin, 3, 0);
+        row.Controls.Add(_chkWelcomeDanmaku, 4, 0);
         box.Controls.Add(row);
         return box;
     }
@@ -968,6 +992,18 @@ public sealed class MainForm : Form
             _host.Engine.SetMode(IndexToMode(_cmbMode.SelectedIndex));
             RefreshStatus();
         };
+        _chkWelcomeDanmaku.CheckedChanged += (_, _) =>
+        {
+            if (_welcomeUiLoading)
+            {
+                return;
+            }
+
+            _host.Config.Settings.Welcome.Enabled = _chkWelcomeDanmaku.Checked;
+            _host.Config.Settings.Welcome.DanmakuSendRestoredMigrated = true;
+            _host.Config.Save();
+            AppendSystem(_chkWelcomeDanmaku.Checked ? "欢迎弹幕已开启" : "欢迎弹幕已关闭");
+        };
 
         WireAiSpeechEvents();
 
@@ -977,6 +1013,7 @@ public sealed class MainForm : Form
             RefreshPlayback();
             RefreshRuntimeStatus();
             RefreshAiSpeechStatus();
+            SyncWelcomeDanmakuCheckbox();
         };
         _uiTimer.Start();
 
@@ -1118,6 +1155,25 @@ public sealed class MainForm : Form
     {
         RefreshStatusPanels();
         RefreshAiSpeechStatus();
+        SyncWelcomeDanmakuCheckbox();
+    }
+
+    private void SyncWelcomeDanmakuCheckbox()
+    {
+        if (_chkWelcomeDanmaku.Checked == _host.Config.Settings.Welcome.Enabled)
+        {
+            return;
+        }
+
+        _welcomeUiLoading = true;
+        try
+        {
+            _chkWelcomeDanmaku.Checked = _host.Config.Settings.Welcome.Enabled;
+        }
+        finally
+        {
+            _welcomeUiLoading = false;
+        }
     }
 
     private void WireAiSpeechEvents()
@@ -1239,6 +1295,18 @@ public sealed class MainForm : Form
         _numAiLikeInterval.ValueChanged += (_, _) => SaveNumeric();
         _numAiSummaryInterval.ValueChanged += (_, _) => SaveNumeric();
         _numAiVolume.ValueChanged += (_, _) => SaveNumeric();
+        _numAiDuckVolume.ValueChanged += (_, _) => SaveNumeric();
+
+        _chkAiDuckMusic.CheckedChanged += (_, _) =>
+        {
+            _numAiDuckVolume.Enabled = _chkAiDuckMusic.Checked;
+            if (_aiUiLoading)
+            {
+                return;
+            }
+
+            PersistAiSettingsFromControls();
+        };
 
         void SaveCombo()
         {
@@ -1445,6 +1513,9 @@ public sealed class MainForm : Form
         _numAiLikeInterval.Value = Math.Clamp(Math.Max(20, s.LikeIntervalSeconds), (int)_numAiLikeInterval.Minimum, (int)_numAiLikeInterval.Maximum);
         _numAiSummaryInterval.Value = Math.Clamp(s.SummaryIntervalSeconds, (int)_numAiSummaryInterval.Minimum, (int)_numAiSummaryInterval.Maximum);
         _numAiVolume.Value = Math.Clamp(s.VolumePercent <= 0 ? 120 : s.VolumePercent, (int)_numAiVolume.Minimum, (int)_numAiVolume.Maximum);
+        _chkAiDuckMusic.Checked = s.DuckMusicDuringSpeech;
+        _numAiDuckVolume.Value = Math.Clamp(s.DuckMusicVolumePercent, (int)_numAiDuckVolume.Minimum, (int)_numAiDuckVolume.Maximum);
+        _numAiDuckVolume.Enabled = s.DuckMusicDuringSpeech;
 
         SelectAiNamedCombo(_cmbAiContext, s.ContextMode);
         SelectAiNamedCombo(_cmbAiEmotion, string.IsNullOrWhiteSpace(s.Emotion) ? "auto" : s.Emotion, preferLastDuplicate: true);
@@ -1561,6 +1632,8 @@ public sealed class MainForm : Form
             s.AutoRoomSummary = _chkAiAutoSummary.Checked;
             s.AnnounceSongRequest = _chkAiAnnounceSong.Checked;
             s.VolumePercent = (int)_numAiVolume.Value;
+            s.DuckMusicDuringSpeech = _chkAiDuckMusic.Checked;
+            s.DuckMusicVolumePercent = (int)_numAiDuckVolume.Value;
 
             var replyInterval = (int)_numAiInterval.Value;
             s.ReplyIntervalSeconds = replyInterval;
@@ -1613,7 +1686,8 @@ public sealed class MainForm : Form
             && !status.Emotion.Equals(EmotionPresets.Auto, StringComparison.OrdinalIgnoreCase)
             && !EmotionPresets.IsConfigured(status.Emotion, status.VoiceName))
         {
-            _lblAiEmotionSpeed.Text += "（情感参考音未配置，将回退中性）";
+            var expected = EmotionPresets.GetExpectedReferPath(status.Emotion, status.VoiceName);
+            _lblAiEmotionSpeed.Text += $"（情感参考音未配置，将回退中性；请放置 {expected}）";
         }
 
         if (status.PromptLoadedAt is { } loadedAt)

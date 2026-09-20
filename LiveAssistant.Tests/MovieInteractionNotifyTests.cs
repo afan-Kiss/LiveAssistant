@@ -27,7 +27,7 @@ public sealed class MovieInteractionNotifyTests : IDisposable
         _config.Load();
         _config.Settings.MovieInteraction.Enabled = true;
         _config.Settings.MovieInteraction.PointsPerDiamond = 10;
-        _config.Settings.MovieInteraction.CreditExpireSeconds = 180;
+        _config.Settings.MovieInteraction.CreditExpireSeconds = 900;
         _config.Settings.MovieInteraction.Notification.Enabled = true;
         _config.Settings.MovieInteraction.Notification.GiftGuideUserCooldownSeconds = 60;
         _config.Settings.MovieInteraction.Notification.GlobalSendIntervalMs = 2500;
@@ -157,7 +157,7 @@ public sealed class MovieInteractionNotifyTests : IDisposable
         var now = DateTime.Now;
         Assert.False(_svc.TryApplyScoreFromDanmaku(Chat("u-empty", "哪吒 好评", "n1"), nowOverride: now));
         Assert.True(WaitSent(1));
-        Assert.Contains(_sent, x => x.Content.Contains("暂无评分机会"));
+        Assert.Contains(_sent, x => x.Content.Contains("送礼") && x.Content.Contains("评分"));
         Assert.Equal(0, _svc.Repository.GetTotalScore("1462628"));
 
         lock (_sent) { _sent.Clear(); }

@@ -29,19 +29,18 @@ public sealed class PointsQueryService
 
         var user = _users.EnsureUser(item.UserId, item.Nickname);
         user = _users.GetUser(item.UserId) ?? user;
-        var recent = _ledger.ListByUser(item.UserId, 5);
-        var details = PointsLedgerFormatter.FormatRecentEntries(recent);
         var msg = reply.Render("pointsQuery", new Dictionary<string, string>
         {
             ["name"] = item.Nickname,
             ["score"] = user.Points.ToString(),
             ["level"] = user.Level.ToString(),
-            ["details"] = details
+            // 兼容旧模板里的 {details}，不再展示礼物/点歌明细
+            ["details"] = ""
         });
 
         if (string.IsNullOrWhiteSpace(msg))
         {
-            msg = $"@{item.Nickname} 你当前有 {user.Points} 积分，等级 Lv{user.Level}。最近：{details}";
+            msg = $"你当前有 {user.Points} 积分，等级 Lv{user.Level}";
         }
 
         replyQueue.EnqueueMention(webRid, item.UserId, msg, nickname: item.Nickname);

@@ -28,7 +28,7 @@ public sealed class PointsQueryTests : IDisposable
 
         var config = new ConfigManager();
         config.Load();
-        config.ReplyTemplates["pointsQuery"] = "@{name} 积分 {score}，等级 Lv{level} 明细:{details}";
+        config.ReplyTemplates["pointsQuery"] = "@{name} 积分 {score}，等级 Lv{level}";
 
         var reply = new ReplyService(config);
         var sent = new List<string>();

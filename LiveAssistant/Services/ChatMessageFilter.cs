@@ -301,7 +301,8 @@ public static partial class ChatMessageFilter
         }
 
         if (content.StartsWith("欢迎", StringComparison.Ordinal)
-            && content.Contains("来到直播间", StringComparison.Ordinal))
+            && (content.Contains("来到直播间", StringComparison.Ordinal)
+                || content.Contains("进入直播间", StringComparison.Ordinal)))
         {
             return true;
         }

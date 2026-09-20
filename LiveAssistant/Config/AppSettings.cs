@@ -40,8 +40,8 @@ public sealed class MovieInteractionSettings
     public string ServerBaseUrl { get; set; } = "";
     public string ApiToken { get; set; } = "";
     public bool SyncEnabled { get; set; }
-    /// <summary>可评分积分有效期（秒），默认 3 分钟。</summary>
-    public int CreditExpireSeconds { get; set; } = 180;
+    /// <summary>可评分积分有效期（秒），默认 15 分钟。</summary>
+    public int CreditExpireSeconds { get; set; } = 900;
     /// <summary>过期状态清理间隔（秒）。</summary>
     public int CleanupIntervalSeconds { get; set; } = 45;
     /// <summary>1 钻对应多少电影评分积分。</summary>
@@ -103,6 +103,12 @@ public sealed class AiSpeechSettings
 
     /// <summary>AI 语音用户音量百分比：叠加在自动归一化之后。100=归一化后原量，120≈+1.6dB。过高易软限幅导致黏糊。范围 50～200。</summary>
     public int VolumePercent { get; set; } = 120;
+
+    /// <summary>AI 口播时压低背景音乐，便于听清人声。</summary>
+    public bool DuckMusicDuringSpeech { get; set; } = true;
+
+    /// <summary>口播期间歌曲音量（0～100）；口播结束后恢复为用户设置的播放音量。</summary>
+    public int DuckMusicVolumePercent { get; set; } = 25;
 
     /// <summary>弹幕回复最小间隔（秒）；与 MinIntervalSeconds 保持同步。</summary>
     public int ReplyIntervalSeconds { get; set; } = 8;
@@ -379,9 +385,15 @@ public sealed class AdminTunnelSettings
 
 public sealed class WelcomeSettings
 {
-    public bool Enabled { get; set; } = true;
+    /// <summary>是否发送进房欢迎弹幕。默认关闭，需用户显式勾选。</summary>
+    public bool Enabled { get; set; }
     public int CooldownSeconds { get; set; } = 300;
     public string Template { get; set; } = "欢迎{name}来到直播间 ❤️";
+    /// <summary>
+    /// 欢迎弹幕恢复发送后的一次性迁移标记。旧配置常为 enabled=true 但代码曾停发，
+    /// 首次加载会强制改为 false，避免升级后静默刷屏。
+    /// </summary>
+    public bool DanmakuSendRestoredMigrated { get; set; }
 }
 
 public sealed class BanVoteSettings
@@ -481,7 +493,9 @@ public sealed class ConfigManager
         ResolveSidecarPaths();
         MigrateDouyinCdpBaseUrl();
         MigrateRequireConfirmDefault();
+        MigrateMovieInteractionCreditExpire();
         MigrateAiSpeechDefaults();
+        MigrateWelcomeDanmakuDefaultOff();
 
         ReplyTemplates = TryLoadTemplatesFile(Path.Combine(_configDir, "ReplyTemplates.json")) ?? ReplyTemplates;
         ReplyTemplates = TryLoadTemplatesFile(Path.Combine(_dataDir, "ReplyTemplates.json")) ?? ReplyTemplates;
@@ -620,6 +634,28 @@ public sealed class ConfigManager
     }
 
     /// <summary>
+    /// 电影评分积分有效期从 3 分钟升级到 15 分钟；仅迁移旧默认值 180 秒。
+    /// </summary>
+    private void MigrateMovieInteractionCreditExpire()
+    {
+        if (Settings.MovieInteraction.CreditExpireSeconds != 180)
+        {
+            return;
+        }
+
+        Settings.MovieInteraction.CreditExpireSeconds = 900;
+        try
+        {
+            Save();
+            StartupDiagnostics.Write("已将 movieInteraction.creditExpireSeconds 从 180 秒迁移为 900 秒（15 分钟）");
+        }
+        catch (Exception ex)
+        {
+            StartupDiagnostics.Write($"迁移 creditExpireSeconds 保存失败: {ex.Message}");
+        }
+    }
+
+    /// <summary>
     /// 点歌必须确认后才入队。旧 data 配置或后台误存 false 时，每次启动纠正并落盘。
     /// </summary>
     private void MigrateRequireConfirmDefault()
@@ -638,6 +674,30 @@ public sealed class ConfigManager
         catch (Exception ex)
         {
             StartupDiagnostics.Write($"纠正 requireConfirm 保存失败: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 欢迎弹幕曾在代码层停发；恢复发送后，旧配置 enabled=true 会静默刷屏。
+    /// 一次性改为默认关闭，由用户勾选后再发。
+    /// </summary>
+    private void MigrateWelcomeDanmakuDefaultOff()
+    {
+        if (Settings.Welcome.DanmakuSendRestoredMigrated)
+        {
+            return;
+        }
+
+        Settings.Welcome.Enabled = false;
+        Settings.Welcome.DanmakuSendRestoredMigrated = true;
+        try
+        {
+            Save();
+            StartupDiagnostics.Write("已将 welcome.enabled 迁移为 false（欢迎弹幕需显式勾选）");
+        }
+        catch (Exception ex)
+        {
+            StartupDiagnostics.Write($"迁移 welcome.enabled 保存失败: {ex.Message}");
         }
     }
 

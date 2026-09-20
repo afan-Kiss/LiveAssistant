@@ -199,6 +199,29 @@ public sealed class DouyinCdpMigrationTests : IDisposable
         welcome.HandleMemberJoin(new DanmakuItem { MsgType = "chat", UserId = "8", Nickname = "进房", Content = "点歌 晴天" }, "100");
     }
 
+    [Fact]
+    public void Member_WelcomeDisabled_DoesNotSend()
+    {
+        var config = new ConfigManager();
+        config.Settings.Welcome.Enabled = false;
+        config.Settings.Welcome.Template = "欢迎 {name} 来到直播间";
+        var system = new SystemMessageService(20);
+        var db = new AppDatabase(_dir);
+        var sent = 0;
+        var douyin = CreateDouyin(_ => Json("""{"ok":true,"data":{"msg_id":"x"}}"""));
+        var log = new LogService(_dir);
+        using var queue = new ReplyQueue(douyin, log, config.Settings.Reply, sendMention: (_, _, _, _, _) =>
+        {
+            Interlocked.Increment(ref sent);
+            return Task.FromResult(new MentionSendResult { Ok = true, PlatformMessageId = "m" });
+        });
+        var welcome = new WelcomeService(config, new ReplyService(config), queue, system, new WelcomeCooldownRepository(db));
+        welcome.HandleMemberJoin(new DanmakuItem { MsgType = "member", UserId = "9", Nickname = "访客" }, "100");
+        Thread.Sleep(200);
+        Assert.Equal(0, sent);
+        Assert.DoesNotContain(system.Messages, m => m.Contains("欢迎", StringComparison.Ordinal));
+    }
+
     private DanmakuService CreateDanmaku(Func<HttpRequestMessage, HttpResponseMessage> respond)
     {
         var douyin = CreateDouyin(respond);

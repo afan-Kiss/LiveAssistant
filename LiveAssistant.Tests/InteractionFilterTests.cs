@@ -266,6 +266,27 @@ public sealed class InteractionFilterTests
         Assert.Equal(ChatMessageKind.NormalChat, cls.Kind);
     }
 
+    [Theory]
+    [InlineData("欢迎小明来到直播间 ❤️")]
+    [InlineData("欢迎 小明 进入直播间")]
+    public void WelcomeTemplate_Echo_IsFilteredAsBot(string content)
+    {
+        var filter = new ChatAudienceFilter(new OutboundReplyTracker());
+        filter.UpdateDouyinIdentity("bot-uid", "机器人", "room1");
+
+        // 无 user_id/昵称时，依赖欢迎模板启发式识别机器人回显
+        Assert.True(filter.ShouldExclude(new DanmakuItem
+        {
+            MsgId = "w1",
+            UserId = "",
+            Nickname = "",
+            Content = content,
+            MsgType = "chat",
+            RoomKey = "room1"
+        }, out var reason));
+        Assert.Equal("bot_template", reason);
+    }
+
     [Fact]
     public void Classify_Command_ForScoreText()
     {

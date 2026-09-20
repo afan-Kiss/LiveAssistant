@@ -223,6 +223,41 @@ public sealed class BusinessStabilityTests : IDisposable
         db.Dispose();
     }
 
+    [Fact]
+    public void SettingsStore_TryLoadCachedBundle_PreservesPointsModeFromAppsettings()
+    {
+        var db = new AppDatabase(_dir);
+        var cache = new SyncCacheRepository(db);
+        var config = new ConfigManager();
+        config.Load();
+        var store = new SettingsStore(
+            config,
+            new ReplyTemplateRepository(db),
+            new RandomPoolRepository(db),
+            new GiftRuleRepository(db),
+            new LevelPermissionRepository(db),
+            new KeywordReplyRepository(db),
+            cache);
+        store.InitializeFromFilesIfEmpty();
+
+        config.Settings.SongRequestPolicy.Mode = SongRequestPolicyMode.Free;
+        var staleBundle = store.BuildBundle();
+        cache.Set("sync_bundle", System.Text.Json.JsonSerializer.Serialize(staleBundle));
+        cache.Set("sync_version", staleBundle.Version);
+
+        config.Settings.SongRequestPolicy.Mode = SongRequestPolicyMode.Points;
+        config.Settings.SongRequestPolicy.PointsCost = 15;
+        config.Save();
+
+        Assert.True(store.TryLoadCachedBundle());
+        Assert.Equal(SongRequestPolicyMode.Points, config.Settings.SongRequestPolicy.Mode);
+        Assert.Equal(15, config.Settings.SongRequestPolicy.PointsCost);
+
+        var reloaded = store.BuildBundle();
+        Assert.Equal(SongRequestPolicyMode.Points, reloaded.SongRequestPolicy.Mode);
+        db.Dispose();
+    }
+
     private static async Task<bool> WaitUntil(Func<bool> cond, TimeSpan timeout)
     {
         var start = DateTime.UtcNow;

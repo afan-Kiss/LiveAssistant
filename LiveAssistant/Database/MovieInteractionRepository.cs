@@ -474,12 +474,12 @@ public sealed class MovieInteractionRepository
                    t.score,
                    t.updated_at,
                    COALESCE((
-                       SELECT COUNT(DISTINCT e.user_id)
+                       SELECT COUNT(1)
                        FROM movie_score_events e
                        WHERE e.movie_id = t.movie_id AND e.action = 'good'
                    ), 0) AS good_user_count,
                    COALESCE((
-                       SELECT COUNT(DISTINCT e.user_id)
+                       SELECT COUNT(1)
                        FROM movie_score_events e
                        WHERE e.movie_id = t.movie_id AND e.action = 'bad'
                    ), 0) AS bad_user_count

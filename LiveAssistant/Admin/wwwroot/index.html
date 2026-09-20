@@ -1487,7 +1487,7 @@
     async function renderWelcome() {
       const w = await api('GET', '/api/welcome');
       document.getElementById('main').innerHTML = `<h2>欢迎消息</h2>
-        <label><input type="checkbox" id="wEn" ${w.enabled?'checked':''}> 开启欢迎</label>
+        <label><input type="checkbox" id="wEn" ${w.enabled?'checked':''}> 开启欢迎弹幕</label>
         <input id="wTpl" placeholder="模板" value="${w.template || '欢迎{name}来到直播间 ❤️'}">
         <input id="wCd" type="number" placeholder="冷却秒数" value="${w.cooldownSeconds||300}">
         <button onclick="saveWelcome()">保存</button>`;

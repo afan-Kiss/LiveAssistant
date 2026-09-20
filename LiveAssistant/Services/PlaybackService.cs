@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using LiveAssistant.Models;
 using NAudio.Wave;
+using NAudio.Wave.SampleProviders;
 
 namespace LiveAssistant.Services;
 
@@ -18,6 +19,7 @@ public sealed class PlaybackService : IDisposable
     private readonly object _disposeSync = new();
     private readonly SemaphoreSlim _stopGate = new(1, 1);
     private WaveOutEvent? _output;
+    private VolumeSampleProvider? _volumeProvider;
     private MediaFoundationReader? _reader;
     private CancellationTokenSource? _progressCts;
     private CancellationTokenSource? _heartbeatCts;
@@ -26,6 +28,8 @@ public sealed class PlaybackService : IDisposable
     private bool _isRandomFillActive;
     private int _progressSec;
     private int _volume = 80;
+    private int _duckDepth;
+    private int _duckVolume = 25;
     private int _deviceNumber = -1;
     private volatile bool _trackFinishedSignaled;
     private Task? _pendingDisposeTask;
@@ -76,25 +80,80 @@ public sealed class PlaybackService : IDisposable
         }
     }
 
+    /// <summary>用户设置的歌曲音量（0～100）。</summary>
+    public int UserVolumePercent
+    {
+        get { lock (_lock) return _volume; }
+    }
+
+    /// <summary>当前应对外输出的歌曲音量（含 AI 口播压低）。</summary>
+    public int EffectiveOutputVolumePercent
+    {
+        get { lock (_lock) return _duckDepth > 0 ? _duckVolume : _volume; }
+    }
+
     public void SetVolume(int volume)
     {
-        _volume = Math.Clamp(volume, 0, 100);
-        WaveOutEvent? output;
         lock (_lock)
         {
-            output = _output;
+            _volume = Math.Clamp(volume, 0, 100);
+            if (_duckDepth == 0)
+            {
+                ApplyOutputVolumeUnlocked(_volume);
+            }
+        }
+    }
+
+    /// <summary>AI 口播期间临时压低歌曲音量；可嵌套，须与 <see cref="EndMusicDuck"/> 成对。</summary>
+    public void BeginMusicDuck(int duckVolumePercent)
+    {
+        var requested = Math.Clamp(duckVolumePercent, 0, 100);
+        lock (_lock)
+        {
+            if (_duckDepth++ == 0)
+            {
+                _duckVolume = Math.Min(_volume, requested);
+                ApplyOutputVolumeUnlocked(_duckVolume);
+                _log.PlaybackInfo(
+                    $"AI_SPEECH_DUCK begin volume={_duckVolume} requested={requested} user_volume={_volume}");
+            }
+        }
+    }
+
+    /// <summary>恢复 AI 口播前的歌曲音量。</summary>
+    public void EndMusicDuck()
+    {
+        lock (_lock)
+        {
+            if (_duckDepth <= 0)
+            {
+                return;
+            }
+
+            if (--_duckDepth == 0)
+            {
+                ApplyOutputVolumeUnlocked(_volume);
+                _log.PlaybackInfo($"AI_SPEECH_DUCK end restore_volume={_volume}");
+            }
+        }
+    }
+
+    private void ApplyOutputVolumeUnlocked(int volumePercent)
+    {
+        // WinMM WaveOut.Volume 是设备级音量，同设备上的 AI 口播会被一起压低；只调信号链增益。
+        var provider = _volumeProvider;
+        if (provider == null)
+        {
+            return;
         }
 
-        if (output != null)
+        try
         {
-            try
-            {
-                output.Volume = _volume / 100f;
-            }
-            catch (Exception ex)
-            {
-                _log.Error("playback", "设置音量失败", ex);
-            }
+            provider.Volume = Math.Clamp(volumePercent, 0, 100) / 100f;
+        }
+        catch (Exception ex)
+        {
+            _log.Error("playback", "设置音量失败", ex);
         }
     }
 
@@ -128,16 +187,26 @@ public sealed class PlaybackService : IDisposable
             var reader = await Task.Run(() => new MediaFoundationReader(track.PlayUrl), ct);
             var readerMs = readerSw.ElapsedMilliseconds;
 
-            var (output, initMs) = await Task.Run(() =>
+            int outputVolume;
+            lock (_lock)
+            {
+                outputVolume = _duckDepth > 0 ? _duckVolume : _volume;
+            }
+
+            var (output, volumeProvider, initMs) = await Task.Run(() =>
             {
                 var localSw = Stopwatch.StartNew();
+                var volume = new VolumeSampleProvider(reader.ToSampleProvider())
+                {
+                    Volume = outputVolume / 100f
+                };
                 var waveOut = new WaveOutEvent
                 {
                     DeviceNumber = _deviceNumber,
-                    Volume = _volume / 100f
+                    Volume = 1f
                 };
-                waveOut.Init(reader);
-                return (waveOut, localSw.ElapsedMilliseconds);
+                waveOut.Init(volume.ToWaveProvider16());
+                return (waveOut, volume, localSw.ElapsedMilliseconds);
             }, ct);
 
             output.PlaybackStopped += OnPlaybackStopped;
@@ -150,10 +219,13 @@ public sealed class PlaybackService : IDisposable
             {
                 _reader = reader;
                 _output = output;
+                _volumeProvider = volumeProvider;
                 _currentTrack = track;
                 _state = isRandomFill ? Models.PlaybackState.RandomFill : Models.PlaybackState.Playing;
                 _isRandomFillActive = isRandomFill;
                 _progressSec = 0;
+                // 切歌耗时较长，期间 AI 可能开始/结束压低；以当前状态为准重新同步输出音量。
+                ApplyOutputVolumeUnlocked(_duckDepth > 0 ? _duckVolume : _volume);
             }
 
             var playSw = Stopwatch.StartNew();
@@ -455,6 +527,7 @@ public sealed class PlaybackService : IDisposable
                 output = _output;
                 reader = _reader;
                 _output = null;
+                _volumeProvider = null;
                 _reader = null;
                 _currentTrack = null;
                 _state = Models.PlaybackState.Idle;

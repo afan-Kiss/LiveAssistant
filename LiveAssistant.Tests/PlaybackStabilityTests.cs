@@ -20,6 +20,61 @@ public sealed class PlaybackStabilityTests : IDisposable
     }
 
     [Fact]
+    public void MusicDuck_NestedCallsRestoreOnlyAfterLastEnd()
+    {
+        var log = new LogService(_dir);
+        using var playback = new PlaybackService(log);
+        playback.SetVolume(80);
+        playback.BeginMusicDuck(25);
+        Assert.Equal(25, playback.EffectiveOutputVolumePercent);
+        playback.BeginMusicDuck(20);
+        Assert.Equal(25, playback.EffectiveOutputVolumePercent);
+        playback.EndMusicDuck();
+        Assert.Equal(25, playback.EffectiveOutputVolumePercent);
+        playback.EndMusicDuck();
+        Assert.Equal(80, playback.EffectiveOutputVolumePercent);
+        playback.SetVolume(70);
+        Assert.Equal(70, playback.EffectiveOutputVolumePercent);
+    }
+
+    [Fact]
+    public void MusicDuck_ClampsToUserVolumeAndRestores()
+    {
+        var log = new LogService(_dir);
+        using var playback = new PlaybackService(log);
+        playback.SetVolume(15);
+        playback.BeginMusicDuck(25);
+        Assert.Equal(15, playback.EffectiveOutputVolumePercent);
+        playback.EndMusicDuck();
+        Assert.Equal(15, playback.UserVolumePercent);
+        Assert.Equal(15, playback.EffectiveOutputVolumePercent);
+    }
+
+    [Fact]
+    public void MusicDuck_AllowsZeroToMute()
+    {
+        var log = new LogService(_dir);
+        using var playback = new PlaybackService(log);
+        playback.SetVolume(80);
+        playback.BeginMusicDuck(0);
+        Assert.Equal(0, playback.EffectiveOutputVolumePercent);
+        playback.EndMusicDuck();
+        Assert.Equal(80, playback.EffectiveOutputVolumePercent);
+    }
+
+    [Fact]
+    public void MusicDuck_EndBeforeOutputAssigned_DoesNotLeaveStaleEffectiveVolume()
+    {
+        var log = new LogService(_dir);
+        using var playback = new PlaybackService(log);
+        playback.SetVolume(80);
+        playback.BeginMusicDuck(25);
+        Assert.Equal(25, playback.EffectiveOutputVolumePercent);
+        playback.EndMusicDuck();
+        Assert.Equal(80, playback.EffectiveOutputVolumePercent);
+    }
+
+    [Fact]
     public async Task ResolveFreshTrack_Request_AllowsSameArtistAlternateHash()
     {
         // 主 hash 失败时允许同歌手备用版取链（KugouService 故意行为，避免会话抖动直接失败）

@@ -115,6 +115,16 @@ public sealed class SettingsStore
         return bundle;
     }
 
+    /// <summary>
+    /// 将当前内存配置写入 sync 缓存。后台直接改 appsettings 的路径必须调用，避免重启时被旧缓存覆盖。
+    /// </summary>
+    public void PersistCurrentBundle()
+    {
+        var bundle = BuildBundle();
+        _cache.Set("sync_bundle", JsonSerializer.Serialize(bundle, JsonOptions));
+        _cache.Set("sync_version", bundle.Version);
+    }
+
     public void ApplyBundle(SyncBundle bundle, bool persistCache = true)
     {
         if (persistCache)
@@ -129,8 +139,11 @@ public sealed class SettingsStore
         _config.ApplySettings(bundle.Settings);
         _config.ApplyReplyTemplates(bundle.ReplyTemplates);
         _templates.SaveAll(bundle.ReplyTemplates);
-        _config.Settings.SongRequestPolicy = bundle.SongRequestPolicy;
+        _config.Settings.SongRequestPolicy = CloneSongRequestPolicy(bundle.SongRequestPolicy);
+        var welcomeMigrated = _config.Settings.Welcome.DanmakuSendRestoredMigrated
+                              || bundle.Welcome.DanmakuSendRestoredMigrated;
         _config.Settings.Welcome = bundle.Welcome;
+        _config.Settings.Welcome.DanmakuSendRestoredMigrated = welcomeMigrated;
         _config.Settings.BanVote = bundle.BanVote;
         _config.Settings.Cleanup = bundle.Cleanup;
         _config.Settings.KeywordReply.Enabled = bundle.Settings.KeywordReply.Enabled;
@@ -165,7 +178,21 @@ public sealed class SettingsStore
             return false;
         }
 
+        // 点歌策略由后台 SaveSettings 直接写入 appsettings.json；旧 sync 缓存可能仍是 Free。
+        var policyFromConfig = CloneSongRequestPolicy(_config.Settings.SongRequestPolicy);
+        var cacheStale = !SongRequestPolicyEquals(policyFromConfig, bundle.SongRequestPolicy);
+        if (cacheStale)
+        {
+            bundle.SongRequestPolicy = CloneSongRequestPolicy(policyFromConfig);
+            bundle.Settings.SongRequestPolicy = CloneSongRequestPolicy(policyFromConfig);
+        }
+
         ApplyBundle(bundle, persistCache: false);
+        if (cacheStale)
+        {
+            PersistCurrentBundle();
+        }
+
         return true;
     }
 
@@ -265,6 +292,13 @@ public sealed class SettingsStore
             _keywordReplies.Add,
             _keywordReplies.Remove);
     }
+
+    private static SongRequestPolicySettings CloneSongRequestPolicy(SongRequestPolicySettings source)
+        => JsonSerializer.Deserialize<SongRequestPolicySettings>(
+            JsonSerializer.Serialize(source, JsonOptions), JsonOptions)!;
+
+    private static bool SongRequestPolicyEquals(SongRequestPolicySettings a, SongRequestPolicySettings b)
+        => JsonSerializer.Serialize(a, JsonOptions) == JsonSerializer.Serialize(b, JsonOptions);
 
     private static void UpsertById<T>(
         List<T> incoming,

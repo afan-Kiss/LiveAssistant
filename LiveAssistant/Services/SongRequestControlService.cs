@@ -12,11 +12,13 @@ public sealed class SongRequestControlService
 {
     private readonly ConfigManager _config;
     private readonly UserRepository _users;
+    private readonly SettingsStore? _settingsStore;
 
-    public SongRequestControlService(ConfigManager config, UserRepository users)
+    public SongRequestControlService(ConfigManager config, UserRepository users, SettingsStore? settingsStore = null)
     {
         _config = config;
         _users = users;
+        _settingsStore = settingsStore;
     }
 
     public bool IsRequestEnabled =>
@@ -33,6 +35,7 @@ public sealed class SongRequestControlService
         _config.Settings.SongRequestPolicy.RequestEnabled = enabled;
         _config.Settings.Emergency.PauseSongRequest = !enabled;
         _config.Save();
+        _settingsStore?.PersistCurrentBundle();
     }
 
     public SongRequestControlSettings GetSettings()
@@ -74,6 +77,7 @@ public sealed class SongRequestControlService
         _config.Settings.Queue.MaxSize = Math.Max(1, settings.MaxQueueSize);
         _config.Settings.Emergency.PauseSongRequest = !settings.RequestEnabled;
         _config.Save();
+        _settingsStore?.PersistCurrentBundle();
     }
 
     public SongRequestGateResult? EvaluateGate(DanmakuItem item)

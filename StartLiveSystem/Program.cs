@@ -787,6 +787,9 @@ internal static class Program
         }
 
         Boot("starting liveassistant");
+        var dataDir = ResolveLiveAssistantDataDirectory();
+        Environment.SetEnvironmentVariable("LA_DATA_DIR", dataDir);
+        Boot($"liveassistant LA_DATA_DIR={dataDir}");
         var mode = ResolveMode();
         string? path = null;
         ProcessStartInfo? psi = null;
@@ -1488,6 +1491,13 @@ internal static class Program
         {
             return "";
         }
+    }
+
+    private static string ResolveLiveAssistantDataDirectory()
+    {
+        var dataDir = Path.Combine(_baseDir, "data");
+        Directory.CreateDirectory(dataDir);
+        return Path.GetFullPath(dataDir);
     }
 
     private static string ResolveLauncherJsonPath(string[] args)
