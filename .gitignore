@@ -18,3 +18,13 @@ publish/
 *.zip
 deploy/www/admin-accounts.json
 
+node_modules/
+dist/
+bin/*.exe
+data/browser-profile/
+data/browser-profiles/
+*.exe
+.maoyan-nm-stage/
+bin/Debug/
+bin/Release/
+GITHUB_PUSH_TOKEN.txt
